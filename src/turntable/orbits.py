@@ -205,37 +205,29 @@ class NumericOrbit:
         orbits: object,
         times: NDArray[np.float64],
         *,
-        frame: str = "ecliptic",
+        frame: str = "equatorial",
     ) -> NumericOrbit:
         """Sample a **lisaorbits** orbit object onto ``times`` and tabulate it.
 
         Works for both analytic (e.g. ``KeplerianOrbits``) and numerical
-        lisaorbits orbits -- both expose spacecraft positions; here they are
-        evaluated on ``times`` and wrapped as a :class:`NumericOrbit`. For a
-        lisaorbits *file* on disk, prefer :meth:`from_hdf5` with the file's
-        dataset names.
+        (``OEMOrbits``/``InterpolatedOrbits``) lisaorbits orbits -- both expose
+        ``compute_position(t)`` -- evaluated on ``times`` and wrapped as a
+        :class:`NumericOrbit`. For a lisaorbits *file* on disk, prefer
+        :meth:`from_hdf5` with the file's dataset names.
 
-        lisaorbits exposes positions under a few API names across versions; this
-        tries the common ones and raises with guidance if none match.
+        lisaorbits positions are in the BCRS/equatorial frame (validated against
+        lisaorbits 3.0.3: the guiding-centre z swings by ``AU sin eps`` over a
+        year), so ``frame`` defaults to ``"equatorial"`` and they are rotated to
+        ecliptic on load.
         """
         times = np.asarray(times, dtype=float)
-        pos = None
-        for attr in (
-            "compute_position",
-            "compute_spacecraft_position",
-            "spacecraft_position",
-        ):
-            fn = getattr(orbits, attr, None)
-            if callable(fn):
-                raw = np.asarray(fn(times))  # expected (len(t), 3, 3) [t, sc, xyz]
-                pos = np.moveaxis(raw, 0, 1) if raw.ndim == 3 else raw
-                break
-        if pos is None:
+        fn = getattr(orbits, "compute_position", None)
+        if not callable(fn):
             raise TypeError(
-                "could not extract positions from the lisaorbits object; pass a "
+                "expected a lisaorbits orbit with compute_position(t); pass a "
                 "(3, n, 3) array to NumericOrbit.from_arrays, or use from_hdf5 for "
                 "a lisaorbits file."
             )
-        if pos.shape != (3, times.size, 3):
-            pos = pos.reshape(3, times.size, 3)
+        raw = np.asarray(fn(times))  # (len(t), 3 sc, 3 xyz)
+        pos = np.moveaxis(raw, 0, 1) if raw.ndim == 3 else raw.reshape(3, times.size, 3)
         return cls.from_arrays(times, pos, frame=frame)

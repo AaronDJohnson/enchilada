@@ -5,3 +5,10 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = []
+
+[project.optional-dependencies]
+numeric-orbits = [
+    "h5py>=3.16.0",
+    "lisaorbits>=3.0.3",
+    "scipy>=1.17.1",
+]
