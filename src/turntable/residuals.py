@@ -28,6 +28,15 @@ class Residuals:
             threads it here so signal segments can weight their likelihood by
             the *current* noise estimate instead of a hardcoded PSD. `None`
             when no noise segment is registered. See `segment.NoiseSegment`.
+        orbit: The LISA constellation ephemeris the data was produced with --
+            the spacecraft positions every segment must share to build its
+            response (see `turntable.orbits.Orbit`). A *fixed* property of the
+            dataset, like `epoch`/`tdi_generation`: set once on the observed
+            data and the Wheel threads it unchanged (it is never sampled).
+            Opaque to the Wheel, exactly like `noise`; segments read
+            `residual.orbit` rather than constructing their own, so every piece
+            uses the *same* constellation. `None` lets a segment fall back to
+            its own default orbit (back-compatible with orbit-less runs).
 
     Derived properties are exposed under both descriptive long names and
     the short symbols LISA papers use. Both spellings return the same value
@@ -42,6 +51,7 @@ class Residuals:
     tdi_generation: str
     epoch: float
     noise: Any | None = None
+    orbit: Any | None = None
 
     # ---- descriptive (long) names ---------------------------------------
 
