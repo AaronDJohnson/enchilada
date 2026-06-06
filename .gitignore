@@ -8,3 +8,29 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.DS_Store
+
+# Large data + output files (turntable carries no data; keep it that way).
+# Use `git add -f <file>` to track an exception deliberately.
+*.h5
+*.hdf5
+*.hdf
+*.fits
+*.npy
+*.npz
+*.dat
+*.bin
+*.pkl
+*.pickle
+*.ckpt
+*.log
+*.png
+*.pdf
+*.zip
+*.tar
+*.tar.gz
+*.tgz
