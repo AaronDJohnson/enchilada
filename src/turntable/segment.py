@@ -12,7 +12,19 @@ a path to a file, whatever fits). Only the segment's own `render` reads it."""
 
 State = Any
 """A segment's internal MCMC state carried across iterations: RNG, chain
-position, proposal statistics, anything. Opaque to the Wheel."""
+position, proposal statistics, anything. Opaque to the Wheel.
+
+Two contract points live here explicitly:
+
+- **Your RNG is yours.** Create it in `initial_state`, carry it in State,
+  advance it in `step`. The Wheel never seeds, copies, or advances it, so a
+  run's reproducibility is exactly the reproducibility of each segment's
+  State handling.
+- **Your chain is yours.** The Wheel keeps only the *latest*
+  (catalog, state) per segment -- there is no history on the Wheel side. A
+  segment that wants a posterior chain accumulates it inside State (or
+  writes it to disk from `step`).
+"""
 
 
 class Segment(Protocol):
@@ -33,9 +45,21 @@ class Segment(Protocol):
     Implementation notes:
         - `name` must be unique within a Wheel; it identifies your segment
           in checkpoints and diagnostics.
-        - `render` must return a dict with the same keys and array lengths
-          as `observed.channels` and `observed.n_samples`. The Wheel
-          validates this at registration time.
+        - `render` must return a dict with the same keys as
+          `observed.channels`, each array matching the observed data's
+          representation (see `Residuals.domain`): length
+          `observed.n_samples` in a time-domain run, length
+          `observed.n_samples // 2 + 1` on the rfft grid in a
+          frequency-domain run. The Wheel validates this at registration
+          and after every step.
+        - Read the data conventions off the residual instead of assuming
+          them: `residual.observable` says what the samples physically are,
+          `residual.domain` which representation this run uses, and
+          `residual.channels` the (normalized) channel definitions. If your
+          sampler only supports one convention, check these in
+          `initial_state` and raise.
+        - Own your RNG and your chain: both live in your opaque `State`
+          (see the `State` docstring for the exact contract).
         - For samplers in another language, write a thin Python wrapper
           that shells out, writes/reads files, and implements this
           protocol. The Wheel cannot tell the difference.
@@ -73,9 +97,13 @@ class Segment(Protocol):
     def render(self, catalog: Catalog) -> dict[str, np.ndarray]:
         """Produce this segment's TDI contribution to the data.
 
-        Must return one array per channel in `observed.channels`, each of
-        length `observed.n_samples`. The Wheel subtracts this sum from the
-        observed data to form the residual seen by other segments.
+        Must return one array per channel in `observed.channels`, matching
+        the observed arrays' representation and length (`n_samples` samples
+        in a time-domain run; `n_samples // 2 + 1` rfft bins in a
+        frequency-domain run -- see `Residuals.domain`). The Wheel subtracts
+        this from the observed data to form the residual seen by other
+        segments, and validates the shapes at registration and after every
+        step.
         """
         ...
 
@@ -98,9 +126,17 @@ class NoiseSegment(Segment, Protocol):
     def noise_model(self, catalog: Catalog) -> Any:
         """Return the noise/covariance model implied by `catalog`.
 
-        The returned object is opaque to the Wheel and is placed on
-        `Residuals.noise`. Its type is a contract between this segment and the
-        signal segments that consume it (e.g. an object exposing a PSD). Called
-        after `initial_state` and after every `step`.
+        The returned object is placed on `Residuals.noise` and consumed by
+        signal segments through `Residuals.noise_psd` /
+        `Residuals.noise_wdm_variance`, so it must expose at least one of:
+
+        - ``psd(freqs[, channel]) -> ndarray`` -- one-sided PSD on the given
+          frequencies, optionally per channel (A/E share a PSD, T differs);
+        - ``wdm_variance(n_layers, n_time, dt, epoch[, channel]) -> ndarray``
+          -- per-pixel WDM variance grid for wavelet-domain segments.
+
+        The Wheel validates this contract when the model is produced (at
+        registration and after every noise step). Called after
+        `initial_state` and after every `step`.
         """
         ...
