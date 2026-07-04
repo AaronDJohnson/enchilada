@@ -1,10 +1,12 @@
 [project]
 name = "turntable"
 version = "0.1.0"
-description = "Add your description here"
+description = "Blocked-Gibbs global-fit orchestration for LISA: the Wheel/Segment/Residuals protocol"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "numpy>=2.1",
+]
 
 [project.optional-dependencies]
 numeric-orbits = [
@@ -12,3 +14,7 @@ numeric-orbits = [
     "lisaorbits>=3.0.3",
     "scipy>=1.17.1",
 ]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

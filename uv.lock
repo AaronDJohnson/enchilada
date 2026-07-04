@@ -850,7 +850,10 @@ wheels = [
 [[package]]
 name = "turntable"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
+dependencies = [
+    { name = "numpy" },
+]
 
 [package.optional-dependencies]
 numeric-orbits = [
@@ -863,6 +866,7 @@ numeric-orbits = [
 requires-dist = [
     { name = "h5py", marker = "extra == 'numeric-orbits'", specifier = ">=3.16.0" },
     { name = "lisaorbits", marker = "extra == 'numeric-orbits'", specifier = ">=3.0.3" },
+    { name = "numpy", specifier = ">=2.1" },
     { name = "scipy", marker = "extra == 'numeric-orbits'", specifier = ">=1.17.1" },
 ]
 provides-extras = ["numeric-orbits"]
