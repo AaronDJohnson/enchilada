@@ -1,5 +1,8 @@
 # turntable
 
+[![CI](https://github.com/AaronDJohnson/turntable/actions/workflows/ci.yml/badge.svg)](https://github.com/AaronDJohnson/turntable/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 Blocked-Gibbs global-fit orchestration for LISA.
 
 A LISA global fit has to jointly infer many source populations (galactic
@@ -13,7 +16,8 @@ segments, which can wrap code written in any language.
 
 ## Install
 
-Requires Python ≥ 3.13. With [uv](https://docs.astral.sh/uv/):
+Requires Python ≥ 3.12 (floor set by lisaorbits). With
+[uv](https://docs.astral.sh/uv/):
 
 ```sh
 git clone https://github.com/AaronDJohnson/turntable.git
@@ -28,6 +32,7 @@ ephemerides (`turntable.orbits.NumericOrbit`) needs the extra:
 
 ```sh
 uv sync --extra numeric-orbits   # adds h5py, scipy, lisaorbits
+uv sync --extra examples         # adds jupyterlab for the demo notebook
 ```
 
 ## Quickstart
@@ -70,7 +75,10 @@ wheel.state("ucb")     # current sampler state per segment
 
 [`examples/demo.ipynb`](examples/demo.ipynb) is the same walkthrough with
 commentary, plus the `Residuals` long/short name aliases (`Tobs`, `fs`, `dt`,
-...) and the typo catcher.
+...), the typo catcher, and attaching a constellation ephemeris. For a real
+(toy) sampler — two conjugate-Gibbs source segments plus a sampled
+white-noise segment, converging to known truth — run
+[`examples/toy_fit.py`](examples/toy_fit.py).
 
 ## Plugging in your sampler
 
@@ -96,9 +104,21 @@ implements these methods is indistinguishable from a native segment.
 
 Two things are explicitly yours (see the `State` docstring): your RNG and
 your posterior chain both live in your opaque `State` — the Wheel keeps only
-the latest catalog/state per segment. To checkpoint or log progress, call
-`run(1)` in your own loop and read `wheel.catalog(name)` /
-`wheel.residual()` between sweeps.
+the latest catalog/state per segment. To checkpoint or log progress, pass an
+`on_sweep` callback to `run` (or equivalently call `run(1)` in your own
+loop) and read `wheel.catalog(name)` / `wheel.residual()` between sweeps.
+
+Before plugging a segment into a shared campaign, run the conformance check
+in your own test suite:
+
+```python
+from turntable.testing import check_segment
+check_segment(MySegment(name="ucb"), toy_observed)
+```
+
+It drives the full protocol on a scratch Wheel and raises a pointed error at
+the first violation (wrong render shapes, malformed returns, mutating the
+residual, a noise model missing the contract).
 
 ## Conventions and consistency checking
 
@@ -142,7 +162,18 @@ need the `numeric-orbits` extra. See the module docstring in
 [`src/turntable/orbits.py`](src/turntable/orbits.py) for frames and
 conventions.
 
+## Development
+
+```sh
+uv sync --extra numeric-orbits   # dev group (pytest, ruff) installs by default
+uv run pytest                    # full suite, incl. examples and orbit loaders
+uv run ruff check src tests examples
+```
+
+CI runs lint, tests, and artifact builds on Python 3.12 and 3.13 for every
+push and pull request. See [CHANGELOG.md](CHANGELOG.md) for release notes.
+
 ## Status
 
-Pre-release research code under active development: no tagged release, no
-test suite yet, and interfaces may still move. Issues and questions welcome.
+Pre-release (0.1.0, unreleased) under active development: interfaces may
+still move until the first tag. MIT licensed. Issues and questions welcome.

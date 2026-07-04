@@ -4,7 +4,6 @@ import numpy as np
 
 from turntable.residuals import Residuals
 
-
 Catalog = Any
 """A segment's current best-guess source list. Opaque to the Wheel -- the
 segment defines its own type (a list of dicts, a numpy structured array,
