@@ -55,6 +55,12 @@ class Orbit(Protocol):
         positions(t): spacecraft positions at time(s) ``t`` [s, absolute, same
             epoch convention as the data]. Returns ``(x, y, z)``, each of shape
             ``(3, len(t))`` (spacecraft, time), in **ecliptic** metres.
+
+    An implementation must cover the full data span ``[epoch, epoch + Tobs]``
+    and should raise (not extrapolate) outside its domain of validity, as
+    :class:`NumericOrbit` does. Tabulated implementations should also expose
+    ``t_range``; when present, `Residuals` checks it against the data span at
+    construction, so an epoch mismatch fails before any sampling starts.
     """
 
     L: float
@@ -118,9 +124,12 @@ class NumericOrbit:
                 np.linalg.norm(pos[a] - pos[b], axis=-1)
                 for a, b in ((0, 1), (0, 2), (1, 2))
             ]
+            mean_arm = float(np.mean(arms))
+            # A degenerate table (zero/coincident positions) yields a finite
+            # zero mean arm, which is just as unusable as a NaN one.
             L = (
-                float(np.mean(arms))
-                if np.all(np.isfinite(arms))
+                mean_arm
+                if np.isfinite(mean_arm) and mean_arm > 0.0
                 else _NOMINAL_ARMLENGTH
             )
         self.L = float(L)
@@ -136,8 +145,21 @@ class NumericOrbit:
     def positions(
         self, t: NDArray[np.float64]
     ) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
-        """Interpolated positions at ``t``; ``(x, y, z)`` each ``(3, len(t))``."""
+        """Interpolated positions at ``t``; ``(x, y, z)`` each ``(3, len(t))``.
+
+        Raises ValueError for times outside the tabulated grid (`t_range`):
+        cubic splines extrapolate polynomially and silently drift off the
+        real orbit, so out-of-span queries -- typically an epoch mismatch
+        between data and ephemeris -- fail loudly instead.
+        """
         t = np.atleast_1d(np.asarray(t, dtype=float))
+        t_lo, t_hi = self.t_range
+        if t.size and (t.min() < t_lo or t.max() > t_hi):
+            raise ValueError(
+                f"requested times span [{t.min()}, {t.max()}] s but the tabulated "
+                f"ephemeris covers [{t_lo}, {t_hi}] s; refusing to extrapolate "
+                f"(mismatched epoch conventions? GPS vs zero-based times?)"
+            )
         p = self._spline(t)  # (3 sc, len(t), 3 xyz)
         return p[..., 0], p[..., 1], p[..., 2]
 
