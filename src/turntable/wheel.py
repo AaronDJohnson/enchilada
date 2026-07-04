@@ -1,9 +1,20 @@
+from collections.abc import Callable
 from dataclasses import replace
 
 import numpy as np
 
 from turntable.residuals import Residuals
 from turntable.segment import Catalog, Segment, State
+
+
+def _expect_pair(result: object, segment_name: str, method: str) -> tuple:
+    if not isinstance(result, tuple) or len(result) != 2:
+        raise TypeError(
+            f"{segment_name}.{method} must return a (catalog, state) tuple, "
+            f"got {type(result).__name__}"
+            + (f" of length {len(result)}" if isinstance(result, tuple) else "")
+        )
+    return result
 
 
 class Wheel:
@@ -94,8 +105,19 @@ class Wheel:
                 f"{self._noise_segment!r} already provides the noise model "
                 "(a Wheel supports at most one noise segment)"
             )
-        catalog, state = segment.initial_state(
-            replace(self.observed, noise=self._noise)
+        # Hand over copies of the data arrays: a segment that mutates what it
+        # was given (in any language wrapper) must not corrupt the Wheel's
+        # observed data, which is the ground truth every residual is built from.
+        catalog, state = _expect_pair(
+            segment.initial_state(
+                replace(
+                    self.observed,
+                    tdi={ch: arr.copy() for ch, arr in self.observed.tdi.items()},
+                    noise=self._noise,
+                )
+            ),
+            name,
+            "initial_state",
         )
         render = segment.render(catalog)
         self._validate_render(render, name)
@@ -111,7 +133,11 @@ class Wheel:
             self._noise_segment = name
             self._noise = noise
 
-    def run(self, n_iterations: int) -> None:
+    def run(
+        self,
+        n_iterations: int,
+        on_sweep: Callable[[int, "Wheel"], None] | None = None,
+    ) -> None:
         """Drive the Gibbs loop for `n_iterations` sweeps over all segments.
 
         Each segment's render is re-validated after every step, so a render
@@ -120,14 +146,32 @@ class Wheel:
 
         The Wheel stores only the latest catalog/state per segment. To
         collect a posterior chain, accumulate it inside your segment's
-        `State`; to checkpoint or report progress, call `run(1)` in your own
-        loop and read `catalog(name)`/`state(name)`/`residual()` between
-        sweeps -- the Gibbs chain is identical either way.
+        `State` (see `segment.State`).
+
+        Args:
+            n_iterations: Number of full sweeps over all segments.
+            on_sweep: Optional progress/checkpoint hook, called as
+                `on_sweep(iteration, self)` after each completed sweep
+                (`iteration` counts from 0). Read `catalog(name)` /
+                `state(name)` / `residual()` off the wheel to log, plot, or
+                checkpoint; the hook must not mutate the wheel. Equivalent
+                to calling `run(1)` in your own loop -- the Gibbs chain is
+                identical either way.
         """
-        for _ in range(n_iterations):
+        if (
+            not isinstance(n_iterations, (int, np.integer))
+            or isinstance(n_iterations, bool)
+            or n_iterations < 0
+        ):
+            raise ValueError(
+                f"n_iterations must be a non-negative integer, got {n_iterations!r}"
+            )
+        for iteration in range(n_iterations):
             for seg in self._segments:
                 residual = self.residual(exclude=seg.name)
-                catalog, state = seg.step(residual, self._states[seg.name])
+                catalog, state = _expect_pair(
+                    seg.step(residual, self._states[seg.name]), seg.name, "step"
+                )
                 render = seg.render(catalog)
                 self._validate_render(render, seg.name)
                 if seg.name == self._noise_segment:
@@ -137,6 +181,8 @@ class Wheel:
                 self._catalogs[seg.name] = catalog
                 self._states[seg.name] = state
                 self._renders[seg.name] = render
+            if on_sweep is not None:
+                on_sweep(iteration, self)
 
     def catalog(self, name: str) -> Catalog:
         """Current catalog from the named segment."""
