@@ -96,8 +96,46 @@ class Residuals:
 
     def __post_init__(self) -> None:
         """Validate the data contract; runs on every construction/replace."""
+        self._validate_settings()
+        self._validate_tdi()
+        self._validate_orbit_span()
+
+    def _validate_settings(self) -> None:
+        """Scalar run settings: counts, rates, and convention strings."""
+        if not isinstance(self.n_samples, (int, np.integer)) or self.n_samples <= 0:
+            raise ValueError(
+                f"n_samples must be a positive integer, got {self.n_samples!r}"
+            )
+        if not np.isfinite(self.sample_rate) or self.sample_rate <= 0:
+            raise ValueError(
+                f"sample_rate must be a positive finite number in Hz, "
+                f"got {self.sample_rate!r}"
+            )
+        if not np.isfinite(self.epoch):
+            raise ValueError(f"epoch must be finite GPS seconds, got {self.epoch!r}")
+        if not isinstance(self.tdi_generation, str) or not self.tdi_generation:
+            raise ValueError(
+                f"tdi_generation must be a non-empty string, "
+                f"got {self.tdi_generation!r}"
+            )
+        if not isinstance(self.observable, str) or not self.observable:
+            raise ValueError(
+                f"observable must be a non-empty string saying what the TDI samples "
+                f"physically are, got {self.observable!r}; recommended values: "
+                f"{', '.join(self.RECOMMENDED_OBSERVABLES)}"
+            )
+        if self.domain not in self.DOMAINS:
+            raise ValueError(
+                f"domain must be one of {self.DOMAINS}, got {self.domain!r}"
+            )
+
+    def _validate_tdi(self) -> None:
+        """tdi keys match channels; every array lives on this domain's grid."""
         if not isinstance(self.tdi, dict):
-            raise TypeError(f"tdi must be a dict of channel -> array, got {type(self.tdi).__name__}")
+            raise TypeError(
+                f"tdi must be a dict of channel -> array, "
+                f"got {type(self.tdi).__name__}"
+            )
         if not self.channels:
             raise ValueError("channels must be a non-empty tuple of channel names")
         if len(set(self.channels)) != len(self.channels):
@@ -106,29 +144,17 @@ class Residuals:
             missing = sorted(set(self.channels) - set(self.tdi))
             extra = sorted(set(self.tdi) - set(self.channels))
             raise ValueError(
-                f"tdi keys must match channels exactly; missing {missing}, unexpected {extra}"
+                f"tdi keys must match channels exactly; "
+                f"missing {missing}, unexpected {extra}"
             )
-        if not isinstance(self.n_samples, (int, np.integer)) or self.n_samples <= 0:
-            raise ValueError(f"n_samples must be a positive integer, got {self.n_samples!r}")
-        if not np.isfinite(self.sample_rate) or self.sample_rate <= 0:
-            raise ValueError(f"sample_rate must be a positive finite number in Hz, got {self.sample_rate!r}")
-        if not np.isfinite(self.epoch):
-            raise ValueError(f"epoch must be finite GPS seconds, got {self.epoch!r}")
-        if not isinstance(self.tdi_generation, str) or not self.tdi_generation:
-            raise ValueError(f"tdi_generation must be a non-empty string, got {self.tdi_generation!r}")
-        if not isinstance(self.observable, str) or not self.observable:
-            raise ValueError(
-                f"observable must be a non-empty string saying what the TDI samples "
-                f"physically are, got {self.observable!r}; recommended values: "
-                f"{', '.join(self.RECOMMENDED_OBSERVABLES)}"
-            )
-        if self.domain not in self.DOMAINS:
-            raise ValueError(f"domain must be one of {self.DOMAINS}, got {self.domain!r}")
         expected = self.n_samples if self.domain == "time" else self.n_samples // 2 + 1
         for ch in self.channels:
             arr = self.tdi[ch]
             if not isinstance(arr, np.ndarray) or arr.ndim != 1:
-                raise TypeError(f"tdi[{ch!r}] must be a 1-D numpy array, got {type(arr).__name__}")
+                raise TypeError(
+                    f"tdi[{ch!r}] must be a 1-D numpy array, "
+                    f"got {type(arr).__name__}"
+                )
             if arr.shape[0] != expected:
                 raise ValueError(
                     f"tdi[{ch!r}] has length {arr.shape[0]}, expected {expected} for "
@@ -138,21 +164,26 @@ class Residuals:
                 )
             if self.domain == "time" and np.iscomplexobj(arr):
                 raise TypeError(
-                    f"tdi[{ch!r}] is complex but domain='time'; time-domain TDI is real "
-                    f"(did you mean domain='frequency'?)"
+                    f"tdi[{ch!r}] is complex but domain='time'; time-domain TDI is "
+                    f"real (did you mean domain='frequency'?)"
                 )
-        if self.orbit is not None:
-            t_range = getattr(self.orbit, "t_range", None)
-            if t_range is not None:
-                t_lo, t_hi = float(t_range[0]), float(t_range[1])
-                data_end = self.epoch + self.n_samples / self.sample_rate
-                if t_lo > self.epoch or t_hi < data_end:
-                    raise ValueError(
-                        f"orbit ephemeris spans [{t_lo}, {t_hi}] s but the data spans "
-                        f"[{self.epoch}, {data_end}] s; every segment would need spacecraft "
-                        f"positions outside the tabulated ephemeris (mismatched epoch "
-                        f"conventions? GPS vs zero-based times?)"
-                    )
+
+    def _validate_orbit_span(self) -> None:
+        """A tabulated orbit (one exposing t_range) must cover the data span."""
+        if self.orbit is None:
+            return
+        t_range = getattr(self.orbit, "t_range", None)
+        if t_range is None:
+            return
+        t_lo, t_hi = float(t_range[0]), float(t_range[1])
+        data_end = self.epoch + self.n_samples / self.sample_rate
+        if t_lo > self.epoch or t_hi < data_end:
+            raise ValueError(
+                f"orbit ephemeris spans [{t_lo}, {t_hi}] s but the data spans "
+                f"[{self.epoch}, {data_end}] s; every segment would need spacecraft "
+                f"positions outside the tabulated ephemeris (mismatched epoch "
+                f"conventions? GPS vs zero-based times?)"
+            )
 
     # ---- descriptive (long) names ---------------------------------------
 
