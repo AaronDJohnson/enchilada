@@ -64,13 +64,16 @@ observed = Residuals(
     epoch=0.0,
 )
 
+ucb = EchoSegment(name="ucb")
+mbhb = EchoSegment(name="mbhb")
+
 wheel = Wheel(observed)
-wheel.add(EchoSegment(name="ucb"))
-wheel.add(EchoSegment(name="mbhb"))
+wheel.add(ucb)
+wheel.add(mbhb)
 wheel.run(n_iterations=3)
 
-wheel.catalog("ucb")   # current source list per segment
-wheel.state("ucb")     # current sampler state per segment
+wheel.residual()   # observed minus every segment's current contribution
+ucb.steps          # segment internals live on YOUR objects, not the Wheel
 ```
 
 [`examples/demo.ipynb`](examples/demo.ipynb) is the same walkthrough with
@@ -82,31 +85,35 @@ white-noise segment, converging to known truth — run
 
 ## Plugging in your sampler
 
-Implement the `Segment` protocol — see the docstrings in
+The Wheel passes residuals — that's it. Implement the two-method `Segment`
+protocol — see the docstrings in
 [`src/turntable/segment.py`](src/turntable/segment.py) for the full contract:
 
-- `name` — unique within a Wheel; identifies you in checkpoints/diagnostics.
-- `initial_state(observed) -> (catalog, state)` — called once at
-  registration; read run settings off `observed` and seed your first guess.
-- `step(residual, state) -> (catalog, state)` — one Gibbs iteration against
-  the data with every other segment's model already subtracted.
-- `render(catalog) -> {channel: array}` — your current TDI contribution,
-  which the Wheel subtracts so other segments see a clean residual.
+- `name` — unique within a Wheel; identifies you in diagnostics and errors.
+- `start(observed) -> {channel: array}` — called once at registration; read
+  run settings off `observed`, set yourself up, and return your initial TDI
+  contribution (zeros if you start from nothing).
+- `step(residual) -> {channel: array}` — one Gibbs iteration against the
+  data with every other segment's contribution already subtracted; update
+  yourself and return your new contribution.
 
 A segment that also models the noise implements one extra method,
-`noise_model(catalog)`; the Wheel threads its return value onto
-`Residuals.noise` so every other segment whitens against the current noise
-estimate (see `NoiseSegment` and `Residuals.noise_psd`).
+`noise_model()`; the Wheel threads its return value onto `Residuals.noise`
+so every other segment whitens against the current noise estimate (see
+`NoiseSegment` and `Residuals.noise_psd`).
+
+Everything about your sampler is *yours*: parameters, RNG, posterior
+chains, checkpoints all live inside your segment object (or the external
+process it wraps) — the Wheel never sees them, and never restores them.
+The only bookkeeping the Wheel does is the residual ledger: each segment's
+latest contribution, which is exactly what it needs to hand out residuals.
+To log progress or checkpoint, pass an `on_sweep` callback to `run` (or
+equivalently call `run(1)` in your own loop) and read `wheel.residual()` —
+or anything at all off your own segment objects — between sweeps.
 
 The Wheel does not care how you sample or what language your sampler is
 written in — a thin Python wrapper that shells out, moves files, and
 implements these methods is indistinguishable from a native segment.
-
-Two things are explicitly yours (see the `State` docstring): your RNG and
-your posterior chain both live in your opaque `State` — the Wheel keeps only
-the latest catalog/state per segment. To checkpoint or log progress, pass an
-`on_sweep` callback to `run` (or equivalently call `run(1)` in your own
-loop) and read `wheel.catalog(name)` / `wheel.residual()` between sweeps.
 
 Before plugging a segment into a shared campaign, run the conformance check
 in your own test suite:
@@ -117,8 +124,8 @@ check_segment(MySegment(name="ucb"), toy_observed)
 ```
 
 It drives the full protocol on a scratch Wheel and raises a pointed error at
-the first violation (wrong render shapes, malformed returns, mutating the
-residual, a noise model missing the contract).
+the first violation (wrong contribution shapes, malformed returns, mutating
+the residual, a noise model missing the contract).
 
 ## Conventions and consistency checking
 
@@ -131,7 +138,8 @@ makes every convention an explicit, validated part of `Residuals`:
 - `domain` — `"time"` (default, `n_samples` real samples per channel) or
   `"frequency"` (one-sided `dt * rfft(x)` spectra of length
   `n_samples // 2 + 1`). `n_samples` always counts time-domain samples, so
-  `Tobs`/`df`/`dt` and the PSD grid stay well defined in both.
+  `Tobs`/`df`/`dt` and the PSD grid stay well defined in both. Segment
+  contributions must match the observed representation.
 - `channels` — names imply the campaign's normalized definitions
   (e.g. A = (Z − X)/√2); see the `Residuals` docstring.
 
@@ -143,10 +151,10 @@ producing quietly wrong science:
   orbit must span the observation (catching GPS-vs-zero-based epoch
   mismatches at construction, not mid-run).
 - The `Wheel` validates each segment fully **before** registering it (a
-  failed `add` changes nothing), re-validates every render after every step
-  (mid-run shape drift raises instead of silently broadcast-corrupting other
-  segments' residuals), and checks that a noise segment's model actually
-  satisfies the noise contract (`psd(freqs[, channel])` and/or
+  failed `add` changes nothing), re-validates every contribution after every
+  step (mid-run shape drift raises instead of silently broadcast-corrupting
+  other segments' residuals), and checks that a noise segment's model
+  actually satisfies the noise contract (`psd(freqs[, channel])` and/or
   `wdm_variance(...)`).
 - `NumericOrbit.positions` refuses to extrapolate outside its tabulated
   ephemeris instead of returning cubic-polynomial garbage.

@@ -14,15 +14,17 @@ First working release of the blocked-Gibbs orchestration layer.
   aliases (`Tobs`, `fs`, `dt`, ...), a typo catcher, and full self-validation
   on every construction (tdi/channels consistency, per-domain array lengths,
   orbit-must-span-data).
-- `Segment` protocol (`initial_state` / `step` / `render`, plus
-  `noise_model` for noise segments) with explicitly documented contracts:
-  render shapes per domain, RNG and posterior-chain ownership in `State`,
-  and the noise-model interface (`psd(freqs[, channel])` /
-  `wdm_variance(...)`).
-- `Wheel`: the Gibbs loop, with atomic registration, per-step render
-  re-validation, noise threading and refresh, a public
-  `residual(exclude=...)` accessor, and an `on_sweep` progress/checkpoint
-  callback on `run`.
+- `Segment` protocol — deliberately minimal, the Wheel passes residuals and
+  that's it: `start(observed)` and `step(residual)` each return the
+  segment's current TDI contribution, and everything else (parameters, RNG,
+  chains, checkpoints) is segment-internal state the Wheel never sees.
+  Noise segments add `noise_model()` with a documented interface
+  (`psd(freqs[, channel])` / `wdm_variance(...)`).
+- `Wheel`: the Gibbs loop, holding only the residual ledger (each segment's
+  latest contribution) and the current noise model — with atomic
+  registration, per-step contribution re-validation, noise threading and
+  refresh, a public `residual(exclude=...)` accessor, and an `on_sweep`
+  progress/checkpoint callback on `run`.
 - `NumericOrbit`: tabulated ephemerides with cubic-spline interpolation,
   loaders for LDC/Mojito HDF5 files and lisaorbits objects
   (validated against lisaorbits 3.0.3), equatorial-to-ecliptic frame

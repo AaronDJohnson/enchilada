@@ -25,24 +25,25 @@ class TestCheckSegment:
 
     def test_mutating_step_caught(self, observed):
         class Mutator(EchoSegment):
-            def step(self, residual, state):
+            def step(self, residual):
                 residual.tdi["A"][:] = 0.0
-                return super().step(residual, state)
+                return super().step(residual)
 
         with pytest.raises(ValueError, match="mutated residual"):
             check_segment(Mutator(name="mut"), observed)
 
     def test_malformed_step_caught(self, observed):
         class Bad(EchoSegment):
-            def step(self, residual, state):
-                return [], {}, "extra"
+            def step(self, residual):
+                return ([], {})  # old-style pair, not a contribution
 
         with pytest.raises(TypeError, match="must return"):
             check_segment(Bad(name="bad"), observed)
 
-    def test_bad_render_caught(self, observed):
+    def test_bad_contribution_shape_caught(self, observed):
         class Bad(EchoSegment):
-            def render(self, catalog):
+            def step(self, residual):
+                super().step(residual)
                 return {ch: np.zeros(1) for ch in self._zeros}
 
         with pytest.raises(ValueError, match="has shape"):
@@ -59,15 +60,26 @@ class TestCheckSegment:
                 return np.full_like(freqs, 1.0)
 
         class NoiseSeg(EchoSegment):
-            def noise_model(self, catalog):
+            def noise_model(self):
                 return FlatPSD()
 
         check_segment(NoiseSeg(name="noise"), observed)
 
     def test_noise_model_violating_contract_caught(self, observed):
         class BadNoise(EchoSegment):
-            def noise_model(self, catalog):
+            def noise_model(self):
                 return object()
 
         with pytest.raises(TypeError, match="neither psd"):
             check_segment(BadNoise(name="bad"), observed)
+
+
+class TestEchoSegment:
+    def test_keeps_its_own_step_counter(self, observed):
+        from turntable import Wheel
+
+        echo = EchoSegment(name="echo")
+        wheel = Wheel(observed)
+        wheel.add(echo)
+        wheel.run(3)
+        assert echo.steps == 3

@@ -32,13 +32,18 @@ observed = Residuals(
 
 print(f"observed: N={observed.N}, fs={observed.fs} Hz, Tobs={observed.Tobs:.0f} s\n")
 
-# Each EchoSegment prints what the Wheel hands it and renders zeros, so the
-# residuals every segment sees are just the observed data.
+# Each EchoSegment prints what the Wheel hands it and contributes zeros, so
+# the residuals every segment sees are just the observed data. Segments keep
+# their own state -- hold on to the objects to read it back afterwards.
+ucb = EchoSegment(name="ucb")
+mbhb = EchoSegment(name="mbhb")
+
 wheel = Wheel(observed)
-wheel.add(EchoSegment(name="ucb"))
-wheel.add(EchoSegment(name="mbhb"))
+wheel.add(ucb)
+wheel.add(mbhb)
 
 wheel.run(n_iterations=3)
 
-print("\nucb  catalog:", wheel.catalog("ucb"), " state:", wheel.state("ucb"))
-print("mbhb catalog:", wheel.catalog("mbhb"), " state:", wheel.state("mbhb"))
+print(f"\nucb took {ucb.steps} steps; mbhb took {mbhb.steps} steps")
+print("full residual RMS:",
+      float(np.sqrt(np.mean(wheel.residual().tdi["A"] ** 2))))

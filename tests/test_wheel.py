@@ -8,23 +8,26 @@ from turntable import Wheel
 from turntable.testing import EchoSegment
 
 
-class ConstSegment(EchoSegment):
-    """Renders a constant offset on every channel; silent."""
+class ConstSegment:
+    """Contributes a constant offset on every channel; keeps its own counter."""
 
     def __init__(self, name, value):
-        super().__init__(name)
+        self.name = name
         self.value = value
+        self.steps = 0
+        self._zeros = None
 
-    def initial_state(self, observed):
+    def start(self, observed):
         self._zeros = {
             ch: np.zeros_like(observed.tdi[ch]) for ch in observed.channels
         }
-        return [], {"step": 0}
+        return self._contribution()
 
-    def step(self, residual, state):
-        return [], {"step": state["step"] + 1}
+    def step(self, residual):
+        self.steps += 1
+        return self._contribution()
 
-    def render(self, catalog):
+    def _contribution(self):
         return {ch: np.full_like(a, self.value) for ch, a in self._zeros.items()}
 
 
@@ -41,18 +44,13 @@ class NoiseSeg(ConstSegment):
 
     def __init__(self, name):
         super().__init__(name, 0.0)
-        self.steps = 0
 
-    def step(self, residual, state):
-        self.steps += 1
-        return [], {"step": state["step"] + 1}
-
-    def noise_model(self, catalog):
+    def noise_model(self):
         return FlatPSD(level=float(self.steps))
 
 
 class TestGibbsBookkeeping:
-    def test_residual_excludes_all_other_renders(self, rng):
+    def test_residual_excludes_all_other_contributions(self, rng):
         obs = make_observed(rng)
         wheel = Wheel(obs)
         wheel.add(ConstSegment("a", 1.0))
@@ -78,16 +76,23 @@ class TestGibbsBookkeeping:
         snapshot = {ch: arr.copy() for ch, arr in obs.tdi.items()}
 
         class Mutator(ConstSegment):
-            def initial_state(self, observed):
+            def start(self, observed):
                 for arr in observed.tdi.values():
                     arr[:] = -999.0
-                return super().initial_state(observed)
+                return super().start(observed)
 
         wheel = Wheel(obs)
         wheel.add(Mutator("mut", 0.0))
         wheel.run(1)
         for ch, arr in snapshot.items():
             np.testing.assert_array_equal(obs.tdi[ch], arr)
+
+    def test_segments_keep_their_own_state(self, observed):
+        seg = ConstSegment("a", 1.0)
+        wheel = Wheel(observed)
+        wheel.add(seg)
+        wheel.run(4)
+        assert seg.steps == 4  # state lives on the object, not the Wheel
 
     def test_zero_segments_is_a_noop(self, observed):
         Wheel(observed).run(5)
@@ -128,7 +133,7 @@ class TestAtomicRegistration:
 
     def test_bad_noise_model_leaves_wheel_untouched(self, observed):
         class BadNoise(ConstSegment):
-            def noise_model(self, catalog):
+            def noise_model(self):
                 return object()
 
         wheel = Wheel(observed)
@@ -139,43 +144,43 @@ class TestAtomicRegistration:
         assert wheel.residual().noise is None  # its model was not threaded
         wheel.run(1)
 
-    def test_bad_render_leaves_wheel_untouched(self, observed):
-        class BadRender(ConstSegment):
-            def render(self, catalog):
+    def test_bad_contribution_leaves_wheel_untouched(self, observed):
+        class BadStart(ConstSegment):
+            def start(self, observed):
+                super().start(observed)
                 return {ch: np.zeros(3) for ch in self._zeros}
 
         wheel = Wheel(observed)
         with pytest.raises(ValueError, match="has shape"):
-            wheel.add(BadRender("bad", 0.0))
+            wheel.add(BadStart("bad", 0.0))
         with pytest.raises(ValueError, match="unknown segment"):
             wheel.residual(exclude="bad")
         wheel.run(1)
 
-    def test_malformed_initial_state_return(self, observed):
+    def test_malformed_start_return(self, observed):
         class Bad(ConstSegment):
-            def initial_state(self, observed):
-                return "not a pair"
+            def start(self, observed):
+                return "not a contribution"
 
-        with pytest.raises(TypeError, match="initial_state must return"):
+        with pytest.raises(TypeError, match="bad.start must return"):
             Wheel(observed).add(Bad("bad", 0.0))
 
 
 class TestNoiseThreading:
     def test_noise_model_threaded_and_refreshed(self, observed):
         wheel = Wheel(observed)
-        noise = NoiseSeg("noise")
-        wheel.add(noise)
+        wheel.add(NoiseSeg("noise"))
         assert wheel.residual().noise.level == 0.0
         wheel.run(2)
         assert wheel.residual().noise.level == 2.0  # refreshed after each step
 
-    def test_initial_state_sees_threaded_noise(self, observed):
+    def test_start_sees_threaded_noise(self, observed):
         seen = {}
 
         class Recorder(ConstSegment):
-            def initial_state(self, observed):
+            def start(self, observed):
                 seen["noise"] = observed.noise
-                return super().initial_state(observed)
+                return super().start(observed)
 
         wheel = Wheel(observed)
         wheel.add(NoiseSeg("noise"))
@@ -186,9 +191,9 @@ class TestNoiseThreading:
         levels = []
 
         class Recorder(ConstSegment):
-            def step(self, residual, state):
+            def step(self, residual):
                 levels.append(residual.noise.level)
-                return super().step(residual, state)
+                return super().step(residual)
 
         wheel = Wheel(observed)
         wheel.add(NoiseSeg("noise"))  # steps first each sweep
@@ -198,14 +203,15 @@ class TestNoiseThreading:
 
 
 class TestRunPathValidation:
-    def test_render_drift_raises_immediately(self, observed):
+    def test_contribution_drift_raises_immediately(self, observed):
         class Drifter(ConstSegment):
             drift = False
 
-            def render(self, catalog):
+            def step(self, residual):
+                super().step(residual)
                 if self.drift:
                     return {ch: np.zeros(2) for ch in self._zeros}
-                return super().render(catalog)
+                return self._contribution()
 
         d = Drifter("d", 0.0)
         wheel = Wheel(observed)
@@ -215,14 +221,26 @@ class TestRunPathValidation:
         with pytest.raises(ValueError, match="has shape"):
             wheel.run(1)
 
+    def test_missing_channel_named(self, observed):
+        class Dropper(ConstSegment):
+            def step(self, residual):
+                out = super().step(residual) or self._contribution()
+                del out["E"]
+                return out
+
+        wheel = Wheel(observed)
+        wheel.add(Dropper("drop", 0.0))
+        with pytest.raises(ValueError, match="missing channels.*'E'"):
+            wheel.run(1)
+
     def test_malformed_step_return_named(self, observed):
         class Bad(ConstSegment):
-            def step(self, residual, state):
-                return [], {}, "extra"
+            def step(self, residual):
+                return ([], {})
 
         wheel = Wheel(observed)
         wheel.add(Bad("bad", 0.0))
-        with pytest.raises(TypeError, match=r"bad.step must return"):
+        with pytest.raises(TypeError, match="bad.step must return"):
             wheel.run(1)
 
 
