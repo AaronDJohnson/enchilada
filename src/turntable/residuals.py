@@ -46,15 +46,16 @@ class Residuals:
             one field, so agreement is by construction -- state it once,
             correctly, rather than letting each group assume its own.
         domain: "time" (default) or "frequency". Selects the tdi
-            representation described above; segment renders must match it
-            (the Wheel validates render shapes against `tdi`).
+            representation described above; segment contributions must match
+            it (the Wheel validates contribution shapes against `tdi`).
         epoch: GPS seconds corresponding to sample index 0.
         noise: The current noise/covariance model the residual should be
-            whitened against, or `None`. Opaque to the Wheel (like `Catalog`
-            and `State`): a noise segment defines its own type and the Wheel
-            threads it here so signal segments can weight their likelihood by
-            the *current* noise estimate instead of a hardcoded PSD. `None`
-            when no noise segment is registered. See `segment.NoiseSegment`.
+            whitened against, or `None`. Opaque to the Wheel (like a
+            segment's own state): a noise segment defines its own type and the
+            Wheel threads it here so signal segments can weight their
+            likelihood by the *current* noise estimate instead of a hardcoded
+            PSD. `None` when no noise segment is registered. See
+            `segment.NoiseSegment`.
         orbit: The LISA constellation ephemeris the data was produced with --
             the spacecraft positions every segment must share to build its
             response (see `turntable.orbits.Orbit`). A *fixed* property of the
@@ -264,6 +265,19 @@ class Residuals:
         Requires the threaded noise object to expose ``psd(freqs[, channel])``.
         The grid has length ``n_samples // 2 + 1``, so in a frequency-domain
         run (`domain="frequency"`) it lines up bin-for-bin with the tdi arrays.
+
+        Normalization (the convention every group in a run must share -- pinned
+        here for the same reason `observable`/`domain` are). ``psd`` is the
+        **one-sided** PSD in units of ``[observable]**2 / Hz``, tied to the
+        ``dt * rfft(x)`` frequency spectrum (see the `tdi` field) by
+
+            E[ |X(f)|**2 ] = (Tobs / 2) * S(f)      (interior bins)
+
+        so a frequency-domain segment whitens with ``|X(f)|**2 / ((Tobs/2) S)``.
+        Equivalently, the **time-domain per-sample variance** is the integral of
+        the one-sided PSD over ``[0, fny]`` -- ``sigma**2 = sum(S) * df`` on this
+        grid -- which is how a *time-domain* segment gets its noise weight
+        without a separate accessor (for white noise ``S = 2 sigma**2 / fs``).
         """
         if self.noise is None:
             return None
