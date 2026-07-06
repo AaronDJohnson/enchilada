@@ -60,17 +60,6 @@ class TestCheckSegment:
         with pytest.raises(TypeError, match="neither psd"):
             check_segment(BadNoise(name="bad"), observed)
 
-    def test_wavelet_only_noise_segment_passes(self, observed):
-        # a noise model exposing only wdm_variance is conformant (psd OR wdm)
-        class WdmOnly:
-            def wdm_variance(self, n_layers, n_time, dt, epoch, channel=None):
-                return np.ones((n_layers + 1, n_time))
-
-        class WdmNoiseSeg(EchoSegment):
-            def step(self, residual):
-                return replace(residual, noise=WdmOnly())
-
-        check_segment(WdmNoiseSeg(name="wdm"), observed)
 
 
 class TestEchoSegment:

@@ -65,7 +65,7 @@ def check_segment(
     - each of `n_sweeps` `step` calls does the same (mid-run drift raises);
     - if the segment sets a noise model on the residual (a noise segment),
       that model satisfies the consumption contract -- `residual.noise_psd`
-      succeeds rather than raising for want of a `psd`/`wdm_variance` method.
+      succeeds rather than raising for want of a `psd` method.
 
     What it does *not* check is the add-back (that `step` re-adds your own
     previous model before sampling): a forgotten add-back produces a
@@ -88,20 +88,8 @@ def check_segment(
     wheel.run(n_sweeps)  # step() x n_sweeps: each return validated
 
     # if this segment threads a noise model, it must satisfy the contract signal
-    # segments consume it through -- at least ONE of psd / wdm_variance
+    # segments consume it through: a callable psd(freqs[, channel])
     result = wheel.residual()
     noise = result.noise
     if noise is not None and noise is not observed.noise:
-        has_psd = callable(getattr(noise, "psd", None))
-        has_wdm = callable(getattr(noise, "wdm_variance", None))
-        if not (has_psd or has_wdm):
-            raise TypeError(
-                f"{segment.name} put a noise model ({type(noise).__name__}) on the "
-                f"residual that exposes neither psd(freqs[, channel]) nor "
-                f"wdm_variance(n_layers, n_time, dt, epoch[, channel]); signal "
-                f"segments consume it through Residuals.noise_psd / "
-                f"noise_wdm_variance, so it must implement at least one "
-                f"(see segment.NoiseSegment)"
-            )
-        if has_psd:
-            result.noise_psd()  # exercise the real frequency-domain consumption
+        result.noise_psd()  # exercises psd; raises TypeError if it is missing

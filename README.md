@@ -170,7 +170,7 @@ producing quietly wrong science:
   settings, and `Residuals` itself rejects wrong tdi shapes — so a mid-run
   drift raises immediately instead of corrupting the next segment's residual.
   A noise model is checked where it is consumed (`noise_psd` raises if it
-  lacks `psd`/`wdm_variance`).
+  lacks a `psd` method).
 - `NumericOrbit.positions` refuses to extrapolate outside its tabulated
   ephemeris instead of returning cubic-polynomial garbage.
 

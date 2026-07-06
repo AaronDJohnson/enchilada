@@ -22,7 +22,7 @@ First working release of the blocked-Gibbs orchestration layer.
   model — is segment-internal state the Wheel never sees. Noise is not
   special: a noise segment returns the residual with an updated `noise`
   object, consumed via `Residuals.noise_psd` (documented interface
-  `psd(freqs[, channel])` / `wdm_variance(...)`).
+  `psd(freqs[, channel])`).
 - `Wheel`: the Gibbs ring, holding only the single running residual — with
   atomic registration, per-step validation that the returned residual kept
   the fixed run settings, a public `residual()` accessor, and an `on_sweep`

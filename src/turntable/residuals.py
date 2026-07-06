@@ -302,49 +302,6 @@ class Residuals:
         )
         return psd
 
-    def noise_wdm_variance(
-        self, n_layers: int, channel: str | None = None
-    ) -> np.ndarray | None:
-        """Per-pixel WDM noise variance grid, shape ``(n_layers+1, N/n_layers)``.
-
-        The time-frequency noise piece for a wavelet-domain segment. Turntable
-        supplies the time/grid parameters (time-pixel count, sample interval,
-        epoch) so a segment passes only its wavelet frequency resolution
-        ``n_layers``; the per-pixel variance and its normalization are assembled
-        here, not in the segment. Returns ``None`` when no noise model is set.
-
-        `channel` selects the per-channel variance (see :meth:`noise_psd`);
-        `channel=None` (default) calls the model's plain `wdm_variance`.
-
-        Requires the threaded noise object to expose
-        ``wdm_variance(n_layers, n_time, dt, epoch[, channel]) -> ndarray``,
-        and ``n_layers`` to divide ``n_samples`` exactly (otherwise trailing
-        samples would be silently dropped from the grid).
-        """
-        if self.noise is None:
-            return None
-        if not callable(getattr(self.noise, "wdm_variance", None)):
-            raise TypeError(
-                f"noise object {type(self.noise).__name__} does not expose "
-                f"wdm_variance(n_layers, n_time, dt, epoch[, channel]); the model a "
-                f"noise segment puts on Residuals.noise must implement it to serve "
-                f"wavelet-domain segments (see segment.NoiseSegment)"
-            )
-        if self.n_samples % n_layers:
-            raise ValueError(
-                f"n_layers={n_layers} must divide n_samples={self.n_samples} exactly; "
-                f"otherwise the WDM grid covers only {n_layers * (self.n_samples // n_layers)} "
-                f"of {self.n_samples} samples and the remainder is silently unweighted"
-            )
-        n_time = self.n_samples // n_layers
-        if channel is None:
-            return self.noise.wdm_variance(
-                n_layers, n_time, self.sample_interval, self.epoch
-            )
-        return self.noise.wdm_variance(
-            n_layers, n_time, self.sample_interval, self.epoch, channel
-        )
-
     # ---- discoverability ------------------------------------------------
 
     ALIASES: ClassVar[dict[str, str]] = {

@@ -127,12 +127,10 @@ class NoiseSegment(Segment, Protocol):
             return replace(residual, noise=model)
 
     The `noise` object it puts on the residual is consumed by signal
-    segments through `Residuals.noise_psd` / `Residuals.noise_wdm_variance`,
-    so it must expose at least one of:
+    segments through `Residuals.noise_psd`, so it must expose
 
-    - ``psd(freqs[, channel]) -> ndarray`` -- one-sided PSD (see
-      `Residuals.noise_psd` for the pinned normalization convention);
-    - ``wdm_variance(n_layers, n_time, dt, epoch[, channel]) -> ndarray``.
+    - ``psd(freqs[, channel]) -> ndarray`` -- the one-sided PSD (see
+      `Residuals.noise_psd` for the pinned normalization convention).
 
     That contract is enforced where the model is consumed (`noise_psd`
     raises if it is missing), not by the Wheel, which stays entirely

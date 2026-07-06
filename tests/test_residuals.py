@@ -98,7 +98,6 @@ class FlatPSD:
 class TestNoiseGrids:
     def test_none_without_noise_model(self, observed):
         assert observed.noise_psd() is None
-        assert observed.noise_wdm_variance(8) is None
 
     def test_psd_grid_matches_rfft(self, observed):
         obs = replace(observed, noise=FlatPSD())
@@ -127,18 +126,6 @@ class TestNoiseGrids:
         obs = replace(observed, noise=object())
         with pytest.raises(TypeError, match=r"psd\(freqs\[, channel\]\)"):
             obs.noise_psd()
-        with pytest.raises(TypeError, match="wdm_variance"):
-            obs.noise_wdm_variance(8)
-
-    def test_wdm_divisibility_enforced(self, observed):
-        class Wdm:
-            def wdm_variance(self, n_layers, n_time, dt, epoch, channel=None):
-                return np.ones((n_layers + 1, n_time))
-
-        obs = replace(observed, noise=Wdm())
-        assert obs.noise_wdm_variance(8).shape == (9, 8)
-        with pytest.raises(ValueError, match="must divide"):
-            obs.noise_wdm_variance(7)
 
 
 class TestOrbitSpanCheck:
