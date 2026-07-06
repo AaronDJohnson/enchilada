@@ -4,13 +4,15 @@ Where examples/demo.py shows the plumbing with no-op segments, this example
 runs a real Gibbs sampler to convergence on synthetic data, demonstrating the
 parts of the protocol the demo leaves out:
 
-- a *signal* segment with a conjugate amplitude draw (`SineSegment`),
-  whitening against the current noise via `residual.noise_psd`;
-- a *noise* segment (`WhiteNoiseSegment`) whose `noise_model` implements the
-  `psd(freqs[, channel])` contract, refreshed by the Wheel every sweep;
-- state ownership: each segment keeps its parameters, RNG, and posterior
-  chain as plain instance attributes -- the Wheel never sees them, and you
-  read results directly off the segment objects you constructed;
+- the **add-back**: a signal segment receives the running residual with its
+  own model already subtracted, adds it back to recover the data it fits,
+  samples, and subtracts its new model (`SineSegment.step`);
+- a *noise* segment (`WhiteNoiseSegment`) that removes nothing from the data
+  and instead returns the residual with an updated `noise` object, which
+  signal segments read through `residual.noise_psd`;
+- state ownership: each segment keeps its parameters, RNG, current model,
+  and posterior chain as plain instance attributes -- the Wheel never sees
+  them, and you read results directly off the segment objects you built;
 - progress reporting through `Wheel.run`'s `on_sweep` callback.
 
 The data are one channel of two sinusoids in white noise -- physically a toy
@@ -19,6 +21,8 @@ thing. Run it with:
 
     uv run python examples/toy_fit.py
 """
+
+from dataclasses import replace
 
 import numpy as np
 
@@ -34,6 +38,7 @@ class FlatNoise:
 
     def psd(self, freqs, channel=None):
         # one-sided PSD of white noise with per-sample std `sigma`
+        # (see Residuals.noise_psd for the pinned normalization)
         return np.full_like(freqs, 2.0 * self.sigma**2 / self._fs)
 
 
@@ -44,8 +49,9 @@ class SineSegment:
     noise of variance sigma^2 is N(<d, s>/<s, s>, sigma^2/<s, s>), which we
     sample exactly -- no Metropolis machinery needed for the toy.
 
-    Everything this sampler is -- current amplitude, RNG, chain -- is a
-    plain instance attribute. The Wheel only ever sees the contribution.
+    Everything this sampler is -- current amplitude, RNG, chain, and its own
+    model basis -- is a plain instance attribute. The Wheel only ever sees
+    the residual.
     """
 
     def __init__(self, name: str, freq: float, seed: int):
@@ -56,51 +62,55 @@ class SineSegment:
         self._rng = np.random.default_rng(seed)
         self._basis: dict[str, np.ndarray] | None = None
 
-    def start(self, observed: Residuals):
-        t = observed.epoch + np.arange(observed.n_samples) * observed.dt
+    def start(self, residual: Residuals) -> Residuals:
+        t = residual.epoch + np.arange(residual.n_samples) * residual.dt
         self._basis = {
-            ch: np.sin(2.0 * np.pi * self.freq * t) for ch in observed.channels
+            ch: np.sin(2.0 * np.pi * self.freq * t) for ch in residual.channels
         }
-        return self._contribution()
+        # initial amplitude is zero, so we subtract nothing: pass through
+        return residual
 
-    def step(self, residual: Residuals):
-        # per-sample noise variance from the threaded noise model:
-        # sigma^2 = S_onesided * fs / 2 for white noise
-        psd = residual.noise_psd(residual.channels[0])
-        sigma2 = float(psd[1]) * residual.fs / 2.0
+    def step(self, residual: Residuals) -> Residuals:
         ch = residual.channels[0]
         s = self._basis[ch]
-        # `residual` excludes this segment's own contribution
+        # per-sample noise variance from the threaded noise model:
+        # sigma^2 = S_onesided * fs / 2 for white noise
+        sigma2 = float(residual.noise_psd(ch)[1]) * residual.fs / 2.0
+
+        # --- the add-back: recover "data minus others" from the residual ---
+        mine_old = self.amplitude * s
+        data_for_me = residual.tdi[ch] + mine_old
+
+        # conjugate draw for the amplitude against data_for_me
         ss = float(s @ s)
-        mean = float(residual.tdi[ch] @ s) / ss
+        mean = float(data_for_me @ s) / ss
         self.amplitude = self._rng.normal(mean, np.sqrt(sigma2 / ss))
         self.chain.append(self.amplitude)
-        return self._contribution()
 
-    def _contribution(self):
-        assert self._basis is not None
-        return {ch: self.amplitude * s for ch, s in self._basis.items()}
+        # subtract the new model, return the updated residual
+        mine_new = self.amplitude * s
+        new_tdi = dict(residual.tdi)
+        new_tdi[ch] = data_for_me - mine_new
+        return replace(residual, tdi=new_tdi)
 
 
 class WhiteNoiseSegment:
-    """Noise segment: conjugate inverse-gamma draw for the white-noise sigma."""
+    """Noise segment: conjugate inverse-gamma draw for the white-noise sigma.
+
+    Removes nothing from the data; it returns the residual with an updated
+    `noise` model, which the signal segments read via `residual.noise_psd`.
+    """
 
     def __init__(self, name: str, seed: int):
         self.name = name
         self.sigma = 1.0
         self.chain: list[float] = []
         self._rng = np.random.default_rng(seed)
-        self._zeros: dict[str, np.ndarray] | None = None
-        self._fs: float | None = None
 
-    def start(self, observed: Residuals):
-        self._zeros = {
-            ch: np.zeros_like(observed.tdi[ch]) for ch in observed.channels
-        }
-        self._fs = observed.fs
-        return {ch: arr.copy() for ch, arr in self._zeros.items()}
+    def start(self, residual: Residuals) -> Residuals:
+        return replace(residual, noise=FlatNoise(self.sigma, residual.fs))
 
-    def step(self, residual: Residuals):
+    def step(self, residual: Residuals) -> Residuals:
         # residual here is data minus every signal segment's model: pure noise
         n_total = sum(arr.size for arr in residual.tdi.values())
         ssr = sum(float(arr @ arr) for arr in residual.tdi.values())
@@ -109,14 +119,7 @@ class WhiteNoiseSegment:
         b = 1.0 + 0.5 * ssr
         self.sigma = float(np.sqrt(b / self._rng.gamma(a)))
         self.chain.append(self.sigma)
-        # noise removes nothing from the data; its influence travels
-        # through Residuals.noise, not through residual subtraction
-        assert self._zeros is not None
-        return {ch: arr.copy() for ch, arr in self._zeros.items()}
-
-    def noise_model(self):
-        assert self._fs is not None
-        return FlatNoise(self.sigma, self._fs)
+        return replace(residual, noise=FlatNoise(self.sigma, residual.fs))
 
 
 TRUTH = {"slow": 3.0, "fast": 2.0, "sigma": 0.5}
@@ -152,7 +155,7 @@ def run_toy_fit(n_sweeps: int = 300, burn_in: int = 100, seed: int = 0):
     wheel = Wheel(make_observed(seed))
     wheel.add(slow)
     wheel.add(fast)
-    wheel.add(noise)
+    wheel.add(noise)  # steps last each sweep: sees data minus both signals
 
     def progress(iteration: int, w: Wheel) -> None:
         if (iteration + 1) % 100 == 0:

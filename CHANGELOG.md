@@ -14,17 +14,20 @@ First working release of the blocked-Gibbs orchestration layer.
   aliases (`Tobs`, `fs`, `dt`, ...), a typo catcher, and full self-validation
   on every construction (tdi/channels consistency, per-domain array lengths,
   orbit-must-span-data).
-- `Segment` protocol — deliberately minimal, the Wheel passes residuals and
-  that's it: `start(observed)` and `step(residual)` each return the
-  segment's current TDI contribution, and everything else (parameters, RNG,
-  chains, checkpoints) is segment-internal state the Wheel never sees.
-  Noise segments add `noise_model()` with a documented interface
-  (`psd(freqs[, channel])` / `wdm_variance(...)`).
-- `Wheel`: the Gibbs loop, holding only the residual ledger (each segment's
-  latest contribution) and the current noise model — with atomic
-  registration, per-step contribution re-validation, noise threading and
-  refresh, a public `residual(exclude=...)` accessor, and an `on_sweep`
-  progress/checkpoint callback on `run`.
+- `Segment` protocol — deliberately minimal, the Wheel passes one residual
+  around a ring and does no arithmetic: `start(residual)` and
+  `step(residual)` each return the updated residual (the segment adds its
+  own model back, resamples, subtracts the new one). Everything else —
+  parameters, RNG, chains, checkpoints, and the segment's own current
+  model — is segment-internal state the Wheel never sees. Noise is not
+  special: a noise segment returns the residual with an updated `noise`
+  object, consumed via `Residuals.noise_psd` (documented interface
+  `psd(freqs[, channel])` / `wdm_variance(...)`).
+- `Wheel`: the Gibbs ring, holding only the single running residual — with
+  atomic registration, per-step validation that the returned residual kept
+  the fixed run settings, a public `residual()` accessor, and an `on_sweep`
+  progress/checkpoint callback on `run`. Noise-agnostic: no special noise
+  handling at all.
 - `NumericOrbit`: tabulated ephemerides with cubic-spline interpolation,
   loaders for LDC/Mojito HDF5 files and lisaorbits objects
   (validated against lisaorbits 3.0.3), equatorial-to-ecliptic frame

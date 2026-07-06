@@ -1,5 +1,7 @@
 """turntable.testing: EchoSegment and the check_segment conformance helper."""
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -23,36 +25,21 @@ class TestCheckSegment:
         )
         check_segment(EchoSegment(name="echo"), obs)
 
-    def test_mutating_step_caught(self, observed):
-        class Mutator(EchoSegment):
-            def step(self, residual):
-                residual.tdi["A"][:] = 0.0
-                return super().step(residual)
-
-        with pytest.raises(ValueError, match="mutated residual"):
-            check_segment(Mutator(name="mut"), observed)
-
-    def test_malformed_step_caught(self, observed):
+    def test_non_residual_return_caught(self, observed):
         class Bad(EchoSegment):
             def step(self, residual):
-                return ([], {})  # old-style pair, not a contribution
+                return {"A": np.zeros(1)}  # not a Residuals
 
-        with pytest.raises(TypeError, match="must return"):
+        with pytest.raises(TypeError, match="must return a Residuals"):
             check_segment(Bad(name="bad"), observed)
 
-    def test_bad_contribution_shape_caught(self, observed):
-        class Bad(EchoSegment):
+    def test_changed_run_setting_caught(self, observed):
+        class Cheat(EchoSegment):
             def step(self, residual):
-                super().step(residual)
-                return {ch: np.zeros(1) for ch in self._zeros}
+                return replace(residual, observable="strain")
 
-        with pytest.raises(ValueError, match="has shape"):
-            check_segment(Bad(name="bad"), observed)
-
-    def test_nan_data_does_not_false_positive_mutation(self, rng):
-        obs = make_observed(rng)
-        obs.tdi["A"][10:20] = np.nan  # gap-filled data is legitimate
-        check_segment(EchoSegment(name="echo"), obs)
+        with pytest.raises(ValueError, match="changed the run setting"):
+            check_segment(Cheat(name="cheat"), observed)
 
     def test_conforming_noise_segment_passes(self, observed):
         class FlatPSD:
@@ -60,18 +47,30 @@ class TestCheckSegment:
                 return np.full_like(freqs, 1.0)
 
         class NoiseSeg(EchoSegment):
-            def noise_model(self):
-                return FlatPSD()
+            def step(self, residual):
+                return replace(residual, noise=FlatPSD())
 
         check_segment(NoiseSeg(name="noise"), observed)
 
     def test_noise_model_violating_contract_caught(self, observed):
         class BadNoise(EchoSegment):
-            def noise_model(self):
-                return object()
+            def step(self, residual):
+                return replace(residual, noise=object())
 
         with pytest.raises(TypeError, match="neither psd"):
             check_segment(BadNoise(name="bad"), observed)
+
+    def test_wavelet_only_noise_segment_passes(self, observed):
+        # a noise model exposing only wdm_variance is conformant (psd OR wdm)
+        class WdmOnly:
+            def wdm_variance(self, n_layers, n_time, dt, epoch, channel=None):
+                return np.ones((n_layers + 1, n_time))
+
+        class WdmNoiseSeg(EchoSegment):
+            def step(self, residual):
+                return replace(residual, noise=WdmOnly())
+
+        check_segment(WdmNoiseSeg(name="wdm"), observed)
 
 
 class TestEchoSegment:
@@ -83,3 +82,14 @@ class TestEchoSegment:
         wheel.add(echo)
         wheel.run(3)
         assert echo.steps == 3
+
+    def test_passes_residual_through_unchanged(self, observed):
+        from turntable import Wheel
+
+        wheel = Wheel(observed)
+        wheel.add(EchoSegment(name="echo"))
+        wheel.run(1)
+        for ch in observed.channels:
+            np.testing.assert_array_equal(
+                wheel.residual().tdi[ch], observed.tdi[ch]
+            )
