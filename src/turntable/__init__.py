@@ -2,7 +2,7 @@ from importlib.metadata import PackageNotFoundError, version
 
 from turntable.orbits import NumericOrbit, Orbit
 from turntable.residuals import Residuals
-from turntable.segment import Contribution, NoiseSegment, Segment
+from turntable.segment import NoiseSegment, Segment
 from turntable.wheel import Wheel
 
 try:
@@ -11,7 +11,6 @@ except PackageNotFoundError:  # running from a source tree without install
     __version__ = "0+unknown"
 
 __all__ = [
-    "Contribution",
     "NoiseSegment",
     "NumericOrbit",
     "Orbit",

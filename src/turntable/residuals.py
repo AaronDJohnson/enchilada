@@ -46,15 +46,16 @@ class Residuals:
             one field, so agreement is by construction -- state it once,
             correctly, rather than letting each group assume its own.
         domain: "time" (default) or "frequency". Selects the tdi
-            representation described above; segment contributions must match
-            it (the Wheel validates contribution shapes against `tdi`).
+            representation described above; the residual a segment returns
+            must keep it (`Residuals` validates the tdi shapes).
         epoch: GPS seconds corresponding to sample index 0.
         noise: The current noise/covariance model the residual should be
             whitened against, or `None`. Opaque to the Wheel (like a
-            segment's own state): a noise segment defines its own type and the
-            Wheel threads it here so signal segments can weight their
-            likelihood by the *current* noise estimate instead of a hardcoded
-            PSD. `None` when no noise segment is registered. See
+            segment's own state): a noise segment defines its own type and
+            puts it here on the residual it returns, and the Wheel carries
+            that residual to every other segment, so signal segments can
+            weight their likelihood by the *current* noise estimate instead
+            of a hardcoded PSD. `None` when no noise model is set. See
             `segment.NoiseSegment`.
         orbit: The LISA constellation ephemeris the data was produced with --
             the spacecraft positions every segment must share to build its
@@ -275,18 +276,21 @@ class Residuals:
 
         so a frequency-domain segment whitens with ``|X(f)|**2 / ((Tobs/2) S)``.
         Equivalently, the **time-domain per-sample variance** is the integral of
-        the one-sided PSD over ``[0, fny]`` -- ``sigma**2 = sum(S) * df`` on this
-        grid -- which is how a *time-domain* segment gets its noise weight
-        without a separate accessor (for white noise ``S = 2 sigma**2 / fs``).
+        the one-sided PSD over ``[0, fny]`` -- ``sigma**2 = sum(S[1:]) * df`` on
+        this grid (skipping the DC bin, which this method sets to ``+inf``) --
+        which is how a *time-domain* segment gets its noise weight without a
+        separate accessor. For white noise ``S = 2 sigma**2 / fs``; the noise
+        object carries its own ``fs`` (the ``psd(freqs)`` call passes only
+        frequencies), so it computes ``S`` from the ``sigma`` it holds.
         """
         if self.noise is None:
             return None
         if not callable(getattr(self.noise, "psd", None)):
             raise TypeError(
-                f"noise object {type(self.noise).__name__} does not expose "
-                f"psd(freqs[, channel]); the model threaded on Residuals.noise must "
-                f"implement it to serve frequency-domain segments "
-                f"(see NoiseSegment.noise_model for the noise contract)"
+                f"noise object {type(self.noise).__name__} exposes neither "
+                f"psd(freqs[, channel]) as required here; the model a noise segment "
+                f"puts on Residuals.noise must implement it to serve frequency-domain "
+                f"segments (see segment.NoiseSegment for the noise contract)"
             )
         freqs = np.fft.rfftfreq(self.n_samples, d=self.sample_interval)
         psd = np.empty(freqs.shape)
@@ -322,9 +326,9 @@ class Residuals:
         if not callable(getattr(self.noise, "wdm_variance", None)):
             raise TypeError(
                 f"noise object {type(self.noise).__name__} does not expose "
-                f"wdm_variance(n_layers, n_time, dt, epoch[, channel]); the model "
-                f"threaded on Residuals.noise must implement it to serve "
-                f"wavelet-domain segments (see NoiseSegment.noise_model)"
+                f"wdm_variance(n_layers, n_time, dt, epoch[, channel]); the model a "
+                f"noise segment puts on Residuals.noise must implement it to serve "
+                f"wavelet-domain segments (see segment.NoiseSegment)"
             )
         if self.n_samples % n_layers:
             raise ValueError(
