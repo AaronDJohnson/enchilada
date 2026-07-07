@@ -25,6 +25,18 @@ class TestPostInitValidation:
                 epoch=0.0,
             )
 
+    def test_epoch_is_optional_defaults_to_zero(self, rng):
+        obs = Residuals(
+            tdi={"A": np.zeros(8)},
+            sample_rate=1.0,
+            n_samples=8,
+            channels=("A",),
+            tdi_generation="2.0",
+            observable="fractional_frequency",
+        )  # no epoch supplied
+        assert obs.epoch == 0.0
+        assert obs.t0 == 0.0
+
     def test_empty_observable_rejected(self, rng):
         with pytest.raises(ValueError, match="fractional_frequency"):
             make_observed(rng, observable="")

@@ -48,7 +48,11 @@ class Residuals:
         domain: "time" (default) or "frequency". Selects the tdi
             representation described above; the residual a segment returns
             must keep it (`Residuals` validates the tdi shapes).
-        epoch: GPS seconds corresponding to sample index 0.
+        epoch: GPS seconds corresponding to sample index 0. Defaults to
+            ``0.0`` -- fine for synthetic data with no absolute-time
+            reference. Set it for real data: it anchors the constellation
+            response (spacecraft positions at `epoch + n*dt`), the orbit-span
+            check, and the frequency-domain phase reference. Shadowed by `t0`.
         noise: The current noise/covariance model the residual should be
             whitened against, or `None`. Opaque to the Wheel (like a
             segment's own state): a noise segment defines its own type and
@@ -79,7 +83,7 @@ class Residuals:
     channels: tuple[str, ...]
     tdi_generation: str
     observable: str
-    epoch: float
+    epoch: float = 0.0
     domain: str = "time"
     noise: Any | None = None
     orbit: Any | None = None

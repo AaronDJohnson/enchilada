@@ -10,10 +10,10 @@ First working release of the blocked-Gibbs orchestration layer.
 
 ### Added
 - `Residuals`: the frozen cross-group data contract — TDI arrays plus run
-  settings, with required `observable` and `domain` fields, long/short name
-  aliases (`Tobs`, `fs`, `dt`, ...), a typo catcher, and full self-validation
-  on every construction (tdi/channels consistency, per-domain array lengths,
-  orbit-must-span-data).
+  settings, with a required `observable` field (`domain` defaults to `"time"`,
+  `epoch` to `0.0`), long/short name aliases (`Tobs`, `fs`, `dt`, ...), a typo
+  catcher, and full self-validation on every construction (tdi/channels
+  consistency, per-domain array lengths, orbit-must-span-data).
 - `Segment` protocol — deliberately minimal, the Wheel passes one residual
   around a ring and does no arithmetic: `start(residual)` and
   `step(residual)` each return the updated residual (the segment adds its
