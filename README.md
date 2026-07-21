@@ -8,13 +8,15 @@ Blocked-Gibbs global-fit orchestration for LISA.
 A LISA global fit has to jointly infer many source populations (galactic
 binaries, massive black-hole binaries, ...) plus the instrument noise, with
 each block typically owned by a different group and sampler. turntable is the
-orchestration layer — and only that. A `Wheel` passes a single running
-residual around a ring of registered `Segment`s: it hands each one the
-current residual and takes back the segment's new one, doing no arithmetic
-of its own. Each segment adds its own model back, resamples, and subtracts
-the new one, so blocked Gibbs falls out of the ring. No waveforms, no
-likelihoods, no samplers, and no per-segment state live here; those belong
-to the segments, which can wrap code written in any language.
+orchestration layer — and only that. A `Wheel` keeps the pristine data and a
+**ledger** of each segment's current model, and hands every registered
+`Segment` the data minus *every other* segment — exactly the residual that
+segment should fit. The segment fits it, subtracts its new model, and returns;
+the Wheel reads the segment's new ledger entry off the difference. So blocked
+Gibbs falls out of the ring, and there is no "add-back" for a segment to
+forget. No waveforms, no likelihoods, and no samplers live here; those belong
+to the segments (which own their sampler state and can wrap code in any
+language), while the Wheel owns only the residual bookkeeping.
 
 ## Install
 
@@ -87,8 +89,7 @@ white-noise segment, converging to known truth — run
 
 ## Plugging in your sampler
 
-The Wheel passes one residual around the ring — that's it. Implement the
-two-method `Segment` protocol — see the docstrings in
+Implement the two-method `Segment` protocol — see the docstrings in
 [`src/turntable/segment.py`](src/turntable/segment.py) for the full contract:
 
 - `name` — unique within a Wheel; identifies you in diagnostics and errors.
@@ -96,28 +97,24 @@ two-method `Segment` protocol — see the docstrings in
   settings off the residual, set yourself up, subtract your initial model,
   and return the updated residual (return it unchanged if you start from
   nothing).
-- `step(residual) -> residual` — one Gibbs iteration. You receive the
-  residual with *every* segment's model subtracted, including your own;
-  **add your own model back** to recover the data you fit, sample, subtract
-  your new model, and return the result.
-
-The add-back is the one thing to get right: because the residual already has
-your model removed, you must re-add it before sampling or you will fit
-data-minus-yourself and collapse. This matches how real samplers
-(GBMCMC/GLASS-style) already work internally — they hold their own model and
-add/remove it against a residual. `examples/toy_fit.py` is the reference
-pattern.
+- `step(residual) -> residual` — one Gibbs iteration. The residual you receive
+  is the data with every **other** segment's model subtracted — *not* your
+  own. So it is exactly the data your source class must explain: fit it
+  directly, subtract your new model, and return the result. There is no
+  add-back; the Wheel keeps the ledger and derives your new entry from what
+  you return.
 
 A segment that models the noise instead of a signal removes nothing from the
 data; it returns the residual with an updated `noise` object —
-`replace(residual, noise=my_model)` — and signal segments read it back
-through `Residuals.noise_psd`. The Wheel stays entirely noise-agnostic (see
-`NoiseSegment`).
+`replace(residual, noise=my_model)` (so its ledger entry is zero) — and signal
+segments read it back through `Residuals.noise_psd`. The Wheel stays entirely
+noise-agnostic (see `NoiseSegment`).
 
 Everything about your sampler is *yours*: parameters, RNG, posterior chains,
 checkpoints, and your own current model all live inside your segment object
-(or the external process it wraps) — the Wheel never sees or restores them.
-It holds only the single running residual. To log progress or checkpoint,
+(or the external process it wraps) — the Wheel never sees or restores them. It
+owns only the residual bookkeeping (the pristine data and the per-segment
+ledger). To log progress or checkpoint,
 pass an `on_sweep` callback to `run` (or equivalently call `run(1)` in your
 own loop) and read `wheel.residual()` — or anything off your own segment
 objects — between sweeps.
@@ -137,9 +134,9 @@ check_segment(MySegment(name="ucb"), toy_observed)
 It drives the full protocol on a scratch Wheel and raises a pointed error at
 the first violation (a `start`/`step` that returns something other than a
 valid `Residuals`, changes a fixed run setting, or — for a noise segment —
-puts a model on the residual that fails the noise contract). It cannot check
-the add-back (a forgotten one still yields a well-formed residual), so guard
-that with a known-truth recovery test; `examples/toy_fit.py` is the pattern.
+puts a model on the residual that fails the noise contract). It needn't check
+the residual bookkeeping — the Wheel owns that — but whether your *sampler*
+recovers truth is still yours to verify; `examples/toy_fit.py` is the pattern.
 
 ## Conventions and consistency checking
 

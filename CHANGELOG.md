@@ -14,20 +14,23 @@ First working release of the blocked-Gibbs orchestration layer.
   `epoch` to `0.0`), long/short name aliases (`Tobs`, `fs`, `dt`, ...), a typo
   catcher, and full self-validation on every construction (tdi/channels
   consistency, per-domain array lengths, orbit-must-span-data).
-- `Segment` protocol — deliberately minimal, the Wheel passes one residual
-  around a ring and does no arithmetic: `start(residual)` and
-  `step(residual)` each return the updated residual (the segment adds its
-  own model back, resamples, subtracts the new one). Everything else —
-  parameters, RNG, chains, checkpoints, and the segment's own current
-  model — is segment-internal state the Wheel never sees. Noise is not
-  special: a noise segment returns the residual with an updated `noise`
-  object, consumed via `Residuals.noise_psd` (documented interface
-  `psd(freqs[, channel])`).
-- `Wheel`: the Gibbs ring, holding only the single running residual — with
-  atomic registration, per-step validation that the returned residual kept
-  the fixed run settings, a public `residual()` accessor, and an `on_sweep`
-  progress/checkpoint callback on `run`. Noise-agnostic: no special noise
-  handling at all.
+- `Segment` protocol — two methods, `start(residual)` and `step(residual)`,
+  each returning the updated residual. The residual handed to a segment is
+  the data minus every *other* segment (its own model excluded), so the
+  segment fits it directly and subtracts its new model — there is no
+  add-back to forget. Everything else — parameters, RNG, chains, checkpoints,
+  and the segment's own current model — is segment-internal state the Wheel
+  never sees. Noise is not special: a noise segment returns the residual with
+  an updated `noise` object (a zero ledger entry), consumed via
+  `Residuals.noise_psd` (documented interface `psd(freqs[, channel])`).
+- `Wheel`: the Gibbs ring, owning the pristine data and a per-segment ledger
+  (each segment's current model). It hands each segment the data minus every
+  other model and derives that segment's new ledger entry from what it
+  returns, so the residual bookkeeping — and the add-back — lives in the
+  framework, not the segment (the split the GLASS global fit uses). Atomic
+  registration, per-step validation that the returned residual kept the fixed
+  run settings, `residual(exclude=...)` and `contribution(name)` accessors,
+  and an `on_sweep` callback on `run`.
 - `NumericOrbit`: tabulated ephemerides with cubic-spline interpolation,
   loaders for LDC/Mojito HDF5 files and lisaorbits objects
   (validated against lisaorbits 3.0.3), equatorial-to-ecliptic frame

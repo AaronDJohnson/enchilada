@@ -4,9 +4,9 @@ Where examples/demo.py shows the plumbing with no-op segments, this example
 runs a real Gibbs sampler to convergence on synthetic data, demonstrating the
 parts of the protocol the demo leaves out:
 
-- the **add-back**: a signal segment receives the running residual with its
-  own model already subtracted, adds it back to recover the data it fits,
-  samples, and subtracts its new model (`SineSegment.step`);
+- a signal segment (`SineSegment.step`) that fits the residual it is handed --
+  already the data minus every other segment -- directly, then subtracts its
+  new model and returns; the Wheel keeps the ledger, so there is no add-back;
 - a *noise* segment (`WhiteNoiseSegment`) that removes nothing from the data
   and instead returns the residual with an updated `noise` object, which
   signal segments read through `residual.noise_psd`;
@@ -77,20 +77,16 @@ class SineSegment:
         # sigma^2 = S_onesided * fs / 2 for white noise
         sigma2 = float(residual.noise_psd(ch)[1]) * residual.fs / 2.0
 
-        # --- the add-back: recover "data minus others" from the residual ---
-        mine_old = self.amplitude * s
-        data_for_me = residual.tdi[ch] + mine_old
-
-        # conjugate draw for the amplitude against data_for_me
+        # `residual` is already the data minus every OTHER segment -- fit it
+        # directly (no add-back), then subtract our new model and return.
+        data_for_me = residual.tdi[ch]
         ss = float(s @ s)
         mean = float(data_for_me @ s) / ss
         self.amplitude = self._rng.normal(mean, np.sqrt(sigma2 / ss))
         self.chain.append(self.amplitude)
 
-        # subtract the new model, return the updated residual
-        mine_new = self.amplitude * s
         new_tdi = dict(residual.tdi)
-        new_tdi[ch] = data_for_me - mine_new
+        new_tdi[ch] = data_for_me - self.amplitude * s
         return replace(residual, tdi=new_tdi)
 
 
