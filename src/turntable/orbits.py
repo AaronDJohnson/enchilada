@@ -218,7 +218,7 @@ class NumericOrbit:
             dt = float(s.attrs["dt"])
             n = int(s.attrs["size"])
             pos = np.stack([np.asarray(g[d]) for d in position_datasets], axis=0)
-        times = t0 + np.arange(n) * dt
+        times = np.asarray(t0 + np.arange(n) * dt, dtype=np.float64)
         return cls.from_arrays(times, pos, frame=frame, L=L)
 
     @classmethod

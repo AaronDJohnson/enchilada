@@ -36,7 +36,7 @@ ephemerides (`turntable.orbits.NumericOrbit`) needs the extra:
 
 ```sh
 uv sync --extra numeric-orbits   # adds h5py, scipy, lisaorbits
-uv sync --extra examples         # adds jupyterlab for the demo notebook
+uv sync --extra examples         # adds jupyterlab for the notebooks
 ```
 
 ## Quickstart
@@ -93,8 +93,9 @@ Eryn sampler living inside the segment, and a fixed LISA noise PSD from LISA
 Analysis Tools. Everything that is *not* turntable lives in
 [`examples/gb_model.py`](examples/gb_model.py), so the notebook shows only the
 turntable touchpoints. That example needs the external LISA stack (`gbgpu`,
-`eryn`, `lisaanalysistools`), which is **not** part of turntable's own
-dependencies or CI.
+`eryn`, `lisaanalysistools`) plus `matplotlib`/`corner` for its plots — none of
+which are turntable dependencies, so it is not exercised by CI. Its outputs are
+not committed; run it to populate them.
 
 ## Plugging in your sampler
 
@@ -194,14 +195,16 @@ conventions.
 ## Development
 
 ```sh
-uv sync --extra numeric-orbits   # dev group (pytest, pytest-cov, ruff) by default
+uv sync --extra numeric-orbits   # dev group (pytest, pytest-cov, ruff, mypy)
 uv run pytest                    # full suite, incl. examples and orbit loaders
-uv run pytest --cov --cov-report=term-missing   # with coverage (99%; gate at 95%)
+uv run pytest --cov --cov-report=term-missing   # coverage (gate: 95%)
+uv run mypy                      # turntable ships py.typed; keep it honest
 uv run ruff check src tests examples
 ```
 
-CI runs lint, the suite behind a 95% coverage gate, and artifact builds across
-Python 3.12/3.13 on both Linux and macOS for every push and pull request. See
+CI runs lint, mypy, the suite behind a 95% coverage gate, artifact builds, and
+an installed-wheel smoke test across Python 3.12/3.13 on both Linux and macOS
+for every push and pull request. See
 [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 ## Status

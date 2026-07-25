@@ -1,0 +1,8 @@
+version: 2
+updates:
+  # The workflow pins actions (one to an exact release), so bumps are manual
+  # without this; dependabot keeps them from silently rotting.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

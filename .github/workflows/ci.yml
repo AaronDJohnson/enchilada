@@ -19,11 +19,27 @@ jobs:
       - uses: astral-sh/setup-uv@v9.0.0
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install (with extras and dev group)
-        run: uv sync --extra numeric-orbits
+      - name: Install (locked, with extras and dev group)
+        # --locked fails fast if uv.lock has drifted from pyproject.toml, so CI
+        # never passes against a resolution contributors do not get locally
+        run: uv sync --locked --extra numeric-orbits
       - name: Lint
         run: uv run ruff check src tests examples
+      - name: Type-check
+        # turntable ships py.typed, so its annotations are load-bearing for
+        # consumers' type checkers -- validate them here
+        run: uv run mypy
       - name: Test (with coverage gate)
-        run: uv run pytest -q --cov --cov-report=term-missing --cov-fail-under=95
+        run: uv run pytest -q --cov --cov-report=term-missing
       - name: Build artifacts
         run: uv build
+      - name: Smoke-test the built wheel
+        # proves the artifact is importable and actually carries py.typed --
+        # `uv build` alone only proves the build did not crash
+        run: |
+          uv run --no-project --isolated --with dist/*.whl python -c "
+          import importlib.resources as r, turntable
+          print('version:', turntable.__version__)
+          assert r.files('turntable').joinpath('py.typed').is_file(), 'py.typed missing from wheel'
+          print('py.typed present in installed wheel')
+          "
