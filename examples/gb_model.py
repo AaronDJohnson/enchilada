@@ -4,8 +4,9 @@
 example — the parts a source-class group brings to a global fit:
 
 - ``FixedLISANoise`` — a noise model exposing ``psd(freqs[, channel])``;
-- ``gb_template`` / ``scatter`` / ``inner`` — GBGPU waveform + inner-product
-  helpers (pure functions, no global state);
+- ``gb_template`` / ``waveform`` / ``scatter`` / ``inner`` — GBGPU waveform and
+  inner-product helpers (pure functions, no global state; ``waveform`` is the
+  one-off convenience wrapper used for diagnostics and plots);
 - ``inject_gb`` — builds a synthetic frequency-domain dataset (signal + noise);
 - ``GBSegment`` — the turntable ``Segment`` implementation. It reads everything
   it needs (channels, grid, noise PSD) off the ``residual`` the Wheel hands it,
@@ -16,7 +17,9 @@ The notebook imports these and drives them through turntable's ``Residuals`` and
 ``Wheel``; keeping them here makes it obvious which code is turntable and which
 is the model plugged into it.
 
-Requires the LISA stack: ``gbgpu`` (master), ``eryn`` (dev), ``lisaanalysistools``.
+Requires the LISA stack: ``gbgpu`` (master), ``eryn`` (dev),
+``lisaanalysistools``. The companion notebook additionally plots with
+``matplotlib`` and ``corner``.
 """
 
 from dataclasses import replace
@@ -78,8 +81,8 @@ def inject_gb(truth, angles, Tobs, dt, n_samples, channels, noise, NB=128, seed=
     """Synthesize one GB in stationary noise on the one-sided rfft grid.
 
     Returns ``(tdi, info)``: ``tdi`` is the channel->array dict to wrap in a
-    ``Residuals``; ``info`` carries ``band``, the noiseless ``signal``, and the
-    optimal ``snr`` for plotting/diagnostics.
+    ``Residuals``; ``info`` carries ``band``, the noiseless ``signal``, the optimal ``snr``, and
+    the template's ``start_ind`` for plotting/diagnostics.
     """
     df = 1.0 / Tobs
     freqs = np.fft.rfftfreq(n_samples, dt)
@@ -119,11 +122,18 @@ class GBSegment:
 
     Samples ``amp, f0, fdot, phi0``; the four sky/orientation ``angles`` are held
     fixed (enlarge ``init``/``bounds``/``angles`` to sample them too).
+
+    ``name`` is a constructor argument so several of these can share one Wheel
+    (each with its own band and sampler) -- Wheel rejects duplicate names.
+    ``params`` is the current point estimate; ``chain`` the posterior samples.
     """
 
-    def __init__(self, init, bounds, angles, n_walkers=24, steps_per_sweep=40,
-                 band=128, seed=0):
-        self.name = "gb"
+    #: channels this model can produce; GBGPU gives the A and E TDI variables
+    SUPPORTED_CHANNELS = ("A", "E")
+
+    def __init__(self, init, bounds, angles, name="gb", n_walkers=24,
+                 steps_per_sweep=40, band=128, seed=0):
+        self.name = name
         self.init = np.asarray(init, float)
         b = np.asarray(bounds, float)
         self.lo, self.hi = b[:, 0], b[:, 1]
@@ -132,11 +142,30 @@ class GBSegment:
         self.ndim = self.init.size
         self.rng = np.random.default_rng(seed)
         self.chain = None
-        self._p = self.init.copy()
+        self.params = self.init.copy()
         self._data = self._model = self._sampler = self._state = None
 
     def _read_context(self, residual):
         # ---- everything the physics needs comes from the residual ----
+        # Check the conventions we cannot honour rather than assuming them:
+        # this model emits a frequency-domain A/E fractional-frequency signal.
+        if residual.domain != "frequency":
+            raise ValueError(
+                f"{self.name}: this GB model produces frequency-domain templates, "
+                f"but the run is domain={residual.domain!r}"
+            )
+        if residual.observable != "fractional_frequency":
+            raise ValueError(
+                f"{self.name}: GBGPU emits fractional-frequency TDI, but the run "
+                f"declares observable={residual.observable!r}"
+            )
+        unsupported = set(residual.channels) - set(self.SUPPORTED_CHANNELS)
+        if unsupported:
+            raise ValueError(
+                f"{self.name}: this model only produces "
+                f"{list(self.SUPPORTED_CHANNELS)}, but the run has channels "
+                f"{list(residual.channels)} (unsupported: {sorted(unsupported)})"
+            )
         self.chans = residual.channels
         self.Tobs, self.dt, self.df = residual.Tobs, residual.dt, residual.df
         self.n_rfft = residual.tdi[self.chans[0]].shape[0]
@@ -159,7 +188,7 @@ class GBSegment:
 
     def start(self, residual):
         self._read_context(residual)
-        self._model = self._render(self._p)
+        self._model = self._render(self.params)
         self._sampler = EnsembleSampler(
             self.nw, self.ndim, self._logl,
             priors={"model_0": ProbDistContainer(
@@ -180,7 +209,7 @@ class GBSegment:
         self._data = {ch: residual.tdi[ch] for ch in self.chans}
         self._state = self._sampler.run_mcmc(self._state, self.k, progress=False)
         self.chain = self._sampler.get_chain()["model_0"].reshape(-1, self.ndim)
-        self._p = self.chain[-self.nw:].mean(0)                        # point estimate
-        self._model = self._render(self._p)
+        self.params = self.chain[-self.nw:].mean(0)                        # point estimate
+        self._model = self._render(self.params)
         return replace(residual, tdi={ch: residual.tdi[ch] - self._model[ch]
                                       for ch in self.chans})
