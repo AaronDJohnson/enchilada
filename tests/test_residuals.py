@@ -163,6 +163,46 @@ class TestOrbitSpanCheck:
         obs = make_observed(rng, orbit=GridOrbit(), sample_rate=1.0, epoch=0.0)
         assert obs.orbit is not None
 
+    # (n_samples, sample_rate) pairs where (n-1)*dt and (n-1)/fs are NOT
+    # bit-identical -- i.e. exactly where computing the bound by division
+    # spuriously rejects a grid-tabulated orbit -- plus an exactly-representable
+    # non-unit rate so the dt scaling itself is pinned.
+    @pytest.mark.parametrize(
+        ("n_samples", "sample_rate"),
+        [(32, 3.0), (32, 6.0), (32, 7.0), (128, 3.0), (64, 0.5), (64, 0.1)],
+    )
+    def test_data_grid_orbit_accepted_at_any_rate(self, rng, n_samples, sample_rate):
+        """An orbit tabulated the documented way is accepted at every rate.
+
+        The grid idiom is `epoch + arange(n) * dt` (NumericOrbit.from_hdf5), so
+        the check must compute its bound the same way; deriving it as
+        (n-1)/sample_rate differs by an ulp at these rates and rejects.
+        """
+
+        class GridOrbit:
+            def __init__(self, t_end):
+                self.t_range = (0.0, t_end)
+
+        dt = 1.0 / sample_rate
+        last = 0.0 + (n_samples - 1) * dt
+        obs = make_observed(
+            rng,
+            n_samples=n_samples,
+            orbit=GridOrbit(last),
+            sample_rate=sample_rate,
+            epoch=0.0,
+        )
+        assert obs.orbit is not None
+        # a full sample interval short is still rejected, at every rate
+        with pytest.raises(ValueError, match="outside the tabulated ephemeris"):
+            make_observed(
+                rng,
+                n_samples=n_samples,
+                orbit=GridOrbit(last - dt),
+                sample_rate=sample_rate,
+                epoch=0.0,
+            )
+
     def test_orbit_ending_before_the_last_sample_rejected(self, rng):
         # one hair short of the last sample (63 s) must still be caught
         class ShortOrbit:

@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Never
 
 import numpy as np
 
@@ -186,8 +186,19 @@ class Residuals:
         # The samples sit at epoch + n*dt for n in [0, n_samples-1], so the last
         # one is at epoch + (n_samples-1)*dt -- NOT epoch + Tobs. Requiring the
         # ephemeris to reach epoch + Tobs would reject an orbit tabulated on the
-        # data's own sample grid, which serves every time a segment can ask for.
-        last_sample = self.epoch + (self.n_samples - 1) / self.sample_rate
+        # data's own sample grid.
+        #
+        # Multiply `sample_interval` exactly as every grid builder here does
+        # (`epoch + arange(n) * dt`, see NumericOrbit.from_hdf5) rather than
+        # dividing by sample_rate: the two differ by an ulp for rates whose dt
+        # is not exactly representable, and this is an exact float comparison,
+        # so the mismatch would spuriously reject a data-grid orbit.
+        #
+        # This is a coarse check for gross epoch mismatches, not a guarantee: a
+        # segment applying TDI light-travel delays evaluates retarded times
+        # slightly outside [epoch, last_sample] and needs margin (and
+        # NumericOrbit.positions raises if asked beyond its table).
+        last_sample = self.epoch + (self.n_samples - 1) * self.sample_interval
         if t_lo > self.epoch or t_hi < last_sample:
             raise ValueError(
                 f"orbit ephemeris spans [{t_lo}, {t_hi}] s but the data samples "
@@ -358,9 +369,15 @@ class Residuals:
         "T_0": "t0",
     }
 
-    def __getattr__(self, name: str):
+    def __getattr__(self, name: str) -> Never:
         # Only fires when normal attribute lookup fails, so this catches
         # common misspellings of the long/short names above.
+        #
+        # Annotated `-> Never` on purpose: this class ships py.typed, so an
+        # un-annotated __getattr__ would tell type checkers that *any*
+        # attribute exists and is `Any` -- statically legitimising exactly the
+        # typos the runtime hints below catch. `Never` means "this only ever
+        # raises", so `residual.Tobbs` is a type error for consumers too.
         if name.startswith("_"):
             raise AttributeError(name)
         suggestion = self._TYPOS.get(name)
