@@ -33,6 +33,12 @@ class TestConstruction:
         with pytest.raises(ValueError, match=r"positions must be \(3, 10, 3\)"):
             NumericOrbit(t, np.zeros((10, 3, 3)))
 
+    def test_explicit_L_and_fstar_are_honored(self):
+        t, pos = circular_table(n=20)
+        orb = NumericOrbit(t, pos, L=2.5e9, fstar=0.019)
+        assert orb.L == 2.5e9
+        assert orb.fstar == 0.019  # not recomputed from L
+
     def test_degenerate_table_falls_back_to_nominal_armlength(self):
         t = np.linspace(0.0, 1.0, 10)
         orb = NumericOrbit(t, np.zeros((3, 10, 3)))
@@ -118,3 +124,49 @@ class TestLoaders:
         exp_z = -raw[:, 0, 1] * np.sin(eps) + raw[:, 0, 2] * np.cos(eps)
         err = np.max(np.abs(np.stack([x[0] - exp_x, y[0] - exp_y, z[0] - exp_z])))
         assert err < 1.0  # metres; measured ~2e-2 m against lisaorbits 3.0.3
+
+
+class TestFromLisaorbitsGuard:
+    """from_lisaorbits must never reshape a wrong-shaped array blindly."""
+
+    class Stub:
+        def __init__(self, out):
+            self._out = out
+
+        def compute_position(self, t):
+            return self._out
+
+    def test_rejects_object_without_compute_position(self):
+        with pytest.raises(TypeError, match="compute_position"):
+            NumericOrbit.from_lisaorbits(object(), np.linspace(0.0, 10.0, 5))
+
+    def test_accepts_time_spacecraft_xyz(self):
+        t = np.linspace(0.0, 10.0, 5)
+        raw = np.zeros((t.size, 3, 3))
+        raw[:, :, 0] = 1.0e9  # x
+        orb = NumericOrbit.from_lisaorbits(self.Stub(raw), t, frame="ecliptic")
+        x, _, _ = orb.positions(t)
+        assert x.shape == (3, t.size)
+
+    def test_accepts_flattened_nine_columns(self):
+        t = np.linspace(0.0, 10.0, 5)
+        raw = np.zeros((t.size, 3, 3))
+        raw[:, :, 0] = 1.0e9
+        flat = raw.reshape(t.size, 9)
+        orb = NumericOrbit.from_lisaorbits(self.Stub(flat), t, frame="ecliptic")
+        x, _, _ = orb.positions(t)
+        np.testing.assert_allclose(x, 1.0e9)
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            (5, 3, 4),   # wrong trailing axis
+            (3, 5, 3),   # already transposed -- must NOT be silently accepted
+            (5, 8),      # wrong flattened width
+            (15, 3),     # 2-D of the right size but wrong layout
+        ],
+    )
+    def test_rejects_any_other_shape(self, bad):
+        t = np.linspace(0.0, 10.0, 5)
+        with pytest.raises(ValueError, match="compute_position"):
+            NumericOrbit.from_lisaorbits(self.Stub(np.zeros(bad)), t)

@@ -250,6 +250,21 @@ class NumericOrbit:
                 "(3, n, 3) array to NumericOrbit.from_arrays, or use from_hdf5 for "
                 "a lisaorbits file."
             )
-        raw = np.asarray(fn(times))  # (len(t), 3 sc, 3 xyz)
-        pos = np.moveaxis(raw, 0, 1) if raw.ndim == 3 else raw.reshape(3, times.size, 3)
+        raw = np.asarray(fn(times))  # expected (len(t), 3 sc, 3 xyz)
+        n = times.size
+        if raw.shape == (n, 3, 3):
+            pos = np.moveaxis(raw, 0, 1)  # -> (3 sc, n, 3 xyz)
+        elif raw.shape == (n, 9):
+            # some versions flatten the (spacecraft, xyz) pair
+            pos = np.moveaxis(raw.reshape(n, 3, 3), 0, 1)
+        else:
+            # never reshape blindly: a wrong shape would silently scramble the
+            # spacecraft/time/coordinate axes and produce a plausible-looking
+            # but meaningless constellation.
+            raise ValueError(
+                f"compute_position(times) returned shape {raw.shape}; expected "
+                f"({n}, 3, 3) -- (time, spacecraft, xyz) -- or a flattened "
+                f"({n}, 9). Pass a (3, {n}, 3) array to NumericOrbit.from_arrays "
+                f"instead if your source uses another layout."
+            )
         return cls.from_arrays(times, pos, frame=frame)

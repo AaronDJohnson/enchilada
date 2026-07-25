@@ -174,3 +174,45 @@ class TestOrbitSpanCheck:
     def test_orbit_without_t_range_skips_check(self, rng):
         obs = make_observed(rng, orbit=object(), epoch=1e9)
         assert obs.orbit is not None
+
+
+class TestRemainingValidationBranches:
+    """Negative cases for the scalar/tdi guards not covered above."""
+
+    def test_n_samples_must_be_a_positive_int(self, observed):
+        with pytest.raises(ValueError, match="n_samples must be a positive integer"):
+            replace(observed, n_samples=0)
+        with pytest.raises(ValueError, match="n_samples must be a positive integer"):
+            replace(observed, n_samples=8.0)  # float is not an int
+
+    def test_epoch_must_be_finite(self, observed):
+        with pytest.raises(ValueError, match="epoch must be finite"):
+            replace(observed, epoch=float("nan"))
+
+    def test_tdi_generation_must_be_a_non_empty_string(self, observed):
+        with pytest.raises(ValueError, match="tdi_generation must be a non-empty"):
+            replace(observed, tdi_generation="")
+
+    def test_tdi_must_be_a_dict(self, observed):
+        with pytest.raises(TypeError, match="tdi must be a dict"):
+            replace(observed, tdi=[1.0, 2.0])
+
+    def test_channels_must_be_non_empty(self, observed):
+        with pytest.raises(ValueError, match="channels must be a non-empty"):
+            replace(observed, channels=(), tdi={})
+
+    def test_channels_must_not_contain_duplicates(self, rng):
+        with pytest.raises(ValueError, match="channels contains duplicates"):
+            make_observed(rng, channels=("A", "A"), tdi={"A": np.zeros(64)})
+
+    def test_tdi_values_must_be_1d_arrays(self, observed):
+        with pytest.raises(TypeError, match="must be a 1-D numpy array"):
+            replace(observed, tdi={ch: [0.0] * 64 for ch in observed.channels})
+
+    def test_private_attribute_miss_raises_plain_attributeerror(self, observed):
+        with pytest.raises(AttributeError):
+            _ = observed._not_a_field
+
+    def test_unknown_attribute_points_at_the_alias_table(self, observed):
+        with pytest.raises(AttributeError, match=r"aliases\(\)"):
+            _ = observed.wobble

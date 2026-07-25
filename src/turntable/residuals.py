@@ -73,8 +73,9 @@ class Residuals:
 
     Derived properties are exposed under both descriptive long names and
     the short symbols LISA papers use. Both spellings return the same value
-    -- pick whichever reads better in context. Call `Residuals.aliases()`
-    for the full long-to-short table.
+    -- pick whichever reads better in context, but prefer *one* consistently
+    within a given segment or script so readers are not tracking two
+    vocabularies. Call `Residuals.aliases()` for the full long-to-short table.
     """
 
     tdi: dict[str, np.ndarray]
@@ -369,4 +370,10 @@ class Residuals:
                 f"did you mean {suggestion!r}? "
                 f"See {type(self).__name__}.aliases() for the full table."
             )
-        raise AttributeError(f"{type(self).__name__} has no attribute {name!r}")
+        # Not a known typo either -- still point at the alias table, so an
+        # unfamiliar spelling leads somewhere instead of dead-ending.
+        raise AttributeError(
+            f"{type(self).__name__} has no attribute {name!r}; "
+            f"see {type(self).__name__}.aliases() for the derived quantities "
+            f"(and their LISA short names)."
+        )

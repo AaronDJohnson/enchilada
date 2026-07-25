@@ -67,11 +67,10 @@ def check_segment(
       that model satisfies the consumption contract -- `residual.noise_psd`
       succeeds rather than raising for want of a `psd` method.
 
-    It does not need to check the residual bookkeeping: the Wheel hands the
-    segment the data minus every *other* model and derives the segment's
-    ledger entry from what it returns, so there is no cross-segment
-    arithmetic in the segment to get wrong. Whether your *sampler* recovers
-    truth is still yours to verify -- `examples/toy_fit.py` is the pattern.
+    It does not check the residual bookkeeping -- the `Wheel` owns that, so
+    there is no cross-segment arithmetic in a segment to get wrong (see the
+    `Wheel` docstring for the ledger). Whether your *sampler* recovers truth
+    is still yours to verify; `examples/toy_fit.py` is the pattern.
 
     Raises with a pointed message at the first violation; returns quietly
     when the segment conforms. Run this in your own test suite before
