@@ -57,7 +57,7 @@ class TestCheckSegment:
             def step(self, residual):
                 return replace(residual, noise=object())
 
-        with pytest.raises(TypeError, match="neither psd"):
+        with pytest.raises(TypeError, match="does not expose"):
             check_segment(BadNoise(name="bad"), observed)
 
 

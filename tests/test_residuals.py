@@ -153,6 +153,24 @@ class TestOrbitSpanCheck:
         with pytest.raises(ValueError, match="outside the tabulated ephemeris"):
             make_observed(rng, orbit=self.StubOrbit(), sample_rate=1.0, epoch=epoch)
 
+    def test_orbit_tabulated_on_the_data_grid_accepted(self, rng):
+        # 64 samples at 1 Hz from epoch 0 -> last sample at t = 63 s. An orbit
+        # tabulated on exactly that grid covers every time a segment can ask
+        # for, so it must be accepted (it spans [0, 63], not [0, Tobs=64]).
+        class GridOrbit:
+            t_range = (0.0, 63.0)
+
+        obs = make_observed(rng, orbit=GridOrbit(), sample_rate=1.0, epoch=0.0)
+        assert obs.orbit is not None
+
+    def test_orbit_ending_before_the_last_sample_rejected(self, rng):
+        # one hair short of the last sample (63 s) must still be caught
+        class ShortOrbit:
+            t_range = (0.0, 62.9)
+
+        with pytest.raises(ValueError, match="outside the tabulated ephemeris"):
+            make_observed(rng, orbit=ShortOrbit(), sample_rate=1.0, epoch=0.0)
+
     def test_orbit_without_t_range_skips_check(self, rng):
         obs = make_observed(rng, orbit=object(), epoch=1e9)
         assert obs.orbit is not None

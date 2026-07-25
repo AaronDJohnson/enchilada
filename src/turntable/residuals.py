@@ -182,13 +182,17 @@ class Residuals:
         if t_range is None:
             return
         t_lo, t_hi = float(t_range[0]), float(t_range[1])
-        data_end = self.epoch + self.n_samples / self.sample_rate
-        if t_lo > self.epoch or t_hi < data_end:
+        # The samples sit at epoch + n*dt for n in [0, n_samples-1], so the last
+        # one is at epoch + (n_samples-1)*dt -- NOT epoch + Tobs. Requiring the
+        # ephemeris to reach epoch + Tobs would reject an orbit tabulated on the
+        # data's own sample grid, which serves every time a segment can ask for.
+        last_sample = self.epoch + (self.n_samples - 1) / self.sample_rate
+        if t_lo > self.epoch or t_hi < last_sample:
             raise ValueError(
-                f"orbit ephemeris spans [{t_lo}, {t_hi}] s but the data spans "
-                f"[{self.epoch}, {data_end}] s; every segment would need spacecraft "
-                f"positions outside the tabulated ephemeris (mismatched epoch "
-                f"conventions? GPS vs zero-based times?)"
+                f"orbit ephemeris spans [{t_lo}, {t_hi}] s but the data samples "
+                f"span [{self.epoch}, {last_sample}] s; every segment would need "
+                f"spacecraft positions outside the tabulated ephemeris (mismatched "
+                f"epoch conventions? GPS vs zero-based times?)"
             )
 
     # ---- descriptive (long) names ---------------------------------------
@@ -291,9 +295,9 @@ class Residuals:
             return None
         if not callable(getattr(self.noise, "psd", None)):
             raise TypeError(
-                f"noise object {type(self.noise).__name__} exposes neither "
-                f"psd(freqs[, channel]) as required here; the model a noise segment "
-                f"puts on Residuals.noise must implement it to serve frequency-domain "
+                f"noise object {type(self.noise).__name__} does not expose "
+                f"psd(freqs[, channel]); the model a noise segment puts on "
+                f"Residuals.noise must implement it to serve frequency-domain "
                 f"segments (see segment.NoiseSegment for the noise contract)"
             )
         freqs = np.fft.rfftfreq(self.n_samples, d=self.sample_interval)
