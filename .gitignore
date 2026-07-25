@@ -34,3 +34,9 @@ wheels/
 *.tar
 *.tar.gz
 *.tgz
+
+# coverage
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/

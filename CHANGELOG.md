@@ -41,5 +41,7 @@ First working release of the blocked-Gibbs orchestration layer.
   (annotated notebook incl. orbits), `examples/toy_fit.py` (a converging
   two-source + sampled-noise Gibbs fit).
 - Packaging: installable via uv or pip (uv_build backend), numpy-only core,
-  `numeric-orbits` and `examples` extras, MIT license, CI (ruff + pytest on
-  Python 3.12/3.13).
+  `numeric-orbits` and `examples` extras, MIT license, PEP 561 `py.typed`
+  marker (the Protocol/dataclass annotations are checkable by consumers), and
+  CI running ruff plus the suite behind a 95% coverage gate on Python
+  3.12/3.13 across Linux and macOS.

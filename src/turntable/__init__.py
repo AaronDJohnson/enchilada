@@ -7,7 +7,7 @@ from turntable.wheel import Wheel
 
 try:
     __version__ = version("turntable")
-except PackageNotFoundError:  # running from a source tree without install
+except PackageNotFoundError:  # pragma: no cover - source tree without install
     __version__ = "0+unknown"
 
 __all__ = [

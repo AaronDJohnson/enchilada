@@ -87,6 +87,15 @@ commentary, plus the `Residuals` long/short name aliases (`Tobs`, `fs`, `dt`,
 white-noise segment, converging to known truth — run
 [`examples/toy_fit.py`](examples/toy_fit.py).
 
+For a **real LISA source class**, [`examples/gb_segment_eryn.ipynb`](examples/gb_segment_eryn.ipynb)
+fits an injected galactic binary through the Wheel using GBGPU waveforms, an
+Eryn sampler living inside the segment, and a fixed LISA noise PSD from LISA
+Analysis Tools. Everything that is *not* turntable lives in
+[`examples/gb_model.py`](examples/gb_model.py), so the notebook shows only the
+turntable touchpoints. That example needs the external LISA stack (`gbgpu`,
+`eryn`, `lisaanalysistools`), which is **not** part of turntable's own
+dependencies or CI.
+
 ## Plugging in your sampler
 
 Implement the two-method `Segment` protocol — see the docstrings in
@@ -185,13 +194,15 @@ conventions.
 ## Development
 
 ```sh
-uv sync --extra numeric-orbits   # dev group (pytest, ruff) installs by default
+uv sync --extra numeric-orbits   # dev group (pytest, pytest-cov, ruff) by default
 uv run pytest                    # full suite, incl. examples and orbit loaders
+uv run pytest --cov --cov-report=term-missing   # with coverage (99%; gate at 95%)
 uv run ruff check src tests examples
 ```
 
-CI runs lint, tests, and artifact builds on Python 3.12 and 3.13 for every
-push and pull request. See [CHANGELOG.md](CHANGELOG.md) for release notes.
+CI runs lint, the suite behind a 95% coverage gate, and artifact builds across
+Python 3.12/3.13 on both Linux and macOS for every push and pull request. See
+[CHANGELOG.md](CHANGELOG.md) for release notes.
 
 ## Status
 
