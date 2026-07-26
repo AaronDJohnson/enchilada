@@ -237,6 +237,29 @@ asserted. Tagging `v*` runs the same gate and publishes via PyPI Trusted
 Publishing. See
 [CHANGELOG.md](https://github.com/AaronDJohnson/turntable/blob/main/CHANGELOG.md) for release notes.
 
+## Known limitations
+
+Deliberate scope decisions, recorded so they are choices rather than
+oversights:
+
+- **No data-quality / gap mask.** Every sample is treated as carrying
+  information. Real LISA data has scheduled gaps (antenna repointing) and
+  excised glitches, and a mask is exactly the kind of convention that belongs
+  in `Residuals` — otherwise each group invents its own. It is left out while
+  the datasets in play are gap-free, because a field nobody exercises would be
+  guessed at rather than designed. **TODO: add it as soon as the simulated data
+  grows gaps** — see the "Deliberately not in the contract yet" section of the
+  `Residuals` docstring for the specific decisions it involves (representation,
+  whether the Wheel's arithmetic must respect it, what the PSD grid means over
+  a gap, and whether windowing becomes a campaign convention too).
+- **One noise model at a time.** `Residuals.noise` is a single slot, so two
+  noise blocks (say instrument noise and galactic confusion) cannot each own a
+  component and have turntable combine them — the last segment to write it
+  wins. Sample them inside one noise segment that publishes a combined model,
+  or treat the confusion foreground as a signal segment that subtracts from
+  `tdi`. Dropping the model entirely is an error, but one noise segment
+  silently overwriting another's is not yet detected.
+
 ## Status
 
 Pre-release (0.1.0, unreleased) under active development: interfaces may

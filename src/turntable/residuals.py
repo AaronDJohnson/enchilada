@@ -3,6 +3,8 @@ from typing import TYPE_CHECKING, Any, ClassVar, Never
 
 import numpy as np
 
+from turntable.orbits import Orbit
+
 
 @dataclass(frozen=True, eq=False)
 class Residuals:
@@ -86,6 +88,30 @@ class Residuals:
     -- pick whichever reads better in context, but prefer *one* consistently
     within a given segment or script so readers are not tracking two
     vocabularies. Call `Residuals.aliases()` for the full long-to-short table.
+
+    Deliberately *not* in the contract yet: data quality
+    ---------------------------------------------------
+    There is no gap/quality mask. Every sample is currently treated as
+    carrying information, and the ledger arithmetic is defined over whole
+    arrays. Real LISA data will not look like that -- there are scheduled gaps
+    (antenna repointing) and excised glitches -- and when several groups each
+    invent their own mask and windowing, that is exactly the silent divergence
+    the fields above exist to prevent.
+
+    It is left out for now because the datasets in play are gap-free, and a
+    field nobody exercises would be guessed at rather than designed. **TODO:
+    add it to the contract as soon as the simulated data grows gaps** -- that
+    is the trigger. Doing it then still costs a breaking change for consumers,
+    so it should land before the first tag if the timing allows.
+
+    Whoever picks this up: the decisions are (1) representation -- a boolean
+    mask per channel, a list of good-data intervals, or NaN-in-place with a
+    validity flag; (2) whether the Wheel's residual arithmetic must respect it
+    or whether masking stays entirely a segment concern; (3) what
+    `noise_psd`/`noise_variance` mean over a gapped stretch, since the rfft
+    grid assumes uniform sampling; (4) whether windowing/tapering around gap
+    edges is a campaign convention that belongs here too (`to_frequency`
+    currently applies no window, which is itself an unstated convention).
     """
 
     tdi: dict[str, np.ndarray]
@@ -100,7 +126,7 @@ class Residuals:
     epoch: float = 0.0
     domain: str = "time"
     noise: Any | None = None
-    orbit: Any | None = None
+    orbit: Orbit | None = None
 
     DOMAINS: ClassVar[tuple[str, ...]] = ("time", "frequency")
     """Valid values for `domain`."""
