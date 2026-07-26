@@ -320,3 +320,85 @@ class TestNSamplesDerivation:
             Residuals(
                 tdi={"A": np.zeros(64), "E": np.zeros(60)}, **self._kwargs()
             )
+
+
+class TestDomainTransforms:
+    """to_frequency/to_time carry n_samples, so the round trip is exact."""
+
+    def _time_residual(self, n, fs=0.2, **over):
+        rng = np.random.default_rng(0)
+        kw = dict(
+            tdi={ch: rng.standard_normal(n) for ch in ("A", "E")},
+            sample_rate=fs,
+            channels=("A", "E"),
+            tdi_generation="1.5",
+            observable="fractional_frequency",
+        )
+        kw.update(over)
+        return Residuals(**kw)
+
+    @pytest.mark.parametrize("n", [1024, 1025])  # both parities
+    def test_round_trip_is_exact(self, n):
+        t = self._time_residual(n)
+        f = t.to_frequency()
+        assert f.domain == "frequency"
+        assert f.tdi["A"].size == n // 2 + 1
+        back = f.to_time()
+        assert back.domain == "time"
+        for ch in t.channels:
+            np.testing.assert_allclose(back.tdi[ch], t.tdi[ch], atol=1e-12)
+
+    @pytest.mark.parametrize("n", [1024, 1025])
+    def test_n_samples_is_carried_not_restated(self, n):
+        # never passed by hand: derived from the arrays, then carried across
+        t = self._time_residual(n)
+        f = t.to_frequency()
+        assert t.n_samples == f.n_samples == n
+        assert f.Tobs == t.Tobs and f.df == t.df and f.dt == t.dt
+
+    def test_transforms_are_idempotent_no_ops(self):
+        t = self._time_residual(64)
+        assert t.to_time() is t
+        f = t.to_frequency()
+        assert f.to_frequency() is f
+
+    def test_noise_and_orbit_ride_along(self):
+        class Noise:
+            def psd(self, f, channel=None):
+                return np.ones_like(f)
+
+        noise = Noise()
+        t = self._time_residual(64, noise=noise)
+        assert t.to_frequency().noise is noise
+
+    def test_transform_convention_matches_noise_psd_normalization(self):
+        """E[|X(f)|^2] == (Tobs/2) * S(f) for X = dt*rfft(x).
+
+        Pins that to_frequency's convention and noise_psd's normalization are
+        the same convention -- in code, not just in the docstrings.
+        """
+        fs, n, sigma = 0.2, 1 << 13, 0.7
+
+        class White:
+            def psd(self, f, channel=None):
+                return np.full_like(f, 2.0 * sigma**2 / fs)
+
+        rng = np.random.default_rng(1)
+        acc = None
+        trials = 40
+        for _ in range(trials):
+            t = Residuals(
+                tdi={"A": rng.normal(0.0, sigma, n)},
+                sample_rate=fs,
+                channels=("A",),
+                tdi_generation="1.5",
+                observable="fractional_frequency",
+                noise=White(),
+            )
+            power = np.abs(t.to_frequency().tdi["A"]) ** 2
+            acc = power if acc is None else acc + power
+        measured = acc / trials
+        predicted = 0.5 * t.Tobs * t.noise_psd("A")
+        interior = slice(10, -10)
+        ratio = float(np.mean(measured[interior] / predicted[interior]))
+        assert ratio == pytest.approx(1.0, abs=0.05)

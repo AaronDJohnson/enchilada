@@ -80,6 +80,11 @@ def inner(d, h, S, band, df):
 def inject_gb(truth, angles, Tobs, dt, n_samples, channels, noise, NB=128, seed=42):
     """Synthesize one GB in stationary noise on the one-sided rfft grid.
 
+    Note this dataset never exists as a time series -- GBGPU emits narrowband
+    frequency-domain templates directly -- which is why the caller must state
+    ``n_samples`` when wrapping it in a ``Residuals``. Data loaded as a time
+    series instead gets it derived, and ``Residuals.to_frequency()`` carries it.
+
     Returns ``(tdi, info)``: ``tdi`` is the channel->array dict to wrap in a
     ``Residuals``; ``info`` carries ``band``, the noiseless ``signal``, the optimal ``snr``, and
     the template's ``start_ind`` for plotting/diagnostics.

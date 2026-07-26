@@ -20,6 +20,12 @@ First working release of the blocked-Gibbs orchestration layer.
   n=1025, which imply different `Tobs`/`df`, so it is asked for rather than
   guessed. This moved `n_samples` after the required fields, so construct
   `Residuals` by keyword (positional construction changed shape).
+  `to_frequency()` / `to_time()` transform a dataset between representations,
+  carrying `n_samples` (so the round trip is exact for either parity) and
+  applying the campaign's `X(f) = dt * rfft(x)` convention in code rather than
+  in prose -- the same convention `noise_psd` is normalized against, which a
+  test now pins. Since data enters as a time series and transforms from there,
+  `n_samples` never needs stating by hand in the normal workflow.
 - `Segment` protocol — two methods, `start(residual)` and `step(residual)`,
   each returning the updated residual. The residual handed to a segment is
   the data minus every *other* segment (its own model excluded), so the

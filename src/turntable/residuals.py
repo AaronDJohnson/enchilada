@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, ClassVar, Never
 
 import numpy as np
@@ -318,6 +318,51 @@ class Residuals:
     def t0(self) -> float:
         """LISA shorthand for `epoch` (GPS seconds)."""
         return self.epoch
+
+    # ---- domain transforms (the campaign's FFT convention, in code) ------
+
+    def to_frequency(self) -> "Residuals":
+        """This same dataset as a one-sided spectrum (``domain="frequency"``).
+
+        Applies the campaign's Fourier convention -- ``X(f) = dt * rfft(x)``,
+        the one :meth:`noise_psd` is normalized against -- so groups cannot
+        disagree about it: it is executed here rather than described. Everything
+        else rides along unchanged, including ``n_samples``, which is what makes
+        the transform invertible (see :meth:`to_time`).
+
+        Data enters a campaign as a time series, so this is the normal way to
+        get a frequency-domain residual: build the `Residuals` from the time
+        series (where `n_samples` is read off the arrays) and transform. You
+        then never state `n_samples` by hand at all.
+
+        Returns ``self`` unchanged if already in the frequency domain.
+        """
+        if self.domain == "frequency":
+            return self
+        tdi = {
+            ch: self.sample_interval * np.fft.rfft(arr)
+            for ch, arr in self.tdi.items()
+        }
+        return replace(self, tdi=tdi, domain="frequency")
+
+    def to_time(self) -> "Residuals":
+        """This same dataset as a time series (``domain="time"``).
+
+        Inverts :meth:`to_frequency` exactly -- ``x = irfft(X / dt, n)`` -- for
+        *either* parity of ``n``, because ``n_samples`` travelled with the data.
+        A bare spectrum with no ``n_samples`` cannot be inverted this way: its
+        ``n // 2 + 1`` bins are consistent with both ``2*(bins-1)`` and
+        ``2*bins-1``, and choosing wrong silently resamples the series.
+
+        Returns ``self`` unchanged if already in the time domain.
+        """
+        if self.domain == "time":
+            return self
+        tdi = {
+            ch: np.fft.irfft(arr / self.sample_interval, n=self.n_samples)
+            for ch, arr in self.tdi.items()
+        }
+        return replace(self, tdi=tdi, domain="time")
 
     # ---- noise variance (assembled on this run's grid) ------------------
 

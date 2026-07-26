@@ -159,10 +159,23 @@ makes every convention an explicit, validated part of `Residuals`:
   `n_samples // 2 + 1`). `n_samples` always counts time-domain samples, so
   `Tobs`/`df`/`dt` and the PSD grid stay well defined in both. The residual a
   segment returns must keep the observed representation.
-- `n_samples` — **omit it for time-domain data**; the arrays carry it exactly,
-  so turntable reads it off them. Frequency-domain data must state it: an rfft
-  loses the parity of n (513 bins fit both n=1024 and n=1025, which mean
-  different `Tobs` and `df`), so turntable asks rather than silently guessing.
+- `n_samples` — **you should never have to state it.** Data enters a campaign
+  as a time series, where the arrays carry it exactly, so turntable reads it
+  off them; `residual.to_frequency()` then carries it across the transform:
+
+  ```python
+  observed = Residuals(tdi=time_series, sample_rate=fs, channels=("A", "E"),
+                       tdi_generation="1.5", observable="fractional_frequency")
+  spectrum = observed.to_frequency()      # n_samples rides along
+  ```
+
+  `to_frequency()`/`to_time()` apply the campaign's Fourier convention —
+  `X(f) = dt * rfft(x)`, the one `noise_psd` is normalized against — so it is
+  *executed* rather than merely documented, and the round trip is exact for
+  either parity of n. Only a spectrum built with no time-domain provenance
+  (e.g. straight from a frequency-domain waveform generator) has to state
+  `n_samples`, because `n // 2 + 1` bins fit both n=1024 and n=1025, which mean
+  different `Tobs` and `df`.
 - `channels` — names imply the campaign's normalized definitions
   (e.g. A = (Z − X)/√2); see the `Residuals` docstring.
 
