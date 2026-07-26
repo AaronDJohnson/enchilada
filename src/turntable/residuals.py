@@ -32,6 +32,16 @@ class Residuals:
         n_samples: Number of *time-domain* samples per channel -- always,
             even when `domain="frequency"` (it pins the duration, so
             `Tobs`/`df`/`dt` and the PSD grid stay well defined).
+
+            **Omit it for time-domain data**: the arrays are exactly that
+            long, so it is read off them and stating it again is duplication.
+
+            **Frequency-domain data must state it.** An rfft of a length-n
+            real series has `n // 2 + 1` bins, which loses the parity of n:
+            513 bins are consistent with n=1024 *and* n=1025, and those imply
+            different `Tobs` and `df`. The data cannot answer the question, so
+            turntable asks rather than guessing (guessing would silently
+            mis-scale every frequency-domain weight).
         channels: TDI channel names in this run, e.g. ("A", "E", "T"). A
             name implies the campaign's agreed channel definition *including
             normalization* -- e.g. A = (Z - X)/sqrt(2), E = (X - 2Y + Z)/sqrt(6),
@@ -80,10 +90,13 @@ class Residuals:
 
     tdi: dict[str, np.ndarray]
     sample_rate: float
-    n_samples: int
     channels: tuple[str, ...]
     tdi_generation: str
     observable: str
+    #: Number of *time-domain* samples. Leave it out (the ``0`` sentinel) for
+    #: time-domain data and it is read off the tdi arrays, which carry it
+    #: exactly. Frequency-domain data must state it -- see the class docstring.
+    n_samples: int = 0
     epoch: float = 0.0
     domain: str = "time"
     noise: Any | None = None
@@ -102,17 +115,51 @@ class Residuals:
     # ---- consistency validation ------------------------------------------
 
     def __post_init__(self) -> None:
-        """Validate the data contract; runs on every construction/replace."""
-        self._validate_settings()
-        self._validate_tdi()
+        """Validate the data contract; runs on every construction/replace.
+
+        Ordered by dependency: conventions first (so `domain` is known), then
+        the tdi structure (so an array length can be read), then `n_samples`
+        (derived from that length, or required), then the length and orbit
+        checks that need it.
+        """
+        self._validate_conventions()
+        self._validate_tdi_structure()
+        self._resolve_n_samples()
+        self._validate_tdi_lengths()
         self._validate_orbit_span()
 
-    def _validate_settings(self) -> None:
-        """Scalar run settings: counts, rates, and convention strings."""
+    def _resolve_n_samples(self) -> None:
+        """Fill in `n_samples` from the data where that is exact.
+
+        Time domain: the arrays *are* `n_samples` long, so read it off them --
+        stating it again is pure duplication.
+
+        Frequency domain: an rfft of a length-n real series has n // 2 + 1
+        bins, which loses the parity of n (513 bins come from n=1024 *or*
+        n=1025 -- different Tobs, different df). It cannot be recovered from
+        the data, so it must be stated rather than guessed.
+        """
+        if self.n_samples == 0:  # sentinel: not supplied
+            first = self.tdi[self.channels[0]]
+            if self.domain == "time":
+                object.__setattr__(self, "n_samples", int(first.shape[0]))
+            else:
+                n_bins = int(first.shape[0])
+                raise ValueError(
+                    f"n_samples must be given when domain='frequency': the "
+                    f"{n_bins}-bin rfft grid does not determine it (it is "
+                    f"consistent with n_samples={2 * (n_bins - 1)} and "
+                    f"={2 * n_bins - 1}, which imply different Tobs and df). "
+                    f"Pass the number of time-domain samples the spectrum came "
+                    f"from; only time-domain data can have it derived."
+                )
         if not isinstance(self.n_samples, (int, np.integer)) or self.n_samples <= 0:
             raise ValueError(
                 f"n_samples must be a positive integer, got {self.n_samples!r}"
             )
+
+    def _validate_conventions(self) -> None:
+        """Scalar run settings: rates, epoch, and convention strings."""
         if not np.isfinite(self.sample_rate) or self.sample_rate <= 0:
             raise ValueError(
                 f"sample_rate must be a positive finite number in Hz, "
@@ -136,8 +183,8 @@ class Residuals:
                 f"domain must be one of {self.DOMAINS}, got {self.domain!r}"
             )
 
-    def _validate_tdi(self) -> None:
-        """tdi keys match channels; every array lives on this domain's grid."""
+    def _validate_tdi_structure(self) -> None:
+        """tdi is a dict of 1-D arrays whose keys are exactly `channels`."""
         if not isinstance(self.tdi, dict):
             raise TypeError(
                 f"tdi must be a dict of channel -> array, "
@@ -154,7 +201,6 @@ class Residuals:
                 f"tdi keys must match channels exactly; "
                 f"missing {missing}, unexpected {extra}"
             )
-        expected = self.n_samples if self.domain == "time" else self.n_samples // 2 + 1
         for ch in self.channels:
             arr = self.tdi[ch]
             if not isinstance(arr, np.ndarray) or arr.ndim != 1:
@@ -162,6 +208,13 @@ class Residuals:
                     f"tdi[{ch!r}] must be a 1-D numpy array, "
                     f"got {type(arr).__name__}"
                 )
+
+    def _validate_tdi_lengths(self) -> None:
+        """Every array lives on this domain's grid, and is real in the time
+        domain."""
+        expected = self.n_samples if self.domain == "time" else self.n_samples // 2 + 1
+        for ch in self.channels:
+            arr = self.tdi[ch]
             if arr.shape[0] != expected:
                 raise ValueError(
                     f"tdi[{ch!r}] has length {arr.shape[0]}, expected {expected} for "

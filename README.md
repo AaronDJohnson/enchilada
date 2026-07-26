@@ -61,12 +61,10 @@ channels = ("A", "E", "T")
 observed = Residuals(
     tdi={ch: rng.standard_normal(n_samples) for ch in channels},
     sample_rate=0.1,
-    n_samples=n_samples,
     channels=channels,
     tdi_generation="2.0",
     observable="fractional_frequency",
-    epoch=0.0,
-)
+)   # n_samples is read off the arrays; epoch defaults to 0.0
 
 ucb = EchoSegment(name="ucb")
 mbhb = EchoSegment(name="mbhb")
@@ -161,6 +159,10 @@ makes every convention an explicit, validated part of `Residuals`:
   `n_samples // 2 + 1`). `n_samples` always counts time-domain samples, so
   `Tobs`/`df`/`dt` and the PSD grid stay well defined in both. The residual a
   segment returns must keep the observed representation.
+- `n_samples` — **omit it for time-domain data**; the arrays carry it exactly,
+  so turntable reads it off them. Frequency-domain data must state it: an rfft
+  loses the parity of n (513 bins fit both n=1024 and n=1025, which mean
+  different `Tobs` and `df`), so turntable asks rather than silently guessing.
 - `channels` — names imply the campaign's normalized definitions
   (e.g. A = (Z − X)/√2); see the `Residuals` docstring.
 

@@ -220,8 +220,10 @@ class TestRemainingValidationBranches:
     """Negative cases for the scalar/tdi guards not covered above."""
 
     def test_n_samples_must_be_a_positive_int(self, observed):
+        # 0 is the "derive it" sentinel, so the invalid values are negatives
+        # and non-integers
         with pytest.raises(ValueError, match="n_samples must be a positive integer"):
-            replace(observed, n_samples=0)
+            replace(observed, n_samples=-4)
         with pytest.raises(ValueError, match="n_samples must be a positive integer"):
             replace(observed, n_samples=8.0)  # float is not an int
 
@@ -256,3 +258,65 @@ class TestRemainingValidationBranches:
     def test_unknown_attribute_points_at_the_alias_table(self, observed):
         with pytest.raises(AttributeError, match=r"aliases\(\)"):
             _ = observed.wobble
+
+
+class TestNSamplesDerivation:
+    """n_samples is read off the data where that is exact, required where not."""
+
+    def _kwargs(self, **over):
+        base = dict(
+            sample_rate=0.1,
+            channels=("A", "E"),
+            tdi_generation="2.0",
+            observable="fractional_frequency",
+        )
+        base.update(over)
+        return base
+
+    def test_time_domain_derives_from_the_arrays(self):
+        r = Residuals(tdi={ch: np.zeros(1024) for ch in ("A", "E")}, **self._kwargs())
+        assert r.n_samples == 1024
+        assert r.Tobs == 1024 / 0.1
+        assert r.df == 1.0 / r.Tobs
+
+    def test_explicit_value_still_honoured_and_checked(self):
+        kw = self._kwargs()
+        tdi = {ch: np.zeros(1024) for ch in ("A", "E")}
+        assert Residuals(tdi=tdi, n_samples=1024, **kw).n_samples == 1024
+        with pytest.raises(ValueError, match="expected 512"):
+            Residuals(tdi=tdi, n_samples=512, **kw)
+
+    def test_frequency_domain_requires_it_and_says_why(self):
+        # 513 bins are consistent with n=1024 and n=1025 -- the parity is lost,
+        # so turntable asks instead of guessing
+        with pytest.raises(ValueError, match="does not determine it") as exc:
+            Residuals(
+                tdi={ch: np.zeros(513, complex) for ch in ("A", "E")},
+                domain="frequency",
+                **self._kwargs(),
+            )
+        msg = str(exc.value)
+        assert "n_samples=1024" in msg and "=1025" in msg
+
+    @pytest.mark.parametrize("n", [1024, 1025])
+    def test_frequency_domain_accepts_either_parity_when_stated(self, n):
+        r = Residuals(
+            tdi={ch: np.zeros(n // 2 + 1, complex) for ch in ("A", "E")},
+            domain="frequency",
+            n_samples=n,
+            **self._kwargs(),
+        )
+        assert r.n_samples == n
+        assert r.Tobs == n / 0.1  # the two parities really do differ
+
+    def test_derived_value_survives_replace(self):
+        r = Residuals(tdi={ch: np.zeros(64) for ch in ("A", "E")}, **self._kwargs())
+        r2 = replace(r, tdi={ch: np.ones(64) for ch in ("A", "E")})
+        assert r2.n_samples == 64
+
+    def test_derivation_still_validates_every_channel(self):
+        # derived from the first channel, but a ragged second one is caught
+        with pytest.raises(ValueError, match="has length 60, expected 64"):
+            Residuals(
+                tdi={"A": np.zeros(64), "E": np.zeros(60)}, **self._kwargs()
+            )

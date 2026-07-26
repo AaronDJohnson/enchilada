@@ -134,8 +134,7 @@ def make_observed(seed: int = 0) -> Residuals:
     return Residuals(
         tdi={"A": data},
         sample_rate=fs,
-        n_samples=n,
-        channels=("A",),
+        channels=("A",),   # n_samples derived from the array
         tdi_generation="2.0",
         observable="fractional_frequency",
         epoch=0.0,

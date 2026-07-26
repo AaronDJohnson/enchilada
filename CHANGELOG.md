@@ -14,6 +14,12 @@ First working release of the blocked-Gibbs orchestration layer.
   `epoch` to `0.0`), long/short name aliases (`Tobs`, `fs`, `dt`, ...), a typo
   catcher, and full self-validation on every construction (tdi/channels
   consistency, per-domain array lengths, orbit-must-span-data).
+  `n_samples` is derived from the tdi arrays for time-domain data (where they
+  carry it exactly) and required only for frequency-domain data, where the
+  rfft grid loses the parity of n — 513 bins are consistent with n=1024 and
+  n=1025, which imply different `Tobs`/`df`, so it is asked for rather than
+  guessed. This moved `n_samples` after the required fields, so construct
+  `Residuals` by keyword (positional construction changed shape).
 - `Segment` protocol — two methods, `start(residual)` and `step(residual)`,
   each returning the updated residual. The residual handed to a segment is
   the data minus every *other* segment (its own model excluded), so the
