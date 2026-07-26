@@ -20,6 +20,13 @@ First working release of the blocked-Gibbs orchestration layer.
   n=1025, which imply different `Tobs`/`df`, so it is asked for rather than
   guessed. This moved `n_samples` after the required fields, so construct
   `Residuals` by keyword (positional construction changed shape).
+  `noise_variance()` gives the per-sample variance a time-domain likelihood
+  needs (PSD integrated over the grid, Nyquist half-weighted, so it does not
+  depend on the parity of `n_samples`). `dtype` is part of the validated
+  contract (floating or complex; integer and object arrays are refused at
+  construction rather than failing inside the Wheel), `channels` is normalised
+  to a tuple, and equality is identity-based so comparing two `Residuals` no
+  longer raises a numpy error.
   `to_frequency()` / `to_time()` transform a dataset between representations,
   carrying `n_samples` (so the round trip is exact for either parity) and
   applying the campaign's `X(f) = dt * rfft(x)` convention in code rather than
@@ -35,6 +42,13 @@ First working release of the blocked-Gibbs orchestration layer.
   never sees. Noise is not special: a noise segment returns the residual with
   an updated `noise` object (a zero ledger entry), consumed via
   `Residuals.noise_psd` (documented interface `psd(freqs[, channel])`).
+- `Wheel` boundary guards: `add` verifies `name`/`start`/`step` before
+  registering anything; a returned residual may not drop the noise model
+  (symmetric with the existing orbit check) and may not contain NaN/inf, which
+  would otherwise be recorded as that segment's model and handed to every
+  segment stepped later; and because the ledger is derived, the Wheel warns
+  when a previously non-zero model becomes exactly zero (a segment that returns
+  the residual unchanged silently withdraws itself from the fit).
 - `Wheel`: the Gibbs ring, owning the pristine data and a per-segment ledger
   (each segment's current model). It hands each segment the data minus every
   other model and derives that segment's new ledger entry from what it

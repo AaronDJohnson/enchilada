@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from conftest import make_observed
-from turntable import Wheel
+from turntable import Residuals, Wheel
 from turntable.testing import EchoSegment
 
 
@@ -229,7 +229,9 @@ class TestReturnedResidualValidation:
 
         wheel = Wheel(observed)
         wheel.add(Cheat("cheat", 0.0))
-        with pytest.raises(ValueError, match="changed the run setting 'tdi_generation'"):
+        with pytest.raises(
+            ValueError, match="changed the run setting 'tdi_generation'"
+        ):
             wheel.run(1)
 
     def test_bad_tdi_shape_raises_via_residuals(self, observed):
@@ -314,3 +316,136 @@ class TestOnSweep:
         wheel.add(ConstSegment("a", 1.0))
         wheel.run(3, on_sweep=lambda i, w: calls.append((i, w is wheel)))
         assert calls == [(0, True), (1, True), (2, True)]
+
+
+class TestBoundaryGuards:
+    """The Wheel refuses returns that would silently corrupt other segments."""
+
+    def test_dropping_the_noise_model_raises(self, rng):
+        obs = make_observed(rng, noise=FlatPSD(3.0))
+
+        class Rebuilder(ConstSegment):
+            def step(self, residual):
+                # rebuilds instead of using replace() -> loses noise silently
+                return Residuals(
+                    tdi=residual.tdi,
+                    sample_rate=residual.sample_rate,
+                    channels=residual.channels,
+                    tdi_generation=residual.tdi_generation,
+                    observable=residual.observable,
+                    n_samples=residual.n_samples,
+                    epoch=residual.epoch,
+                    domain=residual.domain,
+                )
+
+        wheel = Wheel(obs)
+        wheel.add(Rebuilder("r", 0.0))
+        with pytest.raises(ValueError, match="dropped the noise model"):
+            wheel.run(1)
+
+    def test_non_finite_return_raises_and_names_the_channel(self, observed):
+        class Blowup(ConstSegment):
+            def step(self, residual):
+                return replace(
+                    residual, tdi={ch: arr * np.nan for ch, arr in residual.tdi.items()}
+                )
+
+        wheel = Wheel(observed)
+        wheel.add(Blowup("boom", 0.0))
+        with pytest.raises(ValueError, match="non-finite sample"):
+            wheel.run(1)
+
+    def test_missing_step_is_caught_at_registration(self, observed):
+        class NoStep:
+            name = "nostep"
+
+            def start(self, residual):
+                return residual
+
+        with pytest.raises(TypeError, match="does not implement step"):
+            Wheel(observed).add(NoStep())
+
+    def test_withdrawing_a_model_warns(self, observed):
+        class Fickle(ConstSegment):
+            def __init__(self, name, value):
+                super().__init__(name, value)
+                self.calls = 0
+
+            def step(self, residual):
+                self.calls += 1
+                if self.calls == 2:
+                    return residual  # "nothing changed" -- silently withdraws
+                return super().step(residual)
+
+        wheel = Wheel(observed)
+        wheel.add(Fickle("f", 1.0))
+        with pytest.warns(RuntimeWarning, match="returned the residual unchanged"):
+            wheel.run(2)
+
+    def test_a_genuinely_zero_model_does_not_warn(self, observed):
+        # EchoSegment contributes zero on every step; that is not a withdrawal
+        import warnings as _w
+
+        wheel = Wheel(observed)
+        wheel.add(EchoSegment("echo"))
+        with _w.catch_warnings():
+            _w.simplefilter("error")  # any warning becomes a failure
+            wheel.run(3)
+
+    def test_complex_model_against_real_frequency_data_promotes(self, rng):
+        # a real-dtype spectrum is a valid Residuals; the ledger must promote
+        # rather than raise a raw numpy casting error
+        obs = make_observed(
+            rng,
+            domain="frequency",
+            tdi={ch: np.zeros(33) for ch in ("A", "E", "T")},
+            n_samples=64,
+        )
+
+        class Complexify(ConstSegment):
+            def step(self, residual):
+                return replace(
+                    residual,
+                    tdi={ch: arr - (0.5 + 0.5j) for ch, arr in residual.tdi.items()},
+                )
+
+        wheel = Wheel(obs)
+        wheel.add(Complexify("c", 0.0))
+        wheel.run(1)
+        assert np.iscomplexobj(wheel.residual().tdi["A"])
+
+    @pytest.mark.parametrize("field", Wheel._INVARIANT)
+    def test_every_invariant_run_setting_is_guarded(self, rng, field):
+        """Each field in _INVARIANT must actually be enforced, not just listed."""
+        obs = make_observed(rng, sample_rate=1.0)
+        bad = {
+            "channels": ("A",),
+            "n_samples": obs.n_samples * 2,
+            "sample_rate": 2.0,
+            "tdi_generation": "9.9",
+            "observable": "phase",
+            "domain": "frequency",
+            "epoch": 12345.0,
+        }[field]
+
+        class Cheat(ConstSegment):
+            def step(self, residual):
+                kw = {field: bad}
+                if field in ("channels", "n_samples", "domain"):
+                    # keep tdi self-consistent so Residuals' own checks pass and
+                    # the Wheel's invariant check is what fires
+                    if field == "channels":
+                        kw["tdi"] = {"A": residual.tdi["A"]}
+                    elif field == "n_samples":
+                        kw["tdi"] = {ch: np.zeros(bad) for ch in residual.channels}
+                    else:
+                        kw["tdi"] = {
+                            ch: np.zeros(residual.n_samples // 2 + 1, complex)
+                            for ch in residual.channels
+                        }
+                return replace(residual, **kw)
+
+        wheel = Wheel(obs)
+        wheel.add(Cheat("cheat", 0.0))
+        with pytest.raises(ValueError, match=f"changed the run setting {field!r}"):
+            wheel.run(1)

@@ -1,8 +1,9 @@
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from turntable.residuals import Residuals
 
 
+@runtime_checkable
 class Segment(Protocol):
     """Plug a sampler into the Wheel by implementing this interface.
 
@@ -35,12 +36,15 @@ class Segment(Protocol):
 
     The pattern:
 
+        from turntable import replace   # or: from dataclasses import replace
+
         def step(self, residual):
-            ch = residual.channels[0]
-            data = residual.tdi[ch]              # already data minus OTHERS
-            self.amplitude = draw_against(data, self.template)   # conditional sample
-            mine = self.amplitude * self.template
-            return replace(residual, tdi={ch: data - mine, ...})  # subtract your model
+            tdi = dict(residual.tdi)             # keep the channels you do not touch
+            for ch in residual.channels:
+                data = tdi[ch]                   # already data minus OTHERS
+                self.amplitude = draw_against(data, self.template)  # your sample
+                tdi[ch] = data - self.amplitude * self.template     # subtract yours
+            return replace(residual, tdi=tdi)
 
     Noise is not special. A segment that models the noise instead of a signal
     removes nothing from `tdi`; it returns the residual with an updated `noise`
@@ -107,6 +111,7 @@ class Segment(Protocol):
         ...
 
 
+@runtime_checkable
 class NoiseSegment(Segment, Protocol):
     """Convention for a `Segment` that models the noise, not a signal.
 

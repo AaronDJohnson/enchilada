@@ -18,10 +18,7 @@ class TestCheckSegment:
         obs = make_observed(
             rng,
             domain="frequency",
-            tdi={
-                ch: rng.standard_normal(n // 2 + 1) + 0j
-                for ch in ("A", "E", "T")
-            },
+            tdi={ch: rng.standard_normal(n // 2 + 1) + 0j for ch in ("A", "E", "T")},
         )
         check_segment(EchoSegment(name="echo"), obs)
 
@@ -61,7 +58,6 @@ class TestCheckSegment:
             check_segment(BadNoise(name="bad"), observed)
 
 
-
 class TestEchoSegment:
     def test_keeps_its_own_step_counter(self, observed):
         from turntable import Wheel
@@ -79,6 +75,4 @@ class TestEchoSegment:
         wheel.add(EchoSegment(name="echo"))
         wheel.run(1)
         for ch in observed.channels:
-            np.testing.assert_array_equal(
-                wheel.residual().tdi[ch], observed.tdi[ch]
-            )
+            np.testing.assert_array_equal(wheel.residual().tdi[ch], observed.tdi[ch])

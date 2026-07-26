@@ -66,7 +66,7 @@ def scatter(start_ind, cols, n_rfft, chans):
     """Narrowband template columns -> full one-sided rfft-grid dict."""
     out = {ch: np.zeros(n_rfft, dtype=complex) for ch in chans}
     for ch in chans:
-        out[ch][start_ind:start_ind + len(cols[ch])] = cols[ch]
+        out[ch][start_ind : start_ind + len(cols[ch])] = cols[ch]
     return out
 
 
@@ -86,8 +86,8 @@ def inject_gb(truth, angles, Tobs, dt, n_samples, channels, noise, NB=128, seed=
     series instead gets it derived, and ``Residuals.to_frequency()`` carries it.
 
     Returns ``(tdi, info)``: ``tdi`` is the channel->array dict to wrap in a
-    ``Residuals``; ``info`` carries ``band``, the noiseless ``signal``, the optimal ``snr``, and
-    the template's ``start_ind`` for plotting/diagnostics.
+    ``Residuals``; ``info`` carries ``band``, the noiseless ``signal``, the
+    optimal ``snr``, and the template's ``start_ind`` for diagnostics.
     """
     df = 1.0 / Tobs
     freqs = np.fft.rfftfreq(n_samples, dt)
@@ -105,7 +105,8 @@ def inject_gb(truth, angles, Tobs, dt, n_samples, channels, noise, NB=128, seed=
     tdi = {}
     for ch in channels:
         draw = np.sqrt(S / (4.0 * df)) * (
-            rng.standard_normal(n_rfft) + 1j * rng.standard_normal(n_rfft))
+            rng.standard_normal(n_rfft) + 1j * rng.standard_normal(n_rfft)
+        )
         draw[0] = 0.0
         tdi[ch] = signal[ch] + draw
 
@@ -136,8 +137,17 @@ class GBSegment:
     #: channels this model can produce; GBGPU gives the A and E TDI variables
     SUPPORTED_CHANNELS = ("A", "E")
 
-    def __init__(self, init, bounds, angles, name="gb", n_walkers=24,
-                 steps_per_sweep=40, band=128, seed=0):
+    def __init__(
+        self,
+        init,
+        bounds,
+        angles,
+        name="gb",
+        n_walkers=24,
+        steps_per_sweep=40,
+        band=128,
+        seed=0,
+    ):
         self.name = name
         self.init = np.asarray(init, float)
         b = np.asarray(bounds, float)
@@ -175,7 +185,9 @@ class GBSegment:
         self.Tobs, self.dt, self.df = residual.Tobs, residual.dt, residual.df
         self.n_rfft = residual.tdi[self.chans[0]].shape[0]
         self.gb = GBGPU()
-        self.S = {ch: residual.noise_psd(ch) for ch in self.chans}  # noise via turntable
+        self.S = {
+            ch: residual.noise_psd(ch) for ch in self.chans
+        }  # noise via turntable
 
     def _template(self, params):
         return gb_template(self.gb, params, self.angles, self.Tobs, self.dt, self.NB)
@@ -188,33 +200,48 @@ class GBSegment:
         si, hA, hE = self._template(np.asarray(x).ravel())
         b = slice(si, si + self.NB)
         cols = {"A": hA, "E": hE}
-        return -0.5 * sum(inner(self._data[ch], cols[ch], self.S[ch], b, self.df)
-                          for ch in self.chans)
+        return -0.5 * sum(
+            inner(self._data[ch], cols[ch], self.S[ch], b, self.df) for ch in self.chans
+        )
 
     def start(self, residual):
         self._read_context(residual)
         self._model = self._render(self.params)
         self._sampler = EnsembleSampler(
-            self.nw, self.ndim, self._logl,
-            priors={"model_0": ProbDistContainer(
-                {i: UniformDistribution(self.lo[i], self.hi[i])
-                 for i in range(self.ndim)})})
+            self.nw,
+            self.ndim,
+            self._logl,
+            priors={
+                "model_0": ProbDistContainer(
+                    {
+                        i: UniformDistribution(self.lo[i], self.hi[i])
+                        for i in range(self.ndim)
+                    }
+                )
+            },
+        )
         r = self.rng.standard_normal((1, self.nw, 1, self.ndim))
-        p0 = np.clip(self.init + 0.01 * (self.hi - self.lo) * r,
-                     self.lo + 1e-9 * (self.hi - self.lo),
-                     self.hi - 1e-9 * (self.hi - self.lo))
+        p0 = np.clip(
+            self.init + 0.01 * (self.hi - self.lo) * r,
+            self.lo + 1e-9 * (self.hi - self.lo),
+            self.hi - 1e-9 * (self.hi - self.lo),
+        )
         self._state = State(p0)
-        return replace(residual, tdi={ch: residual.tdi[ch] - self._model[ch]
-                                      for ch in self.chans})
+        return replace(
+            residual, tdi={ch: residual.tdi[ch] - self._model[ch] for ch in self.chans}
+        )
 
     def step(self, residual):
-        self.S = {ch: residual.noise_psd(ch) for ch in self.chans}   # current noise, off the residual
+        self.S = {
+            ch: residual.noise_psd(ch) for ch in self.chans
+        }  # current noise, off the residual
         # `residual` is already the data minus every OTHER segment -- fit it
         # directly (no add-back); the Wheel keeps the ledger.
         self._data = {ch: residual.tdi[ch] for ch in self.chans}
         self._state = self._sampler.run_mcmc(self._state, self.k, progress=False)
         self.chain = self._sampler.get_chain()["model_0"].reshape(-1, self.ndim)
-        self.params = self.chain[-self.nw:].mean(0)                        # point estimate
+        self.params = self.chain[-self.nw :].mean(0)  # point estimate
         self._model = self._render(self.params)
-        return replace(residual, tdi={ch: residual.tdi[ch] - self._model[ch]
-                                      for ch in self.chans})
+        return replace(
+            residual, tdi={ch: residual.tdi[ch] - self._model[ch] for ch in self.chans}
+        )

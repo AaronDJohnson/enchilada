@@ -44,17 +44,12 @@ class EchoSegment:
         ch0 = residual.channels[0]
         # abs() so the RMS is real for frequency-domain (complex) data too
         rms = float(np.sqrt(np.mean(np.abs(residual.tdi[ch0]) ** 2)))
-        print(
-            f"[{self.name}] step {self.steps}: "
-            f"residual RMS on {ch0!r} = {rms:.4e}"
-        )
+        print(f"[{self.name}] step {self.steps}: residual RMS on {ch0!r} = {rms:.4e}")
         self.steps += 1
         return residual
 
 
-def check_segment(
-    segment: Segment, observed: Residuals, n_sweeps: int = 2
-) -> None:
+def check_segment(segment: Segment, observed: Residuals, n_sweeps: int = 2) -> None:
     """Conformance check for a `Segment` implementation.
 
     Drives the full Wheel protocol against `observed` on a scratch Wheel and

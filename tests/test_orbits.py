@@ -160,13 +160,30 @@ class TestFromLisaorbitsGuard:
     @pytest.mark.parametrize(
         "bad",
         [
-            (5, 3, 4),   # wrong trailing axis
-            (3, 5, 3),   # already transposed -- must NOT be silently accepted
-            (5, 8),      # wrong flattened width
-            (15, 3),     # 2-D of the right size but wrong layout
+            (5, 3, 4),  # wrong trailing axis
+            (3, 5, 3),  # already transposed -- must NOT be silently accepted
+            (5, 8),  # wrong flattened width
+            (15, 3),  # 2-D of the right size but wrong layout
         ],
     )
     def test_rejects_any_other_shape(self, bad):
         t = np.linspace(0.0, 10.0, 5)
         with pytest.raises(ValueError, match="compute_position"):
             NumericOrbit.from_lisaorbits(self.Stub(np.zeros(bad)), t)
+
+
+def test_from_hdf5_preserves_a_gps_scale_epoch(tmp_path):
+    """t0 must survive the load, not be silently zeroed or offset."""
+    h5py = pytest.importorskip("h5py")
+    t0, dt, n = 1.2345e9, 15.0, 64  # GPS-scale start
+    _, pos = circular_table(n=n)
+    path = tmp_path / "orbit_gps.h5"
+    with h5py.File(path, "w") as f:
+        g = f.create_group("orbits")
+        s = g.create_group("sampling")
+        s.attrs["t0"], s.attrs["dt"], s.attrs["size"] = t0, dt, n
+        for i in range(3):
+            g.create_dataset(f"sc_position_{i + 1}", data=pos[i])
+    orb = NumericOrbit.from_hdf5(str(path), frame="ecliptic")
+    assert orb.t_range[0] == pytest.approx(t0)
+    assert orb.t_range[1] == pytest.approx(t0 + (n - 1) * dt)

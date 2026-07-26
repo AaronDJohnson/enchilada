@@ -78,18 +78,18 @@ wheel.residual()   # the running residual: observed minus every segment's model
 ucb.steps          # segment internals live on YOUR objects, not the Wheel
 ```
 
-[`examples/demo.ipynb`](examples/demo.ipynb) is the same walkthrough with
+[`examples/demo.ipynb`](https://github.com/AaronDJohnson/turntable/blob/main/examples/demo.ipynb) is the same walkthrough with
 commentary, plus the `Residuals` long/short name aliases (`Tobs`, `fs`, `dt`,
 ...), the typo catcher, and attaching a constellation ephemeris. For a real
 (toy) sampler — two conjugate-Gibbs source segments plus a sampled
 white-noise segment, converging to known truth — run
-[`examples/toy_fit.py`](examples/toy_fit.py).
+[`examples/toy_fit.py`](https://github.com/AaronDJohnson/turntable/blob/main/examples/toy_fit.py).
 
-For a **real LISA source class**, [`examples/gb_segment_eryn.ipynb`](examples/gb_segment_eryn.ipynb)
+For a **real LISA source class**, [`examples/gb_segment_eryn.ipynb`](https://github.com/AaronDJohnson/turntable/blob/main/examples/gb_segment_eryn.ipynb)
 fits an injected galactic binary through the Wheel using GBGPU waveforms, an
 Eryn sampler living inside the segment, and a fixed LISA noise PSD from LISA
 Analysis Tools. Everything that is *not* turntable lives in
-[`examples/gb_model.py`](examples/gb_model.py), so the notebook shows only the
+[`examples/gb_model.py`](https://github.com/AaronDJohnson/turntable/blob/main/examples/gb_model.py), so the notebook shows only the
 turntable touchpoints. That example needs the external LISA stack (`gbgpu`,
 `eryn`, `lisaanalysistools`) plus `matplotlib`/`corner` for its plots — none of
 which are turntable dependencies, so it is not exercised by CI. Its outputs are
@@ -98,7 +98,7 @@ not committed; run it to populate them.
 ## Plugging in your sampler
 
 Implement the two-method `Segment` protocol — see the docstrings in
-[`src/turntable/segment.py`](src/turntable/segment.py) for the full contract:
+[`src/turntable/segment.py`](https://github.com/AaronDJohnson/turntable/blob/main/src/turntable/segment.py) for the full contract:
 
 - `name` — unique within a Wheel; identifies you in diagnostics and errors.
 - `start(residual) -> residual` — called once at registration; read the run
@@ -112,11 +112,16 @@ Implement the two-method `Segment` protocol — see the docstrings in
   add-back; the Wheel keeps the ledger and derives your new entry from what
   you return.
 
+`replace` is re-exported for convenience (`from turntable import replace`), since
+every segment needs it to return an updated residual.
+
 A segment that models the noise instead of a signal removes nothing from the
 data; it returns the residual with an updated `noise` object —
 `replace(residual, noise=my_model)` (so its ledger entry is zero) — and signal
-segments read it back through `Residuals.noise_psd`. The Wheel stays entirely
-noise-agnostic (see `NoiseSegment`).
+segments read it back through `Residuals.noise_psd` for a frequency-domain
+weight, or `Residuals.noise_variance` for the per-sample variance a time-domain
+likelihood needs (turntable does the PSD integration, including the Nyquist
+weighting, so the answer does not depend on the parity of `n_samples`).
 
 Everything about your sampler is *yours*: parameters, RNG, posterior chains,
 checkpoints, and your own current model all live inside your segment object
@@ -186,13 +191,20 @@ producing quietly wrong science:
   `channels`, array lengths must match `domain`/`n_samples`, and an attached
   orbit must span the observation (catching GPS-vs-zero-based epoch
   mismatches at construction, not mid-run).
-- The `Wheel` validates each segment fully **before** registering it (a
-  failed `add` changes nothing), and re-validates the residual returned by
-  every `start`/`step`: it must be a `Residuals` that kept the fixed run
-  settings, and `Residuals` itself rejects wrong tdi shapes — so a mid-run
-  drift raises immediately instead of corrupting the next segment's residual.
-  A noise model is checked where it is consumed (`noise_psd` raises if it
-  lacks a `psd` method).
+- The `Wheel` validates each segment fully **before** registering it (`name`,
+  `start` *and* `step`, so a failed `add` changes nothing), and re-validates the
+  residual returned by every `start`/`step`: it must be a `Residuals` that kept
+  the fixed run settings, must not have dropped the noise model, and must be
+  finite — a NaN from a blown-up sampler is refused rather than handed to every
+  segment stepped after it. `Residuals` itself rejects wrong tdi shapes *and
+  dtypes*, so a mid-run drift raises immediately instead of corrupting the next
+  segment's residual. A noise model is checked where it is consumed
+  (`noise_psd`/`noise_variance` raise if it lacks a `psd` method).
+- Because the ledger is *derived* from what a segment returns, a segment that
+  hands the residual straight back withdraws its model from the fit. That is
+  almost never intended, so the Wheel warns when a previously non-zero model
+  becomes exactly zero: re-subtract your current model on every step, even when
+  your parameters did not move.
 - `NumericOrbit.positions` refuses to extrapolate outside its tabulated
   ephemeris instead of returning cubic-polynomial garbage.
 
@@ -204,7 +216,7 @@ spacecraft positions. `turntable.orbits.NumericOrbit` tabulates and
 cubic-spline-interpolates an ephemeris, with loaders for LDC/Mojito-style
 HDF5 files (`from_hdf5`) and lisaorbits objects (`from_lisaorbits`); both
 need the `numeric-orbits` extra. See the module docstring in
-[`src/turntable/orbits.py`](src/turntable/orbits.py) for frames and
+[`src/turntable/orbits.py`](https://github.com/AaronDJohnson/turntable/blob/main/src/turntable/orbits.py) for frames and
 conventions.
 
 ## Development
@@ -217,10 +229,13 @@ uv run mypy                      # turntable ships py.typed; keep it honest
 uv run ruff check src tests examples
 ```
 
-CI runs lint, mypy, the suite behind a 95% coverage gate, artifact builds, and
-an installed-wheel smoke test across Python 3.12/3.13 on both Linux and macOS
-for every push and pull request. See
-[CHANGELOG.md](CHANGELOG.md) for release notes.
+CI runs lint, formatting, mypy, the suite behind a 95% coverage gate, artifact
+builds, and an installed-wheel smoke test across Python 3.12/3.13 on Linux and
+macOS; plus a core-only leg (numpy alone, through 3.14) and a leg that resolves
+to the declared dependency floors, so both claims are tested rather than
+asserted. Tagging `v*` runs the same gate and publishes via PyPI Trusted
+Publishing. See
+[CHANGELOG.md](https://github.com/AaronDJohnson/turntable/blob/main/CHANGELOG.md) for release notes.
 
 ## Status
 

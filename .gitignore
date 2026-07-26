@@ -35,6 +35,8 @@ wheels/
 *.tar.gz
 *.tgz
 
+.mypy_cache/
+
 # coverage
 .coverage
 .coverage.*

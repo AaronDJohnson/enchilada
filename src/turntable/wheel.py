@@ -1,3 +1,4 @@
+import warnings
 from collections.abc import Callable
 from dataclasses import replace
 from typing import ClassVar
@@ -53,11 +54,12 @@ class Wheel:
 
     Typical use:
 
-        observed = Residuals(tdi=..., sample_rate=..., n_samples=...,
+        observed = Residuals(tdi=..., sample_rate=...,
                              channels=("A", "E", "T"),
                              tdi_generation="2.0",
                              observable="fractional_frequency",
                              noise=fixed_noise_model)  # optional fixed noise
+        # (n_samples is read off the arrays for time-domain data)
         wheel = Wheel(observed)
         wheel.add(ucb_segment)
         wheel.add(mbhb_segment)
@@ -82,7 +84,9 @@ class Wheel:
     )
 
     def __init__(self, observed: Residuals):
-        """Args:
+        """Start a run from the observed data.
+
+        Args:
             observed: TDI data with the run settings attached. Kept pristine;
                 every residual the Wheel forms starts from it.
         """
@@ -105,14 +109,21 @@ class Wheel:
             raise ValueError(f"segment name must be a non-empty string, got {name!r}")
         if name in self._ledger:
             raise ValueError(f"segment name {name!r} already registered")
+        for method in ("start", "step"):
+            # check both up front: a missing `step` would otherwise register
+            # cleanly and die mid-sweep, after other ledger entries had moved
+            if not callable(getattr(segment, method, None)):
+                raise TypeError(
+                    f"segment {name!r} does not implement {method}(residual); a "
+                    f"Segment needs `name`, `start` and `step` "
+                    f"(see turntable.segment.Segment)"
+                )
         handed = self.residual()  # data minus segments registered so far
         returned = segment.start(self._mutable(handed))
         self._validate_returned(returned, name, "start")
-        contribution = self._contribution(handed, returned)
         # every check passed -- commit atomically
         self._segments.append(segment)
-        self._ledger[name] = contribution
-        self._noise = returned.noise
+        self._adopt(name, handed, returned, "start")
 
     def run(
         self,
@@ -147,8 +158,7 @@ class Wheel:
                 handed = self.residual(exclude=seg.name)  # data minus OTHERS
                 returned = seg.step(self._mutable(handed))
                 self._validate_returned(returned, seg.name, "step")
-                self._ledger[seg.name] = self._contribution(handed, returned)
-                self._noise = returned.noise
+                self._adopt(seg.name, handed, returned, "step")
             if on_sweep is not None:
                 on_sweep(iteration, self)
 
@@ -169,7 +179,9 @@ class Wheel:
             if name == exclude:
                 continue
             for ch in tdi:
-                tdi[ch] -= contribution[ch]
+                # out-of-place: promotes dtype rather than raising if a
+                # contribution is wider than the observed array
+                tdi[ch] = tdi[ch] - contribution[ch]
         return replace(self.observed, tdi=tdi, noise=self._noise)
 
     def contribution(self, name: str) -> dict[str, np.ndarray]:
@@ -191,9 +203,42 @@ class Wheel:
         self, handed: Residuals, returned: Residuals
     ) -> dict[str, np.ndarray]:
         """A segment's model = what it was handed minus what it returned."""
-        return {
-            ch: handed.tdi[ch] - returned.tdi[ch] for ch in self.observed.channels
-        }
+        return {ch: handed.tdi[ch] - returned.tdi[ch] for ch in self.observed.channels}
+
+    def _adopt(
+        self, name: str, handed: Residuals, returned: Residuals, method: str
+    ) -> None:
+        """Record a segment's new ledger entry and the noise it threaded.
+
+        Warns if a model that was previously non-zero has become exactly zero.
+        The ledger is derived (handed minus returned), so a segment that hands
+        the residual straight back -- a plausible way to mean "nothing changed
+        this sweep", e.g. a cadenced block, an all-rejected sweep, or a wrapper
+        whose external process failed -- silently withdraws its model from the
+        fit. A segment must re-subtract its current model on *every* step.
+        """
+        contribution = self._contribution(handed, returned)
+        previous = self._ledger.get(name)
+        if (
+            previous is not None
+            and self._all_zero(contribution)
+            and not self._all_zero(previous)
+        ):
+            warnings.warn(
+                f"{name}.{method} returned the residual unchanged, so its model "
+                f"went from non-zero to zero and has left the fit. A segment must "
+                f"re-subtract its current model every step, even when its "
+                f"parameters did not move (the ledger is derived from what you "
+                f"return, not remembered).",
+                RuntimeWarning,
+                stacklevel=4,
+            )
+        self._ledger[name] = contribution
+        self._noise = returned.noise
+
+    @staticmethod
+    def _all_zero(contribution: dict[str, np.ndarray]) -> bool:
+        return all(not np.any(arr) for arr in contribution.values())
 
     def _validate_returned(
         self, returned: object, segment_name: str, method: str
@@ -207,12 +252,37 @@ class Wheel:
             if getattr(returned, field) != getattr(self.observed, field):
                 raise ValueError(
                     f"{segment_name}.{method} changed the run setting {field!r} "
-                    f"({getattr(self.observed, field)!r} -> {getattr(returned, field)!r}); "
-                    f"a segment may only update tdi and noise, not the fixed run "
-                    f"settings"
+                    f"({getattr(self.observed, field)!r} -> "
+                    f"{getattr(returned, field)!r}); a segment may only update "
+                    f"tdi and noise, not the fixed run settings"
                 )
         if returned.orbit is not self.observed.orbit:
             raise ValueError(
                 f"{segment_name}.{method} changed the orbit; it is a fixed "
                 f"property of the dataset and must be passed through unchanged"
             )
+        # Losing the noise model is never intentional, and it is silent: every
+        # segment stepped afterwards would whiten against nothing. Guard it the
+        # same way the orbit is guarded -- a segment that rebuilds a Residuals
+        # from scratch (rather than using `replace`) drops it by accident.
+        if self._noise is not None and returned.noise is None:
+            raise ValueError(
+                f"{segment_name}.{method} dropped the noise model (a model was "
+                f"set, and the returned residual has noise=None); build the "
+                f"result with `replace(residual, ...)` so noise and orbit ride "
+                f"along, or return `replace(residual, noise=your_model)` if you "
+                f"are the noise segment"
+            )
+        # The last silent cross-segment failure: a blown-up sampler returning
+        # NaN/inf would otherwise be recorded as that segment's model and handed
+        # to every segment stepped later in the sweep.
+        for ch in self.observed.channels:
+            arr = returned.tdi[ch]
+            if not np.isfinite(arr).all():
+                n_bad = int((~np.isfinite(arr)).sum())
+                raise ValueError(
+                    f"{segment_name}.{method} returned {n_bad} non-finite "
+                    f"sample(s) in channel {ch!r} (NaN or inf); the residual "
+                    f"would poison every segment stepped after it. Check the "
+                    f"sampler's proposal and its noise weighting."
+                )

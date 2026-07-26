@@ -1,3 +1,4 @@
+from dataclasses import replace  # re-exported: every segment needs it
 from importlib.metadata import PackageNotFoundError, version
 
 from turntable.orbits import NumericOrbit, Orbit
@@ -18,4 +19,5 @@ __all__ = [
     "Segment",
     "Wheel",
     "__version__",
+    "replace",
 ]

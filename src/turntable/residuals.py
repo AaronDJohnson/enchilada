@@ -1,10 +1,10 @@
 from dataclasses import dataclass, replace
-from typing import Any, ClassVar, Never
+from typing import TYPE_CHECKING, Any, ClassVar, Never
 
 import numpy as np
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class Residuals:
     """TDI data plus the fixed settings that say how to interpret it.
 
@@ -124,39 +124,9 @@ class Residuals:
         """
         self._validate_conventions()
         self._validate_tdi_structure()
-        self._resolve_n_samples()
+        self._resolve_and_check_n_samples()
         self._validate_tdi_lengths()
         self._validate_orbit_span()
-
-    def _resolve_n_samples(self) -> None:
-        """Fill in `n_samples` from the data where that is exact.
-
-        Time domain: the arrays *are* `n_samples` long, so read it off them --
-        stating it again is pure duplication.
-
-        Frequency domain: an rfft of a length-n real series has n // 2 + 1
-        bins, which loses the parity of n (513 bins come from n=1024 *or*
-        n=1025 -- different Tobs, different df). It cannot be recovered from
-        the data, so it must be stated rather than guessed.
-        """
-        if self.n_samples == 0:  # sentinel: not supplied
-            first = self.tdi[self.channels[0]]
-            if self.domain == "time":
-                object.__setattr__(self, "n_samples", int(first.shape[0]))
-            else:
-                n_bins = int(first.shape[0])
-                raise ValueError(
-                    f"n_samples must be given when domain='frequency': the "
-                    f"{n_bins}-bin rfft grid does not determine it (it is "
-                    f"consistent with n_samples={2 * (n_bins - 1)} and "
-                    f"={2 * n_bins - 1}, which imply different Tobs and df). "
-                    f"Pass the number of time-domain samples the spectrum came "
-                    f"from; only time-domain data can have it derived."
-                )
-        if not isinstance(self.n_samples, (int, np.integer)) or self.n_samples <= 0:
-            raise ValueError(
-                f"n_samples must be a positive integer, got {self.n_samples!r}"
-            )
 
     def _validate_conventions(self) -> None:
         """Scalar run settings: rates, epoch, and convention strings."""
@@ -187,8 +157,19 @@ class Residuals:
         """tdi is a dict of 1-D arrays whose keys are exactly `channels`."""
         if not isinstance(self.tdi, dict):
             raise TypeError(
-                f"tdi must be a dict of channel -> array, "
-                f"got {type(self.tdi).__name__}"
+                f"tdi must be a dict of channel -> array, got {type(self.tdi).__name__}"
+            )
+        if isinstance(self.channels, (list, tuple)) and not isinstance(
+            self.channels, tuple
+        ):
+            # normalise here: a list would otherwise compare unequal to the
+            # tuple a segment returns, and the Wheel would blame the segment
+            # for "changing a run setting" it never touched.
+            object.__setattr__(self, "channels", tuple(self.channels))
+        if not isinstance(self.channels, tuple):
+            raise TypeError(
+                f"channels must be a tuple of channel names, "
+                f"got {type(self.channels).__name__}"
             )
         if not self.channels:
             raise ValueError("channels must be a non-empty tuple of channel names")
@@ -205,9 +186,39 @@ class Residuals:
             arr = self.tdi[ch]
             if not isinstance(arr, np.ndarray) or arr.ndim != 1:
                 raise TypeError(
-                    f"tdi[{ch!r}] must be a 1-D numpy array, "
-                    f"got {type(arr).__name__}"
+                    f"tdi[{ch!r}] must be a 1-D numpy array, got {type(arr).__name__}"
                 )
+
+    def _resolve_and_check_n_samples(self) -> None:
+        """Fill in `n_samples` from the data where that is exact.
+
+        Time domain: read it off the arrays, which carry it exactly. Frequency
+        domain: it cannot be recovered from the data (see the `n_samples` field
+        docstring for why), so it must have been stated. Also validates an
+        explicitly supplied value, hence the name.
+        """
+        if self.n_samples == 0:  # sentinel: not supplied
+            first = self.tdi[self.channels[0]]
+            if self.domain == "time":
+                object.__setattr__(self, "n_samples", int(first.shape[0]))
+            else:
+                n_bins = int(first.shape[0])
+                raise ValueError(
+                    f"n_samples must be given when domain='frequency': the "
+                    f"{n_bins}-bin rfft grid does not determine it (it is "
+                    f"consistent with n_samples={2 * (n_bins - 1)} and "
+                    f"={2 * n_bins - 1}, which imply different Tobs and df). "
+                    f"Pass the number of time-domain samples the spectrum came "
+                    f"from; only time-domain data can have it derived."
+                )
+        if (
+            not isinstance(self.n_samples, (int, np.integer))
+            or isinstance(self.n_samples, bool)  # True would pass as 1
+            or self.n_samples <= 0
+        ):
+            raise ValueError(
+                f"n_samples must be a positive integer, got {self.n_samples!r}"
+            )
 
     def _validate_tdi_lengths(self) -> None:
         """Every array lives on this domain's grid, and is real in the time
@@ -226,6 +237,15 @@ class Residuals:
                 raise TypeError(
                     f"tdi[{ch!r}] is complex but domain='time'; time-domain TDI is "
                     f"real (did you mean domain='frequency'?)"
+                )
+            # dtype is part of the contract too: integer or object arrays would
+            # otherwise be accepted here and then fail deep inside the Wheel's
+            # ledger arithmetic with a raw numpy casting error.
+            if not np.issubdtype(arr.dtype, np.inexact):
+                raise TypeError(
+                    f"tdi[{ch!r}] has dtype {arr.dtype}; TDI must be floating or "
+                    f"complex (an integer or object array cannot carry a residual "
+                    f"-- convert with .astype(float) first)"
                 )
 
     def _validate_orbit_span(self) -> None:
@@ -340,8 +360,7 @@ class Residuals:
         if self.domain == "frequency":
             return self
         tdi = {
-            ch: self.sample_interval * np.fft.rfft(arr)
-            for ch, arr in self.tdi.items()
+            ch: self.sample_interval * np.fft.rfft(arr) for ch, arr in self.tdi.items()
         }
         return replace(self, tdi=tdi, domain="frequency")
 
@@ -392,14 +411,20 @@ class Residuals:
 
             E[ |X(f)|**2 ] = (Tobs / 2) * S(f)      (interior bins)
 
-        so a frequency-domain segment whitens with ``|X(f)|**2 / ((Tobs/2) S)``.
-        Equivalently, the **time-domain per-sample variance** is the integral of
-        the one-sided PSD over ``[0, fny]`` -- ``sigma**2 = sum(S[1:]) * df`` on
-        this grid (skipping the DC bin, which this method sets to ``+inf``) --
-        which is how a *time-domain* segment gets its noise weight without a
-        separate accessor. For white noise ``S = 2 sigma**2 / fs``; the noise
-        object carries its own ``fs`` (the ``psd(freqs)`` call passes only
-        frequencies), so it computes ``S`` from the ``sigma`` it holds.
+        so a frequency-domain segment's per-bin weight is
+        ``|X(f)|**2 / ((Tobs/2) S)`` for the interior bins. Two bins are not
+        interior: DC (set to ``+inf`` here, so it carries zero weight) and, when
+        ``n_samples`` is even, the Nyquist bin, which is purely real and carries
+        one degree of freedom rather than two -- weight it half, or drop it, or
+        the likelihood over-counts that single bin by 2x.
+
+        For the **time-domain per-sample variance**, call
+        :meth:`noise_variance`, which does this weighting for you and is
+        therefore independent of the parity of ``n_samples``.
+
+        For white noise ``S = 2 sigma**2 / fs``; the noise object carries its own
+        ``fs`` (the ``psd(freqs)`` call passes only frequencies), so it computes
+        ``S`` from the ``sigma`` it holds.
         """
         if self.noise is None:
             return None
@@ -419,6 +444,35 @@ class Residuals:
             else self.noise.psd(freqs[1:], channel)
         )
         return psd
+
+    def noise_variance(self, channel: str | None = None) -> float | None:
+        """Per-sample time-domain variance implied by the noise model, or None.
+
+        The quantity a *time-domain* segment needs for its likelihood weight,
+        so it does not have to re-derive it from the PSD grid. Integrates the
+        one-sided PSD over this run's grid, excluding DC (which carries no
+        variance for zero-mean data) and half-weighting the Nyquist bin when
+        `n_samples` is even, because that bin carries one degree of freedom
+        rather than two.
+
+        That weighting is what makes the answer independent of the parity of
+        `n_samples`: it returns the variance of the zero-mean series, which for
+        white noise is ``sigma**2 * (1 - 1/n_samples)`` -- the naive
+        ``sum(psd[1:]) * df`` instead lands on ``sigma**2`` for even n and
+        ``sigma**2 (1-1/n)`` for odd n, i.e. it disagrees with itself across
+        parities.
+
+        Requires the same `psd(freqs[, channel])` contract as
+        :meth:`noise_psd`, and raises the same error if it is missing.
+        """
+        psd = self.noise_psd(channel)
+        if psd is None:
+            return None
+        interior = psd[1:]  # bin 0 is +inf by construction; DC holds no variance
+        weights = np.ones(interior.shape)
+        if self.n_samples % 2 == 0:
+            weights[-1] = 0.5  # Nyquist: 1 degree of freedom, not 2
+        return float(np.sum(interior * weights) * self.frequency_resolution)
 
     # ---- discoverability ------------------------------------------------
 
@@ -467,28 +521,34 @@ class Residuals:
         "T_0": "t0",
     }
 
-    def __getattr__(self, name: str) -> Never:
-        # Only fires when normal attribute lookup fails, so this catches
-        # common misspellings of the long/short names above.
-        #
-        # Annotated `-> Never` on purpose: this class ships py.typed, so an
-        # un-annotated __getattr__ would tell type checkers that *any*
-        # attribute exists and is `Any` -- statically legitimising exactly the
-        # typos the runtime hints below catch. `Never` means "this only ever
-        # raises", so `residual.Tobbs` is a type error for consumers too.
-        if name.startswith("_"):
-            raise AttributeError(name)
-        suggestion = self._TYPOS.get(name)
-        if suggestion is not None:
+    # Hidden from type checkers on purpose. This class ships py.typed, so its
+    # annotations are load-bearing for consumers -- and *any* __getattr__ tells
+    # a checker that every attribute name exists, which would statically
+    # legitimise the very typos the runtime table below catches. Annotating it
+    # `-> Never` does not help: `Never` is the bottom type, assignable to
+    # everything, so `x: int = residual.Tobbs` type-checks clean. With the
+    # method invisible at type-check time, mypy reports
+    #   "Residuals" has no attribute "Tobbs"; maybe "Tobs"?
+    # i.e. statically what the runtime does dynamically, while `hasattr` and
+    # ordinary attribute access keep working at runtime.
+    if not TYPE_CHECKING:  # pragma: no branch - always true at runtime
+
+        def __getattr__(self, name: str) -> Never:
+            # Only fires when normal attribute lookup fails, so this catches
+            # common misspellings of the long/short names above.
+            if name.startswith("_"):
+                raise AttributeError(name)
+            suggestion = self._TYPOS.get(name)
+            if suggestion is not None:
+                raise AttributeError(
+                    f"{type(self).__name__} has no attribute {name!r}; "
+                    f"did you mean {suggestion!r}? "
+                    f"See {type(self).__name__}.aliases() for the full table."
+                )
+            # Not a known typo either -- still point at the alias table, so an
+            # unfamiliar spelling leads somewhere instead of dead-ending.
             raise AttributeError(
                 f"{type(self).__name__} has no attribute {name!r}; "
-                f"did you mean {suggestion!r}? "
-                f"See {type(self).__name__}.aliases() for the full table."
+                f"see {type(self).__name__}.aliases() for the derived quantities "
+                f"(and their LISA short names)."
             )
-        # Not a known typo either -- still point at the alias table, so an
-        # unfamiliar spelling leads somewhere instead of dead-ending.
-        raise AttributeError(
-            f"{type(self).__name__} has no attribute {name!r}; "
-            f"see {type(self).__name__}.aliases() for the derived quantities "
-            f"(and their LISA short names)."
-        )

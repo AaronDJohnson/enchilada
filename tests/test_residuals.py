@@ -317,9 +317,7 @@ class TestNSamplesDerivation:
     def test_derivation_still_validates_every_channel(self):
         # derived from the first channel, but a ragged second one is caught
         with pytest.raises(ValueError, match="has length 60, expected 64"):
-            Residuals(
-                tdi={"A": np.zeros(64), "E": np.zeros(60)}, **self._kwargs()
-            )
+            Residuals(tdi={"A": np.zeros(64), "E": np.zeros(60)}, **self._kwargs())
 
 
 class TestDomainTransforms:
@@ -402,3 +400,121 @@ class TestDomainTransforms:
         interior = slice(10, -10)
         ratio = float(np.mean(measured[interior] / predicted[interior]))
         assert ratio == pytest.approx(1.0, abs=0.05)
+
+
+class TestDtypeAndTypeContract:
+    """dtype and container types are part of the validated contract."""
+
+    def test_integer_tdi_rejected_at_construction(self, rng):
+        # would otherwise fail deep inside the Wheel's ledger arithmetic
+        with pytest.raises(TypeError, match="must be floating or complex"):
+            make_observed(rng, tdi={ch: np.arange(64) for ch in ("A", "E", "T")})
+
+    def test_object_dtype_rejected(self, rng):
+        with pytest.raises(TypeError, match="must be floating or complex"):
+            make_observed(
+                rng, tdi={ch: np.zeros(64, dtype=object) for ch in ("A", "E", "T")}
+            )
+
+    def test_float32_is_allowed(self, rng):
+        obs = make_observed(
+            rng, tdi={ch: np.zeros(64, np.float32) for ch in ("A", "E", "T")}
+        )
+        assert obs.tdi["A"].dtype == np.float32
+
+    def test_channels_of_a_wrong_container_type_rejected(self, rng):
+        # a set has no order, so it cannot define the channel sequence
+        with pytest.raises(TypeError, match="channels must be a tuple"):
+            make_observed(rng, channels={"A", "E", "T"})
+
+    def test_channels_list_is_coerced_to_tuple(self, rng):
+        # a list would otherwise compare unequal to the tuple a segment returns,
+        # and the Wheel would blame the segment for changing a run setting
+        obs = make_observed(rng, channels=["A", "E", "T"])
+        assert obs.channels == ("A", "E", "T")
+        assert isinstance(obs.channels, tuple)
+
+    def test_bool_n_samples_rejected(self, observed):
+        with pytest.raises(ValueError, match="n_samples must be a positive integer"):
+            replace(observed, n_samples=True)
+
+    def test_equality_is_identity_and_hashing_works(self, rng):
+        # dataclass eq over a dict of arrays used to raise a raw numpy error
+        a, b = make_observed(rng), make_observed(rng)
+        assert a != b and a == a
+        assert isinstance(hash(a), int)
+
+
+class TestNoiseVariance:
+    class White:
+        def __init__(self, sigma, fs):
+            self.sigma, self.fs = sigma, fs
+
+        def psd(self, f, channel=None):
+            return np.full_like(f, 2.0 * self.sigma**2 / self.fs)
+
+    def _residual(self, n, fs=4.0, **over):
+        kw = dict(
+            tdi={"A": np.zeros(n)},
+            sample_rate=fs,
+            channels=("A",),
+            tdi_generation="1.5",
+            observable="fractional_frequency",
+            noise=self.White(0.7, fs),
+        )
+        kw.update(over)
+        return Residuals(**kw)
+
+    def test_none_without_a_noise_model(self, observed):
+        assert observed.noise_variance() is None
+
+    @pytest.mark.parametrize("n", [2048, 2049])
+    def test_independent_of_the_parity_of_n(self, n):
+        # the naive sum(psd[1:])*df lands on sigma**2 for even n and
+        # sigma**2 (1-1/n) for odd n; the weighted form agrees with itself
+        var = self._residual(n).noise_variance()
+        assert var == pytest.approx(0.49 * (1 - 1 / n), rel=1e-12)
+
+    def test_matches_the_empirical_variance(self):
+        n, fs, sigma = 1 << 14, 4.0, 0.7
+        r = self._residual(n, fs=fs)
+        rng = np.random.default_rng(0)
+        emp = float(np.mean([np.var(rng.normal(0, sigma, n)) for _ in range(40)]))
+        assert r.noise_variance() == pytest.approx(emp, rel=0.02)
+
+    def test_contract_error_matches_noise_psd(self, observed):
+        obs = replace(observed, noise=object())
+        with pytest.raises(TypeError, match="does not expose"):
+            obs.noise_variance()
+
+
+class TestPsdGridAndAliases:
+    """Pin the actual frequency grid and the derived quantities numerically."""
+
+    class RampPSD:
+        """Frequency-dependent, so a wrong grid cannot pass unnoticed."""
+
+        def psd(self, f, channel=None):
+            return 1.0 + np.asarray(f)
+
+    @pytest.mark.parametrize(("n", "fs"), [(64, 0.5), (65, 2.0), (1024, 0.1)])
+    def test_psd_is_evaluated_on_the_rfft_grid(self, n, fs):
+        r = Residuals(
+            tdi={"A": np.zeros(n)},
+            sample_rate=fs,
+            channels=("A",),
+            tdi_generation="1.5",
+            observable="strain",
+            noise=self.RampPSD(),
+        )
+        freqs = np.fft.rfftfreq(n, d=1.0 / fs)
+        psd = r.noise_psd()
+        assert psd[0] == np.inf
+        np.testing.assert_allclose(psd[1:], 1.0 + freqs[1:], rtol=1e-12)
+
+    def test_derived_quantities_are_numerically_right(self, rng):
+        obs = make_observed(rng, n_samples=64, sample_rate=0.5)
+        assert obs.nyquist_frequency == pytest.approx(0.25)  # fs / 2
+        assert obs.sample_interval == pytest.approx(2.0)  # 1 / fs
+        assert obs.observation_time == pytest.approx(128.0)  # n / fs
+        assert obs.frequency_resolution == pytest.approx(1 / 128.0)  # 1 / Tobs

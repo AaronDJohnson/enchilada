@@ -56,11 +56,15 @@ class Orbit(Protocol):
             epoch convention as the data]. Returns ``(x, y, z)``, each of shape
             ``(3, len(t))`` (spacecraft, time), in **ecliptic** metres.
 
-    An implementation must cover the full data span ``[epoch, epoch + Tobs]``
-    and should raise (not extrapolate) outside its domain of validity, as
-    :class:`NumericOrbit` does. Tabulated implementations should also expose
-    ``t_range``; when present, `Residuals` checks it against the data span at
-    construction, so an epoch mismatch fails before any sampling starts.
+    An implementation must cover every sample time, ``epoch + n*dt`` for n in
+    ``[0, n_samples-1]`` -- i.e. up to ``epoch + (n_samples-1)*dt``, one sample
+    interval short of ``epoch + Tobs`` -- and in practice should carry margin
+    beyond that, since a segment applying TDI light-travel delays evaluates
+    retarded times slightly outside the sample span. It should raise rather
+    than extrapolate outside its domain of validity, as :class:`NumericOrbit`
+    does. Tabulated implementations should also expose ``t_range``; when
+    present, `Residuals` checks it covers the sample span at construction, so
+    an epoch mismatch fails before any sampling starts.
     """
 
     L: float

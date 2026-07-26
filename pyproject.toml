@@ -19,20 +19,34 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Astronomy",
     "Topic :: Scientific/Engineering :: Physics",
     "Typing :: Typed",
+    "Operating System :: OS Independent",
+]
+keywords = [
+    "LISA",
+    "gravitational-waves",
+    "global-fit",
+    "gibbs-sampling",
+    "tdi",
+    "astronomy",
 ]
 dependencies = [
-    "numpy>=2.1",
+    # only long-stable numpy APIs are used (fft.rfft/irfft/rfftfreq, isfinite,
+    # issubdtype, linalg.norm, NDArray typing); the floor is validated by a CI
+    # leg resolving with --resolution lowest-direct
+    "numpy>=1.23",
 ]
 
 [project.urls]
+Homepage = "https://github.com/AaronDJohnson/turntable"
 Repository = "https://github.com/AaronDJohnson/turntable"
+Changelog = "https://github.com/AaronDJohnson/turntable/blob/main/CHANGELOG.md"
 Issues = "https://github.com/AaronDJohnson/turntable/issues"
 
 [project.optional-dependencies]
 numeric-orbits = [
-    "h5py>=3.16.0",
-    "lisaorbits>=3.0.3",
-    "scipy>=1.17.1",
+    "h5py>=3.0",          # h5py.File + dataset reads only
+    "lisaorbits>=3.0.3",  # sets the >=3.12 python floor
+    "scipy>=1.8",         # scipy.interpolate.CubicSpline only
 ]
 examples = [
     "jupyterlab>=4",
@@ -49,6 +63,17 @@ dev = [
 [build-system]
 requires = ["uv_build>=0.8.0,<0.9.0"]
 build-backend = "uv_build"
+
+[tool.uv.build-backend]
+# uv_build's default sdist carries only src/ + README + LICENSE + pyproject.
+# Downstream packagers (conda-forge, Debian, Spack, HPC sites) build from the
+# sdist and should be able to run the suite as a build-time check.
+source-include = [
+    "tests/*.py",
+    "examples/*.py",
+    "examples/*.ipynb",
+    "CHANGELOG.md",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -79,10 +104,10 @@ line-length = 88
 src = ["src", "tests", "examples"]
 
 [tool.ruff.lint]
-select = ["E4", "E7", "E9", "F", "I", "B", "UP"]
+select = ["E4", "E5", "E7", "E9", "F", "I", "B", "UP"]  # E5 = line length
 
 [tool.ruff.lint.per-file-ignores]
 # Notebooks group imports per cell rather than in one sorted block at the top.
 # Only I001 actually fires; do not broaden this without checking, so real
 # problems in notebook cells still surface.
-"examples/*.ipynb" = ["I001"]
+"examples/*.ipynb" = ["I001", "E501"]  # per-cell imports; long print lines

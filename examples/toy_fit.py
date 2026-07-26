@@ -73,9 +73,9 @@ class SineSegment:
     def step(self, residual: Residuals) -> Residuals:
         ch = residual.channels[0]
         s = self._basis[ch]
-        # per-sample noise variance from the threaded noise model:
-        # sigma^2 = S_onesided * fs / 2 for white noise
-        sigma2 = float(residual.noise_psd(ch)[1]) * residual.fs / 2.0
+        # per-sample noise variance from the threaded noise model -- turntable
+        # does the PSD integration (and the Nyquist weighting) for us
+        sigma2 = residual.noise_variance(ch)
 
         # `residual` is already the data minus every OTHER segment -- fit it
         # directly (no add-back), then subtract our new model and return.
@@ -134,7 +134,7 @@ def make_observed(seed: int = 0) -> Residuals:
     return Residuals(
         tdi={"A": data},
         sample_rate=fs,
-        channels=("A",),   # n_samples derived from the array
+        channels=("A",),  # n_samples derived from the array
         tdi_generation="2.0",
         observable="fractional_frequency",
         epoch=0.0,
@@ -171,16 +171,22 @@ def run_toy_fit(n_sweeps: int = 300, burn_in: int = 100, seed: int = 0):
 
 
 def main() -> None:
-    print(f"truth: slow={TRUTH['slow']}, fast={TRUTH['fast']}, "
-          f"sigma={TRUTH['sigma']}\n")
+    print(
+        f"truth: slow={TRUTH['slow']}, fast={TRUTH['fast']}, sigma={TRUTH['sigma']}\n"
+    )
     results = run_toy_fit()
     print()
-    truth_by_name = {"slow": TRUTH["slow"], "fast": TRUTH["fast"],
-                     "sigma": TRUTH["sigma"]}
+    truth_by_name = {
+        "slow": TRUTH["slow"],
+        "fast": TRUTH["fast"],
+        "sigma": TRUTH["sigma"],
+    }
     for name, (mean, std) in results.items():
         key = "sigma" if name == "noise" else name
-        print(f"{name:6s} posterior: {mean:.4f} +/- {std:.4f}   "
-              f"(truth {truth_by_name[key]})")
+        print(
+            f"{name:6s} posterior: {mean:.4f} +/- {std:.4f}   "
+            f"(truth {truth_by_name[key]})"
+        )
 
 
 if __name__ == "__main__":

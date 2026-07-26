@@ -1,0 +1,82 @@
+name: Release
+
+# Tag-triggered publish. Nothing is uploaded from a laptop: the artifacts PyPI
+# receives are built here, from the tagged commit, after the same gate CI runs.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: uv sync --locked --extra numeric-orbits
+      - run: uv run ruff check src tests examples
+      - run: uv run ruff format --check src tests examples
+      - run: uv run mypy
+      - run: uv run pytest -q --cov
+
+  build:
+    needs: gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          python-version: "3.12"
+      - name: Tag must match the project version
+        # otherwise a v0.2.0 tag could publish 0.1.0 bytes, and the name on PyPI
+        # would say nothing about which commit produced them
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          proj=$(uv run --no-project --with tomli python -c "
+          import tomli; print(tomli.load(open('pyproject.toml','rb'))['project']['version'])")
+          echo "tag=$tag project=$proj"
+          test "$tag" = "$proj" || {
+            echo "::error::tag $GITHUB_REF_NAME does not match project version $proj"
+            exit 1
+          }
+      - run: uv build
+      - name: Smoke-test the wheel that will be published
+        run: |
+          uv run --no-project --isolated --with dist/*.whl python -c "
+          import importlib.resources as r, turntable
+          assert r.files('turntable').joinpath('py.typed').is_file()
+          print('publishing version', turntable.__version__)
+          "
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # Configure this environment on PyPI as a Trusted Publisher, then no
+    # long-lived API token ever exists to leak.
+    environment:
+      name: pypi
+      url: https://pypi.org/p/turntable
+    permissions:
+      id-token: write # OIDC for trusted publishing
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: astral-sh/setup-uv@v9.0.0
+      - name: Publish to PyPI (trusted publishing, no token)
+        run: uv publish --trusted-publishing always

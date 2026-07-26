@@ -23,7 +23,7 @@ channels = ("A", "E", "T")
 observed = Residuals(
     tdi={ch: rng.standard_normal(n_samples) for ch in channels},
     sample_rate=0.1,
-    channels=channels,   # n_samples is read off the arrays in the time domain
+    channels=channels,  # n_samples is read off the arrays in the time domain
     tdi_generation="2.0",
     observable="fractional_frequency",
     epoch=0.0,
@@ -44,5 +44,4 @@ wheel.add(mbhb)
 wheel.run(n_iterations=3)
 
 print(f"\nucb took {ucb.steps} steps; mbhb took {mbhb.steps} steps")
-print("full residual RMS:",
-      float(np.sqrt(np.mean(wheel.residual().tdi["A"] ** 2))))
+print("full residual RMS:", float(np.sqrt(np.mean(wheel.residual().tdi["A"] ** 2))))

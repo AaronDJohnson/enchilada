@@ -5,7 +5,12 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
+  # Full gate: lint, format, types, tests behind the coverage gate, build, and a
+  # smoke test of the artifact that actually gets published.
   test:
     runs-on: ${{ matrix.os }}
     strategy:
@@ -25,6 +30,8 @@ jobs:
         run: uv sync --locked --extra numeric-orbits
       - name: Lint
         run: uv run ruff check src tests examples
+      - name: Format
+        run: uv run ruff format --check src tests examples
       - name: Type-check
         # turntable ships py.typed, so its annotations are load-bearing for
         # consumers' type checkers -- validate them here
@@ -40,6 +47,39 @@ jobs:
           uv run --no-project --isolated --with dist/*.whl python -c "
           import importlib.resources as r, turntable
           print('version:', turntable.__version__)
-          assert r.files('turntable').joinpath('py.typed').is_file(), 'py.typed missing from wheel'
+          assert r.files('turntable').joinpath('py.typed').is_file(), 'py.typed missing'
           print('py.typed present in installed wheel')
           "
+
+  # The core is numpy-only by design. Prove that on every supported interpreter,
+  # including 3.14 (which the LISA dev stack runs) where the optional
+  # numeric-orbits deps may not have wheels yet -- those tests soft-skip.
+  core-only:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install core only (no extras)
+        run: uv sync --no-extra numeric-orbits
+      - name: Test (no coverage gate -- orbit tests skip without scipy)
+        run: uv run pytest -q
+
+  # Dependency floors are a claim; resolve to them and run the suite so they are
+  # a tested claim.
+  floors:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          python-version: "3.12"
+      - name: Resolve to the declared lower bounds
+        run: uv sync --resolution lowest-direct --extra numeric-orbits
+      - name: Test
+        run: uv run pytest -q

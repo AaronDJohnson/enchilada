@@ -31,8 +31,11 @@ def test_demo_runs_clean():
 def test_toy_fit_converges_to_truth():
     toy = load_example("toy_fit")
     results = toy.run_toy_fit(n_sweeps=200, burn_in=80, seed=0)
-    truth = {"slow": toy.TRUTH["slow"], "fast": toy.TRUTH["fast"],
-             "noise": toy.TRUTH["sigma"]}
+    truth = {
+        "slow": toy.TRUTH["slow"],
+        "fast": toy.TRUTH["fast"],
+        "noise": toy.TRUTH["sigma"],
+    }
     for name, (mean, std) in results.items():
         assert std > 0.0
         assert mean == pytest.approx(truth[name], abs=max(5 * std, 0.05)), (
