@@ -16,6 +16,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Astronomy",
     "Topic :: Scientific/Engineering :: Physics",
     "Typing :: Typed",
@@ -68,10 +69,13 @@ build-backend = "uv_build"
 # uv_build's default sdist carries only src/ + README + LICENSE + pyproject.
 # Downstream packagers (conda-forge, Debian, Spack, HPC sites) build from the
 # sdist and should be able to run the suite as a build-time check.
+# Recursive globs: a future tests/data/ or tests/unit/ must not be dropped
+# silently. CI's sdist leg unpacks the archive and runs the suite from it, so
+# an omission here fails the build rather than reaching a packager.
 source-include = [
-    "tests/*.py",
-    "examples/*.py",
-    "examples/*.ipynb",
+    "tests/**/*.py",
+    "examples/**/*.py",
+    "examples/**/*.ipynb",
     "CHANGELOG.md",
 ]
 
@@ -81,6 +85,11 @@ testpaths = ["tests"]
 [tool.mypy]
 files = ["src/turntable"]
 python_version = "3.12"
+# turntable ships py.typed, so consumers' checkers trust these annotations.
+# Without this, an unannotated function body is not checked at all.
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
 
 [[tool.mypy.overrides]]
 # scipy and h5py ship no type information; they are lazily imported behind the
@@ -107,7 +116,7 @@ src = ["src", "tests", "examples"]
 select = ["E4", "E5", "E7", "E9", "F", "I", "B", "UP"]  # E5 = line length
 
 [tool.ruff.lint.per-file-ignores]
-# Notebooks group imports per cell rather than in one sorted block at the top.
-# Only I001 actually fires; do not broaden this without checking, so real
-# problems in notebook cells still surface.
-"examples/*.ipynb" = ["I001", "E501"]  # per-cell imports; long print lines
+# Notebooks group imports per cell rather than in one sorted block (I001) and
+# print long formatted lines (E501). Both were verified to fire; do not broaden
+# this list without checking, so real problems in notebook cells still surface.
+"examples/*.ipynb" = ["I001", "E501"]

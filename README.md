@@ -1,7 +1,7 @@
 # turntable
 
 [![CI](https://github.com/AaronDJohnson/turntable/actions/workflows/ci.yml/badge.svg)](https://github.com/AaronDJohnson/turntable/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/AaronDJohnson/turntable/blob/main/LICENSE)
 
 Blocked-Gibbs global-fit orchestration for LISA.
 
@@ -20,8 +20,13 @@ language), while the Wheel owns only the residual bookkeeping.
 
 ## Install
 
-Requires Python ≥ 3.12 (floor set by lisaorbits). With
-[uv](https://docs.astral.sh/uv/):
+Requires Python ≥ 3.12 (floor set by lisaorbits).
+
+```sh
+pip install turntable      # or: uv add turntable
+```
+
+To work on turntable itself, clone it and use [uv](https://docs.astral.sh/uv/):
 
 ```sh
 git clone https://github.com/AaronDJohnson/turntable.git
@@ -227,6 +232,7 @@ uv run pytest                    # full suite, incl. examples and orbit loaders
 uv run pytest --cov --cov-report=term-missing   # coverage (gate: 95%)
 uv run mypy                      # turntable ships py.typed; keep it honest
 uv run ruff check src tests examples
+uv run ruff format --check src tests examples   # CI gates on this too
 ```
 
 CI runs lint, formatting, mypy, the suite behind a 95% coverage gate, artifact

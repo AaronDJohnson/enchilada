@@ -72,8 +72,25 @@ First working release of the blocked-Gibbs orchestration layer.
   Wheel. That one needs an external stack (`gbgpu`, `eryn`,
   `lisaanalysistools`, `matplotlib`, `corner`) that is deliberately not a
   turntable dependency, so it is not exercised by CI.
-- Packaging: installable via uv or pip (uv_build backend), numpy-only core,
-  `numeric-orbits` and `examples` extras, MIT license, PEP 561 `py.typed`
-  marker (the Protocol/dataclass annotations are checkable by consumers), and
-  CI running ruff, mypy, the suite behind a 95% coverage gate, and an
-  installed-wheel smoke test on Python 3.12/3.13 across Linux and macOS.
+- Ergonomics: `turntable.replace` re-exports `dataclasses.replace`, so updating
+  a residual needs no second import; `Segment` is `runtime_checkable`, so
+  `isinstance(obj, Segment)` is a usable registration check. (`NoiseSegment`
+  deliberately is *not*: it declares no member beyond `Segment`, so a
+  runtime check against it would return True for every segment.)
+- `ModelWithdrawnWarning`: the withdrawal heuristic raises a named, filterable
+  category rather than a bare `RuntimeWarning`, since a legitimate RJMCMC death
+  move is indistinguishable from a forgotten re-subtraction from outside the
+  segment. Filter it if your sampler does death moves; `check_segment`
+  escalates it to an error, because a conformance check is exactly where the
+  strict reading belongs.
+- Packaging and release: installable via uv or pip (uv_build backend),
+  numpy-only core, `numeric-orbits` and `examples` extras, MIT license, PEP 561
+  `py.typed` marker (with `check_untyped_defs`, so unannotated bodies are
+  checked too -- consumers' type checkers trust these annotations). CI runs
+  ruff (lint + format), mypy, and the suite behind a 95% coverage gate on
+  Python 3.12/3.13 across Linux and macOS, plus a numpy-only leg through 3.14,
+  a dependency-floors leg, an installed-wheel smoke test, and an sdist leg that
+  unpacks the archive and runs the packaged suite from it -- so "the sdist is
+  self-testing" is verified rather than asserted. Tagging `v*` re-runs the
+  whole gate, checks the tag against the project version as parsed versions,
+  and publishes through PyPI Trusted Publishing (no token exists to leak).

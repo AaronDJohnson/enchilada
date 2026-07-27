@@ -9,7 +9,8 @@ parts of the protocol the demo leaves out:
   new model and returns; the Wheel keeps the ledger, so there is no add-back;
 - a *noise* segment (`WhiteNoiseSegment`) that removes nothing from the data
   and instead returns the residual with an updated `noise` object, which
-  signal segments read through `residual.noise_psd`;
+  signal segments read through `residual.noise_variance` (or `noise_psd` in
+  the frequency domain);
 - state ownership: each segment keeps its parameters, RNG, current model,
   and posterior chain as plain instance attributes -- the Wheel never sees
   them, and you read results directly off the segment objects you built;
@@ -94,7 +95,8 @@ class WhiteNoiseSegment:
     """Noise segment: conjugate inverse-gamma draw for the white-noise sigma.
 
     Removes nothing from the data; it returns the residual with an updated
-    `noise` model, which the signal segments read via `residual.noise_psd`.
+    `noise` model, which the signal segments read via `residual.noise_variance`
+    (the time-domain view of the same model).
     """
 
     def __init__(self, name: str, seed: int):
