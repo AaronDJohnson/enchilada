@@ -59,8 +59,8 @@ class Wheel:
     bookkeeping.)
 
     Consistency checking. `add` validates a block fully before recording it
-    (`name`, `start` and `block_update`; a `start` that fails leaves the Wheel
-    untouched), and every `start`/`block_update` return must be a `Residuals` that
+    (`name`, `start` and `update`; a `start` that fails leaves the Wheel
+    untouched), and every `start`/`update` return must be a `Residuals` that
 
     * kept the fixed run settings (`_INVARIANT`) -- only `tdi` and `noise` move;
     * kept the same `orbit` object;
@@ -157,13 +157,13 @@ class Wheel:
             )
         if name in self._ledger:
             raise ValueError(f"block name {name!r} already registered")
-        for method in ("start", "block_update"):
-            # check both up front: a missing `block_update` would otherwise register
+        for method in ("start", "update"):
+            # check both up front: a missing `update` would otherwise register
             # cleanly and die mid-cycle, after other ledger entries had moved
             if not callable(getattr(block, method, None)):
                 raise TypeError(
                     f"block {name!r} does not implement {method}(residual); a "
-                    f"Block needs `name`, `start` and `block_update` "
+                    f"Block needs `name`, `start` and `update` "
                     f"(see turntable.block.Block)"
                 )
         handed = self.residual()  # data minus blocks registered so far
@@ -189,9 +189,9 @@ class Wheel:
         Three nested scales, three words, so no name does double duty:
 
         * a **cycle** -- one pass over every block (this loop);
-        * a **block update** -- one block's `block_update()` call within it;
+        * a **block update** -- one block's `update()` call within it;
         * a **step** -- what a block's own sampler does, many times, inside a
-          single `block_update()` call.
+          single `update()` call.
 
         Two notes for readers coming from elsewhere. The Monte Carlo
         literature calls a cycle a *sweep*. GLASS uses `cycle` for something
@@ -219,9 +219,9 @@ class Wheel:
         for cycle in range(n_cycles):
             for block in self._blocks:
                 handed = self.residual(exclude=block.name)  # data minus OTHERS
-                returned = block.block_update(self._mutable(handed))
-                self._validate_returned(returned, block.name, "block_update")
-                self._adopt(block.name, handed, returned, "block_update")
+                returned = block.update(self._mutable(handed))
+                self._validate_returned(returned, block.name, "update")
+                self._adopt(block.name, handed, returned, "update")
             if on_cycle is not None:
                 on_cycle(cycle, self)
 

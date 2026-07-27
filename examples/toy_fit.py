@@ -4,7 +4,7 @@ Where examples/demo.py shows the plumbing with no-op blocks, this example
 runs a real Gibbs sampler to convergence on synthetic data, demonstrating the
 parts of the protocol the demo leaves out:
 
-- a signal block (`SineBlock.block_update`) that fits the residual it is handed --
+- a signal block (`SineBlock.update`) that fits the residual it is handed --
   already the data minus every other block -- directly, then subtracts its
   new model and returns; the Wheel keeps the ledger, so there is no add-back;
 - a *noise* block (`WhiteNoiseBlock`) that removes nothing from the data
@@ -71,7 +71,7 @@ class SineBlock:
         # initial amplitude is zero, so we subtract nothing: pass through
         return residual
 
-    def block_update(self, residual: Residuals) -> Residuals:
+    def update(self, residual: Residuals) -> Residuals:
         ch = residual.channels[0]
         s = self._basis[ch]
         # per-sample noise variance from the threaded noise model -- turntable
@@ -108,7 +108,7 @@ class WhiteNoiseBlock:
     def start(self, residual: Residuals) -> Residuals:
         return replace(residual, noise=FlatNoise(self.sigma, residual.fs))
 
-    def block_update(self, residual: Residuals) -> Residuals:
+    def update(self, residual: Residuals) -> Residuals:
         # residual here is data minus every signal block's model: pure noise
         n_total = sum(arr.size for arr in residual.tdi.values())
         ssr = sum(float(arr @ arr) for arr in residual.tdi.values())

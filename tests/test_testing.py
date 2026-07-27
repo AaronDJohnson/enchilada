@@ -24,7 +24,7 @@ class TestCheckBlock:
 
     def test_non_residual_return_caught(self, observed):
         class Bad(EchoBlock):
-            def block_update(self, residual):
+            def update(self, residual):
                 return {"A": np.zeros(1)}  # not a Residuals
 
         with pytest.raises(TypeError, match="must return a Residuals"):
@@ -32,7 +32,7 @@ class TestCheckBlock:
 
     def test_changed_run_setting_caught(self, observed):
         class Cheat(EchoBlock):
-            def block_update(self, residual):
+            def update(self, residual):
                 return replace(residual, observable="strain")
 
         with pytest.raises(ValueError, match="changed the run setting"):
@@ -44,14 +44,14 @@ class TestCheckBlock:
                 return np.full_like(freqs, 1.0)
 
         class FlatNoiseBlock(EchoBlock):
-            def block_update(self, residual):
+            def update(self, residual):
                 return replace(residual, noise=FlatPSD())
 
         check_block(FlatNoiseBlock(name="noise"), observed)
 
     def test_noise_model_violating_contract_caught(self, observed):
         class BadNoise(EchoBlock):
-            def block_update(self, residual):
+            def update(self, residual):
                 return replace(residual, noise=object())
 
         with pytest.raises(TypeError, match="does not expose"):
@@ -94,7 +94,7 @@ class TestCheckBlockStrictness:
                     tdi={ch: arr - 1.0 for ch, arr in residual.tdi.items()},
                 )
 
-            def block_update(self, residual):
+            def update(self, residual):
                 return residual  # forgot to re-subtract: model leaves the fit
 
         with pytest.raises(ModelWithdrawnWarning):

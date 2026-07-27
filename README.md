@@ -111,7 +111,7 @@ Implement the two-method `Block` protocol — see the docstrings in
   settings off the residual, set yourself up, subtract your initial model,
   and return the updated residual (return it unchanged if you start from
   nothing).
-- `block_update(residual) -> residual` — one block update per cycle. The residual you receive
+- `update(residual) -> residual` — one block update per cycle. The residual you receive
   is the data with every **other** block's model subtracted — *not* your
   own. So it is exactly the data your source class must explain: fit it
   directly, subtract your new model, and return the result. There is no
@@ -151,7 +151,7 @@ check_block(MyBlock(name="ucb"), toy_observed)
 ```
 
 It drives the full protocol on a scratch Wheel and raises a pointed error at
-the first violation (a `start`/`block_update` that returns something other than a
+the first violation (a `start`/`update` that returns something other than a
 valid `Residuals`, changes a fixed run setting, or — for a noise block —
 puts a model on the residual that fails the noise contract). It needn't check
 the residual bookkeeping — the Wheel owns that — but whether your *sampler*
@@ -198,8 +198,8 @@ producing quietly wrong science:
   orbit must span the observation (catching GPS-vs-zero-based epoch
   mismatches at construction, not mid-run).
 - The `Wheel` validates each block fully **before** registering it (`name`,
-  `start` *and* `block_update`, so a failed `add` changes nothing), and re-validates the
-  residual returned by every `start`/`block_update`: it must be a `Residuals` that kept
+  `start` *and* `update`, so a failed `add` changes nothing), and re-validates the
+  residual returned by every `start`/`update`: it must be a `Residuals` that kept
   the fixed run settings, must not have dropped the noise model, and must be
   finite — a NaN from a blown-up sampler is refused rather than handed to every
   block updated after it. `Residuals` itself rejects wrong tdi shapes *and

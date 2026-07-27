@@ -14,11 +14,11 @@ class Block(Protocol):
       conventions off the residual, set yourself up, subtract your initial
       model, and return the updated residual (return it unchanged if you
       start from nothing).
-    - `block_update` once each cycle. The residual you receive is
-      the observed data with **every other** block's model already subtracted --
-      **but not your own**. So it is exactly the data your source class must
-      explain: fit against it directly, subtract your new model, and return
-      the result. There is nothing to add back.
+    - `update` once each cycle -- one **block update**. The residual you
+      receive is the observed data with **every other** block's model already
+      subtracted -- **but not your own**. So it is exactly the data your
+      source class must explain: fit against it directly, subtract your new
+      model, and return the result. There is nothing to add back.
 
     No add-back. The Wheel keeps a ledger of every block's current model and
     hands you the data minus *everyone else*, so your own model is never in
@@ -38,7 +38,7 @@ class Block(Protocol):
 
         from turntable import replace   # or: from dataclasses import replace
 
-        def block_update(self, residual):
+        def update(self, residual):
             tdi = dict(residual.tdi)             # keep the channels you do not touch
             for ch in residual.channels:
                 data = tdi[ch]                   # already data minus OTHERS
@@ -53,13 +53,20 @@ class Block(Protocol):
     (per-bin weight) or `residual.noise_variance` (per-sample variance, for a
     time-domain likelihood). See `NoiseBlock`.
 
+    `isinstance(x, Block)` is a *shape* check, not a semantic one. `Block` is
+    runtime-checkable, so it tests only that `x` has `name`, `start` and
+    `update` -- and those are common enough names that a progress bar or an
+    online learner can pass. Use it to catch an obviously wrong object early;
+    do not read a pass as "this is a block." `Wheel.add` does not rely on it
+    (it checks each method itself and validates what `start` returns).
+
     Implementation notes:
         - `name` must be unique within a Wheel; it identifies your block in
           diagnostics and error messages.
         - Return a `Residuals` with the same run settings you were handed
           (`channels`, `n_samples`, `sample_rate`, `domain`, `epoch`,
           `tdi_generation`, `observable`, `orbit`); only `tdi` and `noise` may
-          change. The Wheel validates this after `start` and every `block_update`, and
+          change. The Wheel validates this after `start` and every `update`, and
           `Residuals` itself validates that your `tdi` keeps the right keys and
           shapes.
         - You are handed a fresh copy of the `tdi` arrays each call, so you may
@@ -95,8 +102,8 @@ class Block(Protocol):
         """
         ...
 
-    def block_update(self, residual: Residuals) -> Residuals:
-        """Take your turn: update your model and return the residual.
+    def update(self, residual: Residuals) -> Residuals:
+        """Perform one block update: revise your model, return the residual.
 
         Args:
             residual: The observed data with every **other** block's current
@@ -118,11 +125,11 @@ class NoiseBlock(Block, Protocol):
     """Convention for a `Block` that models the noise, not a signal.
 
     Structurally identical to `Block` -- a noise block implements the same
-    `start`/`block_update` -- but by convention it leaves `tdi` untouched (so its
+    `start`/`update` -- but by convention it leaves `tdi` untouched (so its
     ledger entry is zero) and instead returns the residual with an updated
     `noise` object:
 
-        def block_update(self, residual):
+        def update(self, residual):
             model = self.estimate_noise(residual.tdi)  # residual is ~pure noise
             return replace(residual, noise=model)
 

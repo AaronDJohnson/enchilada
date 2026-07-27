@@ -72,7 +72,26 @@ class Orbit(Protocol):
 
     def positions(
         self, t: NDArray[np.float64]
-    ) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]: ...
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
+        """Spacecraft positions at times `t`, in the ecliptic frame.
+
+        Args:
+            t: Times in seconds on the same clock as `Residuals.epoch` --
+                i.e. absolute mission time, not offsets from the start of the
+                data. Any shape; implementations broadcast over it.
+
+        Returns:
+            `(x, y, z)` -- one array per *coordinate*, not per spacecraft --
+            each of shape `(3, len(t))` in metres, indexed
+            `[spacecraft, time]`. Ecliptic frame, so an implementation
+            holding equatorial/ICRS tables must rotate before returning
+            (see `NumericOrbit.from_arrays(frame="equatorial")`).
+
+        Implementations must raise rather than extrapolate outside their
+        domain of validity: a silently wrong constellation shifts every
+        block's response and is near-impossible to diagnose downstream.
+        """
+        ...
 
 
 def _equatorial_to_ecliptic(pos: NDArray[np.float64]) -> NDArray[np.float64]:

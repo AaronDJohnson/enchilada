@@ -152,6 +152,9 @@ RETIRED = [
     r"\bon_sweep\b",
     r"\bsteps_per_sweep\b",
     r"\bsteps_per_turn\b",
+    # The method is `update`; "block update" (spaced) remains the concept name
+    # in prose. Only the identifier form is retired.
+    r"block_update",
     r"\.step\(",
     r"\bdef step\b",
 ]

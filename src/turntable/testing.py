@@ -32,6 +32,12 @@ class EchoBlock:
         self.updates = 0
 
     def start(self, residual: Residuals) -> Residuals:
+        """Print the run settings the Wheel handed over, and subtract nothing.
+
+        Registration is where a real block would read the conventions off the
+        residual and set its sampler up; this one just shows you what was
+        available at that moment.
+        """
         print(
             f"[{self.name}] start: "
             f"fs={residual.fs} Hz, Tobs={residual.Tobs:.1f} s, "
@@ -40,7 +46,13 @@ class EchoBlock:
         )
         return residual
 
-    def block_update(self, residual: Residuals) -> Residuals:
+    def update(self, residual: Residuals) -> Residuals:
+        """Print the RMS of the residual handed over, and return it unchanged.
+
+        Because the model stays zero, the ledger entry stays zero and no other
+        block is affected -- so the RMS you see is the residual as it stands
+        after every other block has subtracted its model this cycle.
+        """
         ch0 = residual.channels[0]
         # abs() so the RMS is real for frequency-domain (complex) data too
         rms = float(np.sqrt(np.mean(np.abs(residual.tdi[ch0]) ** 2)))
@@ -59,7 +71,7 @@ def check_block(block: Block, observed: Residuals, n_cycles: int = 2) -> None:
 
     - `start` returns a valid `Residuals` that keeps every run setting
       unchanged (only `tdi`/`noise` may move);
-    - each of `n_cycles` `block_update` calls does the same (mid-run drift raises);
+    - each of `n_cycles` block updates does the same (mid-run drift raises);
     - if the block sets a noise model on the residual (a noise block),
       that model satisfies the consumption contract -- `residual.noise_psd`
       succeeds rather than raising for want of a `psd` method.
@@ -94,7 +106,7 @@ def check_block(block: Block, observed: Residuals, n_cycles: int = 2) -> None:
     with warnings.catch_warnings():
         warnings.simplefilter("error", ModelWithdrawnWarning)
         wheel.add(block)  # start(): validated for a well-formed residual
-        wheel.run(n_cycles)  # block_update() x n_cycles: each return validated
+        wheel.run(n_cycles)  # update() x n_cycles: each return validated
 
     # if this block threads a noise model, it must satisfy the contract signal
     # blocks consume it through: a callable psd(freqs[, channel])

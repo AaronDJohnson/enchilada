@@ -39,9 +39,9 @@ First working release of the blocked-Gibbs orchestration layer.
   a **cycle** is one pass over every block (`Wheel.run(n_cycles=...)`,
   `on_cycle=...`, `check_block(n_cycles=...)`);
   a **block update** is one block's turn within that pass
-  (`Block.block_update(residual)`);
+  (`Block.update(residual)`);
   a **step** is what a block's own sampler does, many times, inside a single
-  `block_update()` call (`steps_per_cycle` in the GB example).
+  `update()` call (`steps_per_cycle` in the GB example).
   The unit itself is a **block** (`Block`, `NoiseBlock`, `EchoBlock`,
   `check_block`, `turntable.block`) -- the word blocked Gibbs already uses for
   a jointly-updated group of parameters. "Iteration" and "sweep" are not used
@@ -49,7 +49,7 @@ First working release of the blocked-Gibbs orchestration layer.
   invites confusion with a block's own sampler steps. Note for anyone reading
   GLASS alongside this: GLASS's `cycle` means repeat updates of a single
   module, which is not what turntable calls a cycle.
-- `Block` protocol — two methods, `start(residual)` and `block_update(residual)`,
+- `Block` protocol — two methods, `start(residual)` and `update(residual)`,
   each returning the updated residual. The residual handed to a block is
   the data minus every *other* block (its own model excluded), so the
   block fits it directly and subtracts its new model — there is no
@@ -58,7 +58,7 @@ First working release of the blocked-Gibbs orchestration layer.
   never sees. Noise is not special: a noise block returns the residual with
   an updated `noise` object (a zero ledger entry), consumed via
   `Residuals.noise_psd` (documented interface `psd(freqs[, channel])`).
-- `Wheel` boundary guards: `add` verifies `name`/`start`/`block_update` before
+- `Wheel` boundary guards: `add` verifies `name`/`start`/`update` before
   registering anything; a returned residual may not drop the noise model
   (symmetric with the existing orbit check) and may not contain NaN/inf, which
   would otherwise be recorded as that block's model and handed to every

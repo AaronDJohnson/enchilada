@@ -25,7 +25,7 @@ class ConstBlock:
     def start(self, residual):
         return self._subtract(residual)
 
-    def block_update(self, residual):
+    def update(self, residual):
         self.updates += 1
         return self._subtract(residual)
 
@@ -53,7 +53,7 @@ class LevelNoiseBlock:
     def start(self, residual):
         return replace(residual, noise=FlatPSD(0.0))
 
-    def block_update(self, residual):
+    def update(self, residual):
         self.updates += 1
         return replace(residual, noise=FlatPSD(float(self.updates)))
 
@@ -102,7 +102,7 @@ class TestLedger:
             def start(self, residual):
                 return residual  # zero contribution
 
-            def block_update(self, residual):
+            def update(self, residual):
                 for ch in residual.tdi:
                     residual.tdi[ch] -= 3.0  # mutate in place
                 return residual  # return the SAME object
@@ -127,9 +127,9 @@ class TestLedger:
         snapshot = {ch: arr.copy() for ch, arr in obs.tdi.items()}
 
         class Mutator(ConstBlock):
-            def block_update(self, residual):
+            def update(self, residual):
                 residual.tdi[next(iter(residual.tdi))][:] = -999.0  # mutate the copy
-                return super().block_update(residual)
+                return super().update(residual)
 
         wheel = Wheel(obs)
         wheel.add(Mutator("mut", 0.0))
@@ -171,9 +171,9 @@ class TestNoAddBack:
         seen = {}
 
         class Recorder(ConstBlock):
-            def block_update(self, residual):
+            def update(self, residual):
                 seen[self.name] = {ch: residual.tdi[ch].copy() for ch in residual.tdi}
-                return super().block_update(residual)
+                return super().update(residual)
 
         wheel = Wheel(obs)
         wheel.add(Recorder("a", 2.0))
@@ -214,17 +214,17 @@ class TestAtomicRegistration:
 class TestReturnedResidualValidation:
     def test_non_residual_return_named(self, observed):
         class Bad(ConstBlock):
-            def block_update(self, residual):
+            def update(self, residual):
                 return {"A": np.zeros(1)}  # a dict, not a Residuals
 
         wheel = Wheel(observed)
         wheel.add(Bad("bad", 0.0))
-        with pytest.raises(TypeError, match="bad.block_update must return a Residuals"):
+        with pytest.raises(TypeError, match="bad.update must return a Residuals"):
             wheel.run(1)
 
     def test_changed_run_setting_rejected(self, observed):
         class Cheat(ConstBlock):
-            def block_update(self, residual):
+            def update(self, residual):
                 return replace(residual, tdi_generation="9.9")
 
         wheel = Wheel(observed)
@@ -236,7 +236,7 @@ class TestReturnedResidualValidation:
 
     def test_bad_tdi_shape_raises_via_residuals(self, observed):
         class Drifter(ConstBlock):
-            def block_update(self, residual):
+            def update(self, residual):
                 return replace(
                     residual, tdi={ch: np.zeros(2) for ch in residual.channels}
                 )
@@ -248,7 +248,7 @@ class TestReturnedResidualValidation:
 
     def test_changed_orbit_rejected(self, observed):
         class Cheat(ConstBlock):
-            def block_update(self, residual):
+            def update(self, residual):
                 return replace(residual, orbit=object())
 
         wheel = Wheel(observed)
@@ -287,13 +287,13 @@ class TestNoiseViaResidual:
         wheel.add(Recorder("rec", 0.0))
         assert isinstance(seen["noise"], FlatPSD)
 
-    def test_block_update_sees_current_noise(self, observed):
+    def test_update_sees_current_noise(self, observed):
         levels = []
 
         class Recorder(ConstBlock):
-            def block_update(self, residual):
+            def update(self, residual):
                 levels.append(residual.noise.level)
-                return super().block_update(residual)
+                return super().update(residual)
 
         wheel = Wheel(observed)
         wheel.add(LevelNoiseBlock("noise"))  # updates first each cycle
@@ -325,7 +325,7 @@ class TestBoundaryGuards:
         obs = make_observed(rng, noise=FlatPSD(3.0))
 
         class Rebuilder(ConstBlock):
-            def block_update(self, residual):
+            def update(self, residual):
                 # rebuilds instead of using replace() -> loses noise silently
                 return Residuals(
                     tdi=residual.tdi,
@@ -345,7 +345,7 @@ class TestBoundaryGuards:
 
     def test_non_finite_return_raises_and_names_the_channel(self, observed):
         class Blowup(ConstBlock):
-            def block_update(self, residual):
+            def update(self, residual):
                 return replace(
                     residual, tdi={ch: arr * np.nan for ch, arr in residual.tdi.items()}
                 )
@@ -355,14 +355,14 @@ class TestBoundaryGuards:
         with pytest.raises(ValueError, match="non-finite sample"):
             wheel.run(1)
 
-    def test_missing_block_update_is_caught_at_registration(self, observed):
+    def test_missing_update_is_caught_at_registration(self, observed):
         class NoBlockUpdate:
             name = "noupdate"
 
             def start(self, residual):
                 return residual
 
-        with pytest.raises(TypeError, match="does not implement block_update"):
+        with pytest.raises(TypeError, match="does not implement update"):
             Wheel(observed).add(NoBlockUpdate())
 
     def test_withdrawing_a_model_warns(self, observed):
@@ -371,11 +371,11 @@ class TestBoundaryGuards:
                 super().__init__(name, value)
                 self.calls = 0
 
-            def block_update(self, residual):
+            def update(self, residual):
                 self.calls += 1
                 if self.calls == 2:
                     return residual  # "nothing changed" -- silently withdraws
-                return super().block_update(residual)
+                return super().update(residual)
 
         wheel = Wheel(observed)
         wheel.add(Fickle("f", 1.0))
@@ -385,7 +385,7 @@ class TestBoundaryGuards:
     def test_the_withdrawal_warning_points_at_the_caller(self, observed):
         # the location IS the payload: it tells the user which call did it
         class Fickle(ConstBlock):
-            def block_update(self, residual):
+            def update(self, residual):
                 return residual
 
         wheel = Wheel(observed)
@@ -401,7 +401,7 @@ class TestBoundaryGuards:
         import warnings as _w
 
         class Death(ConstBlock):
-            def block_update(self, residual):
+            def update(self, residual):
                 self.value = 0.0  # k -> 0 sources
                 return self._subtract(residual)
 
@@ -441,7 +441,7 @@ class TestBoundaryGuards:
         )
 
         class Wider(ConstBlock):
-            def block_update(self, residual):
+            def update(self, residual):
                 return replace(
                     residual,
                     tdi={
@@ -495,7 +495,7 @@ class TestBoundaryGuards:
         }[field]
 
         class Cheat(ConstBlock):
-            def block_update(self, residual):
+            def update(self, residual):
                 kw = {field: bad}
                 if field in ("channels", "n_samples", "domain"):
                     # keep tdi self-consistent so Residuals' own checks pass and
@@ -538,7 +538,7 @@ class TestDocumentedContracts:
                     tdi={ch: arr - self.value for ch, arr in residual.tdi.items()},
                 )
 
-            def block_update(self, residual):
+            def update(self, residual):
                 return replace(
                     residual,
                     tdi={ch: arr - self.value for ch, arr in residual.tdi.items()},
@@ -575,7 +575,7 @@ class TestDocumentedContracts:
         obs = make_observed(rng)
 
         class Blowup(ConstBlock):
-            def block_update(self, residual):
+            def update(self, residual):
                 tdi = dict(residual.tdi)
                 tdi[channel] = tdi[channel].copy()
                 tdi[channel][3] = bad
@@ -609,7 +609,7 @@ class TestDocumentedContracts:
             def start(self, residual):
                 return self._model(residual)
 
-            def block_update(self, residual):
+            def update(self, residual):
                 return self._model(residual)
 
         wheel = Wheel(obs)
@@ -638,7 +638,7 @@ class TestDocumentedContracts:
                     },
                 )
 
-            def block_update(self, residual):
+            def update(self, residual):
                 return residual  # withdraws A and E
 
         wheel = Wheel(obs)
@@ -660,7 +660,7 @@ class TestDocumentedContracts:
             def start(self, residual):
                 return residual
 
-            def block_update(self, residual):
+            def update(self, residual):
                 return residual
 
         with pytest.raises((ValueError, TypeError), match="name"):
