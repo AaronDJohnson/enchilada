@@ -1,29 +1,29 @@
 """Helpers for sanity-checking the turntable interface.
 
-Importable utilities for verifying that the Wheel/Segment protocol works
+Importable utilities for verifying that the Wheel/Block protocol works
 end-to-end without needing a real waveform model:
 
-- :class:`EchoSegment` -- a no-op segment that prints what the Wheel hands
+- :class:`EchoBlock` -- a no-op block that prints what the Wheel hands
   it; useful for watching the plumbing.
-- :func:`check_segment` -- a conformance check for your own Segment
+- :func:`check_block` -- a conformance check for your own Block
   implementation; run it in your test suite before plugging into a shared
   campaign.
 """
 
 import numpy as np
 
+from turntable.block import Block
 from turntable.residuals import Residuals
-from turntable.segment import Segment
 
 
-class EchoSegment:
-    """No-op segment that prints what the Wheel passes to it.
+class EchoBlock:
+    """No-op block that prints what the Wheel passes to it.
 
     Subtracts nothing (its model is zero), so it returns the residual it was
-    handed unchanged and other segments are unaffected. Keeps its own step
-    counter as internal state -- like any real segment, its internals are
+    handed unchanged and other blocks are unaffected. Keeps its own step
+    counter as internal state -- like any real block, its internals are
     its own business. Useful for verifying that the Gibbs ring wires
-    segments together correctly and that residual metadata survives the
+    blocks together correctly and that residual metadata survives the
     round trip.
     """
 
@@ -49,36 +49,36 @@ class EchoSegment:
         return residual
 
 
-def check_segment(segment: Segment, observed: Residuals, n_sweeps: int = 2) -> None:
-    """Conformance check for a `Segment` implementation.
+def check_block(block: Block, observed: Residuals, n_turns: int = 2) -> None:
+    """Conformance check for a `Block` implementation.
 
     Drives the full Wheel protocol against `observed` on a scratch Wheel and
     verifies:
 
     - `start` returns a valid `Residuals` that keeps every run setting
       unchanged (only `tdi`/`noise` may move);
-    - each of `n_sweeps` `step` calls does the same (mid-run drift raises);
-    - if the segment sets a noise model on the residual (a noise segment),
+    - each of `n_turns` `step` calls does the same (mid-run drift raises);
+    - if the block sets a noise model on the residual (a noise block),
       that model satisfies the consumption contract -- `residual.noise_psd`
       succeeds rather than raising for want of a `psd` method.
 
     It also escalates the `ModelWithdrawnWarning` the Wheel merely warns about,
-    so a segment that stops re-subtracting its model fails here rather than
-    quietly leaving the fit later. (If your segment legitimately drops to a
-    zero model during these sweeps -- a death move -- give it a starting state
+    so a block that stops re-subtracting its model fails here rather than
+    quietly leaving the fit later. (If your block legitimately drops to a
+    zero model during these turns -- a death move -- give it a starting state
     that does not, or filter the warning around your own call.)
 
     It does not check the residual bookkeeping -- the `Wheel` owns that, so
-    there is no cross-segment arithmetic in a segment to get wrong (see the
+    there is no cross-block arithmetic in a block to get wrong (see the
     `Wheel` docstring for the ledger). Whether your *sampler* recovers truth
     is still yours to verify; `examples/toy_fit.py` is the pattern.
 
     Raises with a pointed message at the first violation; returns quietly
-    when the segment conforms. Run this in your own test suite before
-    plugging a segment into a shared campaign:
+    when the block conforms. Run this in your own test suite before
+    plugging a block into a shared campaign:
 
-        from turntable.testing import check_segment
-        check_segment(MySegment(name="ucb"), toy_observed)
+        from turntable.testing import check_block
+        check_block(MyBlock(name="ucb"), toy_observed)
     """
     import warnings
 
@@ -91,11 +91,11 @@ def check_segment(segment: Segment, observed: Residuals, n_sweeps: int = 2) -> N
     # strict, so escalate it here.
     with warnings.catch_warnings():
         warnings.simplefilter("error", ModelWithdrawnWarning)
-        wheel.add(segment)  # start(): validated for a well-formed residual
-        wheel.run(n_sweeps)  # step() x n_sweeps: each return validated
+        wheel.add(block)  # start(): validated for a well-formed residual
+        wheel.run(n_turns)  # step() x n_turns: each return validated
 
-    # if this segment threads a noise model, it must satisfy the contract signal
-    # segments consume it through: a callable psd(freqs[, channel])
+    # if this block threads a noise model, it must satisfy the contract signal
+    # blocks consume it through: a callable psd(freqs[, channel])
     result = wheel.residual()
     noise = result.noise
     if noise is not None and noise is not observed.noise:

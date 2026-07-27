@@ -64,16 +64,16 @@ def test_runtime_attribute_hints_still_work():
         _ = r.T_obs
 
 
-def test_segment_protocol_is_runtime_checkable():
-    from turntable import Segment
-    from turntable.testing import EchoSegment
+def test_block_protocol_is_runtime_checkable():
+    from turntable import Block
+    from turntable.testing import EchoBlock
 
-    assert isinstance(EchoSegment("e"), Segment)
+    assert isinstance(EchoBlock("e"), Block)
 
-    class NotASegment:
+    class NotABlock:
         pass
 
-    assert not isinstance(NotASegment(), Segment)
+    assert not isinstance(NotABlock(), Block)
 
 
 def test_replace_is_re_exported():
@@ -92,12 +92,12 @@ def test_public_surface_is_pinned():
     import turntable
 
     assert turntable.__all__ == [
+        "Block",
         "ModelWithdrawnWarning",
-        "NoiseSegment",
+        "NoiseBlock",
         "NumericOrbit",
         "Orbit",
         "Residuals",
-        "Segment",
         "Wheel",
         "__version__",
         "replace",

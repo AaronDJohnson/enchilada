@@ -1,8 +1,8 @@
-"""Minimal turntable demo: the Residuals / Segment / Wheel plumbing, end to end.
+"""Minimal turntable demo: the Residuals / Block / Wheel plumbing, end to end.
 
-Runs three blocked-Gibbs sweeps over two no-op EchoSegments on synthetic
+Runs three blocked-Gibbs turns over two no-op EchoBlocks on synthetic
 data -- no real waveforms or MCMC, just enough to watch the Wheel hand each
-segment its residual. Run it with:
+block its residual. Run it with:
 
     uv run python examples/demo.py
 
@@ -12,7 +12,7 @@ See examples/demo.ipynb for the same walkthrough with commentary.
 import numpy as np
 
 from turntable import Residuals, Wheel
-from turntable.testing import EchoSegment
+from turntable.testing import EchoBlock
 
 # One frozen object holds the TDI arrays and the run settings everyone
 # in the run agrees on.
@@ -31,17 +31,17 @@ observed = Residuals(
 
 print(f"observed: N={observed.N}, fs={observed.fs} Hz, Tobs={observed.Tobs:.0f} s\n")
 
-# Each EchoSegment prints what the Wheel hands it and contributes zeros, so
-# the residuals every segment sees are just the observed data. Segments keep
+# Each EchoBlock prints what the Wheel hands it and contributes zeros, so
+# the residuals every block sees are just the observed data. Blocks keep
 # their own state -- hold on to the objects to read it back afterwards.
-ucb = EchoSegment(name="ucb")
-mbhb = EchoSegment(name="mbhb")
+ucb = EchoBlock(name="ucb")
+mbhb = EchoBlock(name="mbhb")
 
 wheel = Wheel(observed)
 wheel.add(ucb)
 wheel.add(mbhb)
 
-wheel.run(n_iterations=3)
+wheel.run(full_turns=3)
 
 print(f"\nucb took {ucb.steps} steps; mbhb took {mbhb.steps} steps")
 print("full residual RMS:", float(np.sqrt(np.mean(wheel.residual().tdi["A"] ** 2))))

@@ -9,13 +9,13 @@ A LISA global fit has to jointly infer many source populations (galactic
 binaries, massive black-hole binaries, ...) plus the instrument noise, with
 each block typically owned by a different group and sampler. turntable is the
 orchestration layer — and only that. A `Wheel` keeps the pristine data and a
-**ledger** of each segment's current model, and hands every registered
-`Segment` the data minus *every other* segment — exactly the residual that
-segment should fit. The segment fits it, subtracts its new model, and returns;
-the Wheel reads the segment's new ledger entry off the difference. So blocked
-Gibbs falls out of the ring, and there is no "add-back" for a segment to
+**ledger** of each block's current model, and hands every registered
+`Block` the data minus *every other* block — exactly the residual that
+block should fit. The block fits it, subtracts its new model, and returns;
+the Wheel reads the block's new ledger entry off the difference. So blocked
+Gibbs falls out of the ring, and there is no "add-back" for a block to
 forget. No waveforms, no likelihoods, and no samplers live here; those belong
-to the segments (which own their sampler state and can wrap code in any
+to the blocks (which own their sampler state and can wrap code in any
 language), while the Wheel owns only the residual bookkeeping.
 
 ## Install
@@ -50,13 +50,14 @@ uv sync --extra examples         # adds jupyterlab for the notebooks
 uv run python examples/demo.py
 ```
 
-runs three Gibbs sweeps over two no-op `EchoSegment`s on synthetic data —
-enough to watch the Wheel hand each segment its residual. The whole thing is:
+runs three Gibbs turns over two no-op `EchoBlock`s on synthetic data —
+enough to watch the Wheel hand each block its residual. The whole thing is:
 
+<!-- runnable -->
 ```python
 import numpy as np
 from turntable import Residuals, Wheel
-from turntable.testing import EchoSegment
+from turntable.testing import EchoBlock
 
 rng = np.random.default_rng(0)
 n_samples = 1024
@@ -71,28 +72,28 @@ observed = Residuals(
     observable="fractional_frequency",
 )   # n_samples is read off the arrays; epoch defaults to 0.0
 
-ucb = EchoSegment(name="ucb")
-mbhb = EchoSegment(name="mbhb")
+ucb = EchoBlock(name="ucb")
+mbhb = EchoBlock(name="mbhb")
 
 wheel = Wheel(observed)
 wheel.add(ucb)
 wheel.add(mbhb)
-wheel.run(n_iterations=3)
+wheel.run(full_turns=3)
 
-wheel.residual()   # the running residual: observed minus every segment's model
-ucb.steps          # segment internals live on YOUR objects, not the Wheel
+wheel.residual()   # the running residual: observed minus every block's model
+ucb.steps          # block internals live on YOUR objects, not the Wheel
 ```
 
 [`examples/demo.ipynb`](https://github.com/AaronDJohnson/turntable/blob/main/examples/demo.ipynb) is the same walkthrough with
 commentary, plus the `Residuals` long/short name aliases (`Tobs`, `fs`, `dt`,
 ...), the typo catcher, and attaching a constellation ephemeris. For a real
-(toy) sampler — two conjugate-Gibbs source segments plus a sampled
-white-noise segment, converging to known truth — run
+(toy) sampler — two conjugate-Gibbs source blocks plus a sampled
+white-noise block, converging to known truth — run
 [`examples/toy_fit.py`](https://github.com/AaronDJohnson/turntable/blob/main/examples/toy_fit.py).
 
-For a **real LISA source class**, [`examples/gb_segment_eryn.ipynb`](https://github.com/AaronDJohnson/turntable/blob/main/examples/gb_segment_eryn.ipynb)
+For a **real LISA source class**, [`examples/gb_block_eryn.ipynb`](https://github.com/AaronDJohnson/turntable/blob/main/examples/gb_block_eryn.ipynb)
 fits an injected galactic binary through the Wheel using GBGPU waveforms, an
-Eryn sampler living inside the segment, and a fixed LISA noise PSD from LISA
+Eryn sampler living inside the block, and a fixed LISA noise PSD from LISA
 Analysis Tools. Everything that is *not* turntable lives in
 [`examples/gb_model.py`](https://github.com/AaronDJohnson/turntable/blob/main/examples/gb_model.py), so the notebook shows only the
 turntable touchpoints. That example needs the external LISA stack (`gbgpu`,
@@ -102,56 +103,56 @@ not committed; run it to populate them.
 
 ## Plugging in your sampler
 
-Implement the two-method `Segment` protocol — see the docstrings in
-[`src/turntable/segment.py`](https://github.com/AaronDJohnson/turntable/blob/main/src/turntable/segment.py) for the full contract:
+Implement the two-method `Block` protocol — see the docstrings in
+[`src/turntable/block.py`](https://github.com/AaronDJohnson/turntable/blob/main/src/turntable/block.py) for the full contract:
 
 - `name` — unique within a Wheel; identifies you in diagnostics and errors.
 - `start(residual) -> residual` — called once at registration; read the run
   settings off the residual, set yourself up, subtract your initial model,
   and return the updated residual (return it unchanged if you start from
   nothing).
-- `step(residual) -> residual` — one Gibbs iteration. The residual you receive
-  is the data with every **other** segment's model subtracted — *not* your
+- `step(residual) -> residual` — one turn of the wheel. The residual you receive
+  is the data with every **other** block's model subtracted — *not* your
   own. So it is exactly the data your source class must explain: fit it
   directly, subtract your new model, and return the result. There is no
   add-back; the Wheel keeps the ledger and derives your new entry from what
   you return.
 
 `replace` is re-exported for convenience (`from turntable import replace`), since
-every segment needs it to return an updated residual.
+every block needs it to return an updated residual.
 
-A segment that models the noise instead of a signal removes nothing from the
+A block that models the noise instead of a signal removes nothing from the
 data; it returns the residual with an updated `noise` object —
 `replace(residual, noise=my_model)` (so its ledger entry is zero) — and signal
-segments read it back through `Residuals.noise_psd` for a frequency-domain
+blocks read it back through `Residuals.noise_psd` for a frequency-domain
 weight, or `Residuals.noise_variance` for the per-sample variance a time-domain
 likelihood needs (turntable does the PSD integration, including the Nyquist
 weighting, so the answer does not depend on the parity of `n_samples`).
 
 Everything about your sampler is *yours*: parameters, RNG, posterior chains,
-checkpoints, and your own current model all live inside your segment object
+checkpoints, and your own current model all live inside your block object
 (or the external process it wraps) — the Wheel never sees or restores them. It
-owns only the residual bookkeeping (the pristine data and the per-segment
+owns only the residual bookkeeping (the pristine data and the per-block
 ledger). To log progress or checkpoint,
-pass an `on_sweep` callback to `run` (or equivalently call `run(1)` in your
-own loop) and read `wheel.residual()` — or anything off your own segment
-objects — between sweeps.
+pass an `on_turn` callback to `run` (or equivalently call `run(1)` in your
+own loop) and read `wheel.residual()` — or anything off your own block
+objects — between turns.
 
 The Wheel does not care how you sample or what language your sampler is
 written in — a thin Python wrapper that shells out, moves files, and
-implements these methods is indistinguishable from a native segment.
+implements these methods is indistinguishable from a native block.
 
-Before plugging a segment into a shared campaign, run the conformance check
+Before plugging a block into a shared campaign, run the conformance check
 in your own test suite:
 
 ```python
-from turntable.testing import check_segment
-check_segment(MySegment(name="ucb"), toy_observed)
+from turntable.testing import check_block
+check_block(MyBlock(name="ucb"), toy_observed)
 ```
 
 It drives the full protocol on a scratch Wheel and raises a pointed error at
 the first violation (a `start`/`step` that returns something other than a
-valid `Residuals`, changes a fixed run setting, or — for a noise segment —
+valid `Residuals`, changes a fixed run setting, or — for a noise block —
 puts a model on the residual that fails the noise contract). It needn't check
 the residual bookkeeping — the Wheel owns that — but whether your *sampler*
 recovers truth is still yours to verify; `examples/toy_fit.py` is the pattern.
@@ -163,12 +164,12 @@ makes every convention an explicit, validated part of `Residuals`:
 
 - `observable` (required) — what the TDI samples physically are:
   `"fractional_frequency"`, `"phase"`, `"strain"`, or a campaign-agreed
-  string. Every segment reads this one field instead of assuming.
+  string. Every block reads this one field instead of assuming.
 - `domain` — `"time"` (default, `n_samples` real samples per channel) or
   `"frequency"` (one-sided `dt * rfft(x)` spectra of length
   `n_samples // 2 + 1`). `n_samples` always counts time-domain samples, so
   `Tobs`/`df`/`dt` and the PSD grid stay well defined in both. The residual a
-  segment returns must keep the observed representation.
+  block returns must keep the observed representation.
 - `n_samples` — **you should never have to state it.** Data enters a campaign
   as a time series, where the arrays carry it exactly, so turntable reads it
   off them; `residual.to_frequency()` then carries it across the transform:
@@ -196,16 +197,16 @@ producing quietly wrong science:
   `channels`, array lengths must match `domain`/`n_samples`, and an attached
   orbit must span the observation (catching GPS-vs-zero-based epoch
   mismatches at construction, not mid-run).
-- The `Wheel` validates each segment fully **before** registering it (`name`,
+- The `Wheel` validates each block fully **before** registering it (`name`,
   `start` *and* `step`, so a failed `add` changes nothing), and re-validates the
   residual returned by every `start`/`step`: it must be a `Residuals` that kept
   the fixed run settings, must not have dropped the noise model, and must be
   finite — a NaN from a blown-up sampler is refused rather than handed to every
-  segment stepped after it. `Residuals` itself rejects wrong tdi shapes *and
+  block stepped after it. `Residuals` itself rejects wrong tdi shapes *and
   dtypes*, so a mid-run drift raises immediately instead of corrupting the next
-  segment's residual. A noise model is checked where it is consumed
+  block's residual. A noise model is checked where it is consumed
   (`noise_psd`/`noise_variance` raise if it lacks a `psd` method).
-- Because the ledger is *derived* from what a segment returns, a segment that
+- Because the ledger is *derived* from what a block returns, a block that
   hands the residual straight back withdraws its model from the fit. That is
   almost never intended, so the Wheel warns when a previously non-zero model
   becomes exactly zero: re-subtract your current model on every step, even when
@@ -216,7 +217,7 @@ producing quietly wrong science:
 ## Orbits
 
 The constellation ephemeris the data was produced with rides on
-`Residuals.orbit` so every segment builds its response from the *same*
+`Residuals.orbit` so every block builds its response from the *same*
 spacecraft positions. `turntable.orbits.NumericOrbit` tabulates and
 cubic-spline-interpolates an ephemeris, with loaders for LDC/Mojito-style
 HDF5 files (`from_hdf5`) and lisaorbits objects (`from_lisaorbits`); both
@@ -260,10 +261,10 @@ oversights:
   a gap, and whether windowing becomes a campaign convention too).
 - **One noise model at a time.** `Residuals.noise` is a single slot, so two
   noise blocks (say instrument noise and galactic confusion) cannot each own a
-  component and have turntable combine them — the last segment to write it
-  wins. Sample them inside one noise segment that publishes a combined model,
-  or treat the confusion foreground as a signal segment that subtracts from
-  `tdi`. Dropping the model entirely is an error, but one noise segment
+  component and have turntable combine them — the last block to write it
+  wins. Sample them inside one noise block that publishes a combined model,
+  or treat the confusion foreground as a signal block that subtracts from
+  `tdi`. Dropping the model entirely is an error, but one noise block
   silently overwriting another's is not yet detected.
 
 ## Status

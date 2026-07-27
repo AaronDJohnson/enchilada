@@ -7,13 +7,13 @@ import pytest
 
 from conftest import make_observed
 from turntable import ModelWithdrawnWarning, Residuals, Wheel
-from turntable.testing import EchoSegment
+from turntable.testing import EchoBlock
 
 
-class ConstSegment:
+class ConstBlock:
     """Subtracts a constant from the residual it is handed -- no add-back.
 
-    The residual it receives is already the data minus every other segment, so
+    The residual it receives is already the data minus every other block, so
     it just subtracts its (constant) model. Its ledger entry is that constant.
     """
 
@@ -44,7 +44,7 @@ class FlatPSD:
 
 
 class NoiseSeg:
-    """Noise segment: sets residual.noise, level tracks its step count."""
+    """Noise block: sets residual.noise, level tracks its step count."""
 
     def __init__(self, name):
         self.name = name
@@ -62,20 +62,20 @@ class TestLedger:
     def test_full_residual_subtracts_every_model(self, rng):
         obs = make_observed(rng)
         wheel = Wheel(obs)
-        wheel.add(ConstSegment("a", 1.0))
-        wheel.add(ConstSegment("b", 10.0))
-        wheel.add(ConstSegment("c", 100.0))
+        wheel.add(ConstBlock("a", 1.0))
+        wheel.add(ConstBlock("b", 10.0))
+        wheel.add(ConstBlock("c", 100.0))
         wheel.run(3)
         full = wheel.residual()
         for ch in obs.channels:
             np.testing.assert_allclose(full.tdi[ch], obs.tdi[ch] - 111.0)
 
-    def test_exclude_leaves_that_segment_in(self, rng):
+    def test_exclude_leaves_that_block_in(self, rng):
         obs = make_observed(rng)
         wheel = Wheel(obs)
-        wheel.add(ConstSegment("a", 1.0))
-        wheel.add(ConstSegment("b", 10.0))
-        wheel.add(ConstSegment("c", 100.0))
+        wheel.add(ConstBlock("a", 1.0))
+        wheel.add(ConstBlock("b", 10.0))
+        wheel.add(ConstBlock("c", 100.0))
         wheel.run(2)
         # residual(exclude=b) = data minus a and c (110), b left in
         seen = wheel.residual(exclude="b")
@@ -85,13 +85,13 @@ class TestLedger:
     def test_contribution_is_the_derived_model(self, rng):
         obs = make_observed(rng)
         wheel = Wheel(obs)
-        wheel.add(ConstSegment("a", 7.0))
+        wheel.add(ConstBlock("a", 7.0))
         wheel.run(2)
         for ch in obs.channels:
             np.testing.assert_allclose(wheel.contribution("a")[ch], 7.0)
 
     def test_ledger_derivation_survives_in_place_return(self, rng):
-        # a segment that mutates its handed arrays in place AND returns the
+        # a block that mutates its handed arrays in place AND returns the
         # same object still gets its contribution derived correctly, because
         # the Wheel diffs against a pristine snapshot.
         obs = make_observed(rng)
@@ -116,17 +116,17 @@ class TestLedger:
 
     def test_unknown_exclude_or_contribution_rejected(self, observed):
         wheel = Wheel(observed)
-        wheel.add(ConstSegment("a", 1.0))
-        with pytest.raises(ValueError, match="unknown segment"):
+        wheel.add(ConstBlock("a", 1.0))
+        with pytest.raises(ValueError, match="unknown block"):
             wheel.residual(exclude="ghost")
-        with pytest.raises(ValueError, match="unknown segment"):
+        with pytest.raises(ValueError, match="unknown block"):
             wheel.contribution("ghost")
 
     def test_observed_stays_pristine(self, rng):
         obs = make_observed(rng)
         snapshot = {ch: arr.copy() for ch, arr in obs.tdi.items()}
 
-        class Mutator(ConstSegment):
+        class Mutator(ConstBlock):
             def step(self, residual):
                 residual.tdi[next(iter(residual.tdi))][:] = -999.0  # mutate the copy
                 return super().step(residual)
@@ -137,40 +137,40 @@ class TestLedger:
         for ch, arr in snapshot.items():
             np.testing.assert_array_equal(obs.tdi[ch], arr)  # observed untouched
 
-    def test_segments_keep_their_own_state(self, observed):
-        seg = ConstSegment("a", 1.0)
+    def test_blocks_keep_their_own_state(self, observed):
+        seg = ConstBlock("a", 1.0)
         wheel = Wheel(observed)
         wheel.add(seg)
         wheel.run(4)
         assert seg.steps == 4  # sampler state lives on the object, not the Wheel
 
-    def test_zero_segments_is_a_noop(self, observed):
+    def test_zero_blocks_is_a_noop(self, observed):
         wheel = Wheel(observed)
         wheel.run(5)
         for ch in observed.channels:
             np.testing.assert_array_equal(wheel.residual().tdi[ch], observed.tdi[ch])
 
-    def test_run_rejects_bad_iteration_counts(self, observed):
+    def test_run_rejects_bad_turn_counts(self, observed):
         wheel = Wheel(observed)
-        with pytest.raises(ValueError, match="n_iterations"):
+        with pytest.raises(ValueError, match="full_turns"):
             wheel.run(-1)
-        with pytest.raises(ValueError, match="n_iterations"):
-            wheel.run(True)  # bool is not an iteration count
+        with pytest.raises(ValueError, match="full_turns"):
+            wheel.run(True)  # bool is not a turn count
 
     def test_run_accepts_numpy_integers(self, observed):
         wheel = Wheel(observed)
-        wheel.add(ConstSegment("a", 1.0))
+        wheel.add(ConstBlock("a", 1.0))
         wheel.run(np.int64(2))
 
 
 class TestNoAddBack:
-    def test_each_segment_sees_data_minus_others(self, rng):
-        # with two non-trivial segments, each must be handed the data minus the
+    def test_each_block_sees_data_minus_others(self, rng):
+        # with two non-trivial blocks, each must be handed the data minus the
         # OTHER (never itself); record what each sees at step time.
         obs = make_observed(rng)
         seen = {}
 
-        class Recorder(ConstSegment):
+        class Recorder(ConstBlock):
             def step(self, residual):
                 seen[self.name] = {ch: residual.tdi[ch].copy() for ch in residual.tdi}
                 return super().step(residual)
@@ -188,24 +188,24 @@ class TestNoAddBack:
 class TestAtomicRegistration:
     def test_duplicate_name_rejected(self, observed):
         wheel = Wheel(observed)
-        wheel.add(EchoSegment(name="x"))
+        wheel.add(EchoBlock(name="x"))
         with pytest.raises(ValueError, match="already registered"):
-            wheel.add(EchoSegment(name="x"))
+            wheel.add(EchoBlock(name="x"))
 
     def test_empty_name_rejected(self, observed):
         with pytest.raises(ValueError, match="non-empty"):
-            Wheel(observed).add(EchoSegment(name=""))
+            Wheel(observed).add(EchoBlock(name=""))
 
     def test_failed_start_leaves_wheel_untouched(self, observed):
-        class BadStart(ConstSegment):
+        class BadStart(ConstBlock):
             def start(self, residual):
                 return "not a residual"
 
         wheel = Wheel(observed)
-        wheel.add(ConstSegment("ok", 1.0))
+        wheel.add(ConstBlock("ok", 1.0))
         with pytest.raises(TypeError, match="bad.start must return a Residuals"):
             wheel.add(BadStart("bad", 0.0))
-        with pytest.raises(ValueError, match="unknown segment"):
+        with pytest.raises(ValueError, match="unknown block"):
             wheel.contribution("bad")  # not registered
         wheel.contribution("ok")  # the good one still is
         wheel.run(1)  # still healthy
@@ -213,7 +213,7 @@ class TestAtomicRegistration:
 
 class TestReturnedResidualValidation:
     def test_non_residual_return_named(self, observed):
-        class Bad(ConstSegment):
+        class Bad(ConstBlock):
             def step(self, residual):
                 return {"A": np.zeros(1)}  # a dict, not a Residuals
 
@@ -223,7 +223,7 @@ class TestReturnedResidualValidation:
             wheel.run(1)
 
     def test_changed_run_setting_rejected(self, observed):
-        class Cheat(ConstSegment):
+        class Cheat(ConstBlock):
             def step(self, residual):
                 return replace(residual, tdi_generation="9.9")
 
@@ -235,7 +235,7 @@ class TestReturnedResidualValidation:
             wheel.run(1)
 
     def test_bad_tdi_shape_raises_via_residuals(self, observed):
-        class Drifter(ConstSegment):
+        class Drifter(ConstBlock):
             def step(self, residual):
                 return replace(
                     residual, tdi={ch: np.zeros(2) for ch in residual.channels}
@@ -247,7 +247,7 @@ class TestReturnedResidualValidation:
             wheel.run(1)
 
     def test_changed_orbit_rejected(self, observed):
-        class Cheat(ConstSegment):
+        class Cheat(ConstBlock):
             def step(self, residual):
                 return replace(residual, orbit=object())
 
@@ -265,7 +265,7 @@ class TestNoiseViaResidual:
         wheel.run(2)
         assert wheel.residual().noise.level == 2.0  # refreshed each step
 
-    def test_noise_segment_has_zero_ledger_entry(self, observed):
+    def test_noise_block_has_zero_ledger_entry(self, observed):
         wheel = Wheel(observed)
         wheel.add(NoiseSeg("noise"))
         wheel.run(1)
@@ -274,10 +274,10 @@ class TestNoiseViaResidual:
                 wheel.contribution("noise")[ch], np.zeros_like(observed.tdi[ch])
             )
 
-    def test_start_sees_noise_from_earlier_segment(self, observed):
+    def test_start_sees_noise_from_earlier_block(self, observed):
         seen = {}
 
-        class Recorder(ConstSegment):
+        class Recorder(ConstBlock):
             def start(self, residual):
                 seen["noise"] = residual.noise
                 return super().start(residual)
@@ -290,13 +290,13 @@ class TestNoiseViaResidual:
     def test_step_sees_current_noise(self, observed):
         levels = []
 
-        class Recorder(ConstSegment):
+        class Recorder(ConstBlock):
             def step(self, residual):
                 levels.append(residual.noise.level)
                 return super().step(residual)
 
         wheel = Wheel(observed)
-        wheel.add(NoiseSeg("noise"))  # steps first each sweep
+        wheel.add(NoiseSeg("noise"))  # steps first each turn
         wheel.add(Recorder("rec", 0.0))
         wheel.run(3)
         assert levels == [1.0, 2.0, 3.0]
@@ -304,27 +304,27 @@ class TestNoiseViaResidual:
     def test_fixed_noise_passes_through(self, rng):
         obs = make_observed(rng, noise=FlatPSD(7.0))
         wheel = Wheel(obs)
-        wheel.add(EchoSegment("echo"))
+        wheel.add(EchoBlock("echo"))
         wheel.run(2)
         assert wheel.residual().noise.level == 7.0  # unchanged, threaded along
 
 
-class TestOnSweep:
-    def test_callback_called_per_sweep_with_wheel(self, observed):
+class TestOnTurn:
+    def test_callback_called_per_turn_with_wheel(self, observed):
         calls = []
         wheel = Wheel(observed)
-        wheel.add(ConstSegment("a", 1.0))
-        wheel.run(3, on_sweep=lambda i, w: calls.append((i, w is wheel)))
+        wheel.add(ConstBlock("a", 1.0))
+        wheel.run(3, on_turn=lambda i, w: calls.append((i, w is wheel)))
         assert calls == [(0, True), (1, True), (2, True)]
 
 
 class TestBoundaryGuards:
-    """The Wheel refuses returns that would silently corrupt other segments."""
+    """The Wheel refuses returns that would silently corrupt other blocks."""
 
     def test_dropping_the_noise_model_raises(self, rng):
         obs = make_observed(rng, noise=FlatPSD(3.0))
 
-        class Rebuilder(ConstSegment):
+        class Rebuilder(ConstBlock):
             def step(self, residual):
                 # rebuilds instead of using replace() -> loses noise silently
                 return Residuals(
@@ -344,7 +344,7 @@ class TestBoundaryGuards:
             wheel.run(1)
 
     def test_non_finite_return_raises_and_names_the_channel(self, observed):
-        class Blowup(ConstSegment):
+        class Blowup(ConstBlock):
             def step(self, residual):
                 return replace(
                     residual, tdi={ch: arr * np.nan for ch, arr in residual.tdi.items()}
@@ -366,7 +366,7 @@ class TestBoundaryGuards:
             Wheel(observed).add(NoStep())
 
     def test_withdrawing_a_model_warns(self, observed):
-        class Fickle(ConstSegment):
+        class Fickle(ConstBlock):
             def __init__(self, name, value):
                 super().__init__(name, value)
                 self.calls = 0
@@ -384,13 +384,13 @@ class TestBoundaryGuards:
 
     def test_the_withdrawal_warning_points_at_the_caller(self, observed):
         # the location IS the payload: it tells the user which call did it
-        class Fickle(ConstSegment):
+        class Fickle(ConstBlock):
             def step(self, residual):
                 return residual
 
         wheel = Wheel(observed)
-        wheel.add(ConstSegment("f", 1.0))
-        wheel._segments[0].__class__ = Fickle
+        wheel.add(ConstBlock("f", 1.0))
+        wheel._blocks[0].__class__ = Fickle
         with pytest.warns(ModelWithdrawnWarning) as record:
             wheel.run(1)  # <- this line must be blamed
         assert record[0].filename == __file__, record[0].filename
@@ -400,7 +400,7 @@ class TestBoundaryGuards:
         # must be able to keep -W error while ignoring exactly this heuristic
         import warnings as _w
 
-        class Death(ConstSegment):
+        class Death(ConstBlock):
             def step(self, residual):
                 self.value = 0.0  # k -> 0 sources
                 return self._subtract(residual)
@@ -413,17 +413,17 @@ class TestBoundaryGuards:
             wheel.run(1)
 
     def test_a_genuinely_zero_model_does_not_warn(self, observed):
-        # EchoSegment contributes zero on every step; that is not a withdrawal
+        # EchoBlock contributes zero on every step; that is not a withdrawal
         import warnings as _w
 
         wheel = Wheel(observed)
-        wheel.add(EchoSegment("echo"))
+        wheel.add(EchoBlock("echo"))
         with _w.catch_warnings():
             _w.simplefilter("error")  # any warning becomes a failure
             wheel.run(3)
 
     def test_real_frequency_domain_data_is_rejected(self, rng):
-        # a real one-sided spectrum would let a segment return `.real` and be
+        # a real one-sided spectrum would let a block return `.real` and be
         # credited with the entire imaginary part as its model
         with pytest.raises(TypeError, match="real but domain='frequency'"):
             make_observed(
@@ -440,7 +440,7 @@ class TestBoundaryGuards:
             rng, tdi={ch: np.zeros(64, np.float32) for ch in ("A", "E", "T")}
         )
 
-        class Wider(ConstSegment):
+        class Wider(ConstBlock):
             def step(self, residual):
                 return replace(
                     residual,
@@ -494,7 +494,7 @@ class TestBoundaryGuards:
             "epoch": 12345.0,
         }[field]
 
-        class Cheat(ConstSegment):
+        class Cheat(ConstBlock):
             def step(self, residual):
                 kw = {field: bad}
                 if field in ("channels", "n_samples", "domain"):
@@ -520,9 +520,9 @@ class TestBoundaryGuards:
 class TestDocumentedContracts:
     """Guarantees the docstrings make that nothing else pins."""
 
-    def test_start_is_handed_data_minus_already_registered_segments(self, rng):
-        """add()'s docstring promise. A segment that *reads* what it is handed
-        is the only way to see this -- segments that subtract a constant give
+    def test_start_is_handed_data_minus_already_registered_blocks(self, rng):
+        """add()'s docstring promise. A block that *reads* what it is handed
+        is the only way to see this -- blocks that subtract a constant give
         the same ledger entry either way."""
         obs = make_observed(rng)
         seen = {}
@@ -555,16 +555,16 @@ class TestDocumentedContracts:
         """residual()'s docstring: 'callers may mutate freely'."""
         obs = make_observed(rng)
         snapshot = obs.tdi["A"].copy()
-        wheel = Wheel(obs)  # no segments: the aliasing case
+        wheel = Wheel(obs)  # no blocks: the aliasing case
         wheel.residual().tdi["A"][0] = -999.0
         np.testing.assert_array_equal(obs.tdi["A"], snapshot)
-        wheel.add(ConstSegment("a", 1.0))
+        wheel.add(ConstBlock("a", 1.0))
         wheel.residual(exclude="a").tdi["A"][0] = -999.0
         np.testing.assert_array_equal(obs.tdi["A"], snapshot)
 
     def test_contribution_returns_a_copy_of_the_ledger_entry(self, observed):
         wheel = Wheel(observed)
-        wheel.add(ConstSegment("a", 2.0))
+        wheel.add(ConstBlock("a", 2.0))
         got = wheel.contribution("a")
         got["A"][:] = 100.0
         np.testing.assert_allclose(wheel.contribution("a")["A"], 2.0)
@@ -574,7 +574,7 @@ class TestDocumentedContracts:
     def test_non_finite_is_caught_in_any_channel_and_any_form(self, rng, bad, channel):
         obs = make_observed(rng)
 
-        class Blowup(ConstSegment):
+        class Blowup(ConstBlock):
             def step(self, residual):
                 tdi = dict(residual.tdi)
                 tdi[channel] = tdi[channel].copy()
@@ -646,8 +646,8 @@ class TestDocumentedContracts:
         with pytest.warns(ModelWithdrawnWarning):
             wheel.run(1)
 
-    def test_segment_name_must_be_a_string_not_just_non_empty(self, observed):
-        class Numbered(ConstSegment):
+    def test_block_name_must_be_a_string_not_just_non_empty(self, observed):
+        class Numbered(ConstBlock):
             pass
 
         seg = Numbered("x", 0.0)
@@ -668,7 +668,7 @@ class TestDocumentedContracts:
 
 
 class TestObservedDataIsChecked:
-    """Wheel.__init__ checks the data itself, so the first segment to touch it
+    """Wheel.__init__ checks the data itself, so the first block to touch it
     is not blamed by the return-value guard for damage it did not do."""
 
     def test_non_finite_observed_data_is_refused_at_construction(self, rng):

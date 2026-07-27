@@ -12,13 +12,13 @@ class Residuals:
 
     One `Residuals` is constructed at the top of a run to hold the observed
     data and the campaign settings (sample rate, channels, epoch, ...). The
-    Wheel produces new `Residuals` each Gibbs iteration with the same
+    Wheel produces new `Residuals` each turn of the wheel with the same
     metadata fields but freshly computed `tdi` -- the data with every other
-    segment's current model subtracted.
+    block's current model subtracted.
 
     Every field below is part of the cross-group data contract, and
     `__post_init__` validates the whole object on every construction
-    (including the `replace(...)` the Wheel performs each sweep): tdi keys
+    (including the `replace(...)` the Wheel performs each turn): tdi keys
     must equal `channels`, array lengths must match `domain`/`n_samples`,
     and an attached `orbit` must span the observation. Inconsistent data
     fails loudly at construction, not deep inside a sampler.
@@ -47,18 +47,18 @@ class Residuals:
         channels: TDI channel names in this run, e.g. ("A", "E", "T"). A
             name implies the campaign's agreed channel definition *including
             normalization* -- e.g. A = (Z - X)/sqrt(2), E = (X - 2Y + Z)/sqrt(6),
-            T = (X + Y + Z)/sqrt(3). Segments building these combinations
+            T = (X + Y + Z)/sqrt(3). Blocks building these combinations
             differently (unnormalized variants differ by sqrt(2)/sqrt(3)
             factors) must not join the same run.
         tdi_generation: TDI generation string, e.g. "1.5" or "2.0".
         observable: What the samples physically are. Recommended values:
             "fractional_frequency" (relative frequency deviation dnu/nu, the
             LDC / lisainstrument default), "phase" (radians), "strain".
-            Campaign-specific strings are allowed; every segment reads this
+            Campaign-specific strings are allowed; every block reads this
             one field, so agreement is by construction -- state it once,
             correctly, rather than letting each group assume its own.
         domain: "time" (default) or "frequency". Selects the tdi
-            representation described above; the residual a segment returns
+            representation described above; the residual a block returns
             must keep it (`Residuals` validates the tdi shapes).
         epoch: GPS seconds corresponding to sample index 0. Defaults to
             ``0.0`` -- fine for synthetic data with no absolute-time
@@ -67,26 +67,26 @@ class Residuals:
             check, and the frequency-domain phase reference. Shadowed by `t0`.
         noise: The current noise/covariance model the residual should be
             whitened against, or `None`. Opaque to the Wheel (like a
-            segment's own state): a noise segment defines its own type and
+            block's own state): a noise block defines its own type and
             puts it here on the residual it returns, and the Wheel carries
-            that residual to every other segment, so signal segments can
+            that residual to every other block, so signal blocks can
             weight their likelihood by the *current* noise estimate instead
             of a hardcoded PSD. `None` when no noise model is set. See
-            `segment.NoiseSegment`.
+            `block.NoiseBlock`.
         orbit: The LISA constellation ephemeris the data was produced with --
-            the spacecraft positions every segment must share to build its
+            the spacecraft positions every block must share to build its
             response (see `turntable.orbits.Orbit`). A *fixed* property of the
             dataset, like `epoch`/`tdi_generation`: set once on the observed
             data and the Wheel threads it unchanged (it is never sampled).
-            Opaque to the Wheel, exactly like `noise`; segments read
+            Opaque to the Wheel, exactly like `noise`; blocks read
             `residual.orbit` rather than constructing their own, so every piece
-            uses the *same* constellation. `None` lets a segment fall back to
+            uses the *same* constellation. `None` lets a block fall back to
             its own default orbit (back-compatible with orbit-less runs).
 
     Derived properties are exposed under both descriptive long names and
     the short symbols LISA papers use. Both spellings return the same value
     -- pick whichever reads better in context, but prefer *one* consistently
-    within a given segment or script so readers are not tracking two
+    within a given block or script so readers are not tracking two
     vocabularies. Call `Residuals.aliases()` for the full long-to-short table.
 
     Equality is identity (`eq=False`). A generated `__eq__` would compare the
@@ -113,7 +113,7 @@ class Residuals:
     Whoever picks this up: the decisions are (1) representation -- a boolean
     mask per channel, a list of good-data intervals, or NaN-in-place with a
     validity flag; (2) whether the Wheel's residual arithmetic must respect it
-    or whether masking stays entirely a segment concern; (3) what
+    or whether masking stays entirely a block concern; (3) what
     `noise_psd`/`noise_variance` mean over a gapped stretch, since the rfft
     grid assumes uniform sampling; (4) whether windowing/tapering around gap
     edges is a campaign convention that belongs here too (`to_frequency`
@@ -195,7 +195,7 @@ class Residuals:
             self.channels, tuple
         ):
             # normalise here: a list would otherwise compare unequal to the
-            # tuple a segment returns, and the Wheel would blame the segment
+            # tuple a block returns, and the Wheel would blame the block
             # for "changing a run setting" it never touched.
             object.__setattr__(self, "channels", tuple(self.channels))
         if not isinstance(self.channels, tuple):
@@ -274,7 +274,7 @@ class Residuals:
                 raise TypeError(
                     f"tdi[{ch!r}] is real but domain='frequency'; a one-sided "
                     f"spectrum is complex. Accepting a real array here would let "
-                    f"a segment return `spectrum.real` and be silently credited "
+                    f"a block return `spectrum.real` and be silently credited "
                     f"with the whole imaginary part as its model."
                 )
             # dtype is part of the contract too: integer or object arrays would
@@ -307,14 +307,14 @@ class Residuals:
         # so the mismatch would spuriously reject a data-grid orbit.
         #
         # This is a coarse check for gross epoch mismatches, not a guarantee: a
-        # segment applying TDI light-travel delays evaluates retarded times
+        # block applying TDI light-travel delays evaluates retarded times
         # slightly outside [epoch, last_sample] and needs margin (and
         # NumericOrbit.positions raises if asked beyond its table).
         last_sample = self.epoch + (self.n_samples - 1) * self.sample_interval
         if t_lo > self.epoch or t_hi < last_sample:
             raise ValueError(
                 f"orbit ephemeris spans [{t_lo}, {t_hi}] s but the data samples "
-                f"span [{self.epoch}, {last_sample}] s; every segment would need "
+                f"span [{self.epoch}, {last_sample}] s; every block would need "
                 f"spacecraft positions outside the tabulated ephemeris (mismatched "
                 f"epoch conventions? GPS vs zero-based times?)"
             )
@@ -428,8 +428,8 @@ class Residuals:
         """One-sided noise PSD on this run's rfft grid, or ``None``.
 
         The frequency-domain noise piece: the per-bin variance a Fourier-domain
-        segment whitens against. Turntable assembles it on the run's frequency
-        grid (from `n_samples`/`sample_rate`) so segments never recompute the
+        block whitens against. Turntable assembles it on the run's frequency
+        grid (from `n_samples`/`sample_rate`) so blocks never recompute the
         normalization. DC (bin 0) is ``+inf`` (zero weight). Returns ``None``
         when no noise model is set (`self.noise is None`).
 
@@ -450,7 +450,7 @@ class Residuals:
 
             E[ |X(f)|**2 ] = (Tobs / 2) * S(f)      (interior bins)
 
-        so a frequency-domain segment's per-bin weight is
+        so a frequency-domain block's per-bin weight is
         ``|X(f)|**2 / ((Tobs/2) S)`` for the interior bins. Two bins are not
         interior: DC (set to ``+inf`` here, so it carries zero weight) and, when
         ``n_samples`` is even, the Nyquist bin, which is purely real and carries
@@ -470,9 +470,9 @@ class Residuals:
         if not callable(getattr(self.noise, "psd", None)):
             raise TypeError(
                 f"noise object {type(self.noise).__name__} does not expose "
-                f"psd(freqs[, channel]); the model a noise segment puts on "
+                f"psd(freqs[, channel]); the model a noise block puts on "
                 f"Residuals.noise must implement it to serve frequency-domain "
-                f"segments (see segment.NoiseSegment for the noise contract)"
+                f"blocks (see block.NoiseBlock for the noise contract)"
             )
         freqs = np.fft.rfftfreq(self.n_samples, d=self.sample_interval)
         psd = np.empty(freqs.shape)
@@ -482,11 +482,11 @@ class Residuals:
             if channel is None
             else self.noise.psd(freqs[1:], channel)
         )
-        # A noise segment leaves tdi untouched, so the Wheel's finiteness guard
+        # A noise block leaves tdi untouched, so the Wheel's finiteness guard
         # cannot see it blow up -- the damage travels through this object
         # instead. An ill-conditioned Whittle/spline fit returning NaN, or a
         # least-squares PSD going negative in a low-power band, would otherwise
-        # silently hand every later segment a NaN or imaginary sigma.
+        # silently hand every later block a NaN or imaginary sigma.
         interior = psd[1:]
         if not np.isfinite(interior).all() or np.any(interior <= 0.0):
             bad = int((~np.isfinite(interior)).sum() + (interior <= 0.0).sum())
@@ -494,15 +494,15 @@ class Residuals:
                 f"noise model {type(self.noise).__name__}.psd returned {bad} "
                 f"non-finite or non-positive value(s) on this run's frequency "
                 f"grid; a PSD must be finite and strictly positive to whiten "
-                f"against (check the noise segment's fit, not the signal "
-                f"segment asking for it)"
+                f"against (check the noise block's fit, not the signal "
+                f"block asking for it)"
             )
         return psd
 
     def noise_variance(self, channel: str | None = None) -> float | None:
         """Per-sample time-domain variance implied by the noise model, or None.
 
-        The quantity a *time-domain* segment needs for its likelihood weight,
+        The quantity a *time-domain* block needs for its likelihood weight,
         so it does not have to re-derive it from the PSD grid. Integrates the
         one-sided PSD over this run's grid, excluding DC (which carries no
         variance for zero-mean data) and half-weighting the Nyquist bin when

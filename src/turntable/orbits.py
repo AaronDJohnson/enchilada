@@ -1,14 +1,14 @@
 """LISA constellation ephemerides carried on `Residuals.orbit`.
 
 The orbit is a *fixed property of the dataset* -- the spacecraft positions the
-data was produced with -- that every segment must share to build its response.
+data was produced with -- that every block must share to build its response.
 turntable carries an orbit object opaquely on `Residuals.orbit` (like `noise`)
 and never interprets it; this module defines the contract (`Orbit`) and the
 concrete forms a dataset can supply.
 
 Two shapes, per the user's data:
 
-* **Analytic** -- a closed-form constellation a segment generates itself (each
+* **Analytic** -- a closed-form constellation a block generates itself (each
   piece's own `AnalyticOrbit` in `global_fit_pieces`); used for self-consistent
   synthetic tests. turntable does not implement one; it only defines the
   protocol such an object satisfies.
@@ -45,7 +45,7 @@ _NOMINAL_ARMLENGTH = 2.5e9  # m, fallback if a table is degenerate
 
 @runtime_checkable
 class Orbit(Protocol):
-    """What a segment relies on from a constellation ephemeris.
+    """What a block relies on from a constellation ephemeris.
 
     Attributes:
         L: Nominal armlength [m] (a scalar; the TDI delay length).
@@ -59,7 +59,7 @@ class Orbit(Protocol):
     An implementation must cover every sample time, ``epoch + n*dt`` for n in
     ``[0, n_samples-1]`` -- i.e. up to ``epoch + (n_samples-1)*dt``, one sample
     interval short of ``epoch + Tobs`` -- and in practice should carry margin
-    beyond that, since a segment applying TDI light-travel delays evaluates
+    beyond that, since a block applying TDI light-travel delays evaluates
     retarded times slightly outside the sample span. It should raise rather
     than extrapolate outside its domain of validity, as :class:`NumericOrbit`
     does. Tabulated implementations should also expose ``t_range``; when

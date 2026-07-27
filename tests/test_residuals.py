@@ -155,7 +155,7 @@ class TestOrbitSpanCheck:
 
     def test_orbit_tabulated_on_the_data_grid_accepted(self, rng):
         # 64 samples at 1 Hz from epoch 0 -> last sample at t = 63 s. An orbit
-        # tabulated on exactly that grid covers every time a segment can ask
+        # tabulated on exactly that grid covers every time a block can ask
         # for, so it must be accepted (it spans [0, 63], not [0, Tobs=64]).
         class GridOrbit:
             t_range = (0.0, 63.0)
@@ -428,8 +428,8 @@ class TestDtypeAndTypeContract:
             make_observed(rng, channels={"A", "E", "T"})
 
     def test_channels_list_is_coerced_to_tuple(self, rng):
-        # a list would otherwise compare unequal to the tuple a segment returns,
-        # and the Wheel would blame the segment for changing a run setting
+        # a list would otherwise compare unequal to the tuple a block returns,
+        # and the Wheel would blame the block for changing a run setting
         obs = make_observed(rng, channels=["A", "E", "T"])
         assert obs.channels == ("A", "E", "T")
         assert isinstance(obs.channels, tuple)
@@ -521,7 +521,7 @@ class TestPsdGridAndAliases:
 
 
 class TestNoisePsdSanity:
-    """A noise segment leaves tdi untouched, so the Wheel's finiteness guard
+    """A noise block leaves tdi untouched, so the Wheel's finiteness guard
     never sees a bad fit -- the damage travels through the noise object. These
     pin the only place it can be caught."""
 

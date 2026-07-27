@@ -1,20 +1,20 @@
 """A complete (toy) blocked-Gibbs fit: two sources plus sampled noise.
 
-Where examples/demo.py shows the plumbing with no-op segments, this example
+Where examples/demo.py shows the plumbing with no-op blocks, this example
 runs a real Gibbs sampler to convergence on synthetic data, demonstrating the
 parts of the protocol the demo leaves out:
 
-- a signal segment (`SineSegment.step`) that fits the residual it is handed --
-  already the data minus every other segment -- directly, then subtracts its
+- a signal block (`SineBlock.step`) that fits the residual it is handed --
+  already the data minus every other block -- directly, then subtracts its
   new model and returns; the Wheel keeps the ledger, so there is no add-back;
-- a *noise* segment (`WhiteNoiseSegment`) that removes nothing from the data
+- a *noise* block (`WhiteNoiseBlock`) that removes nothing from the data
   and instead returns the residual with an updated `noise` object, which
-  signal segments read through `residual.noise_variance` (or `noise_psd` in
+  signal blocks read through `residual.noise_variance` (or `noise_psd` in
   the frequency domain);
-- state ownership: each segment keeps its parameters, RNG, current model,
+- state ownership: each block keeps its parameters, RNG, current model,
   and posterior chain as plain instance attributes -- the Wheel never sees
-  them, and you read results directly off the segment objects you built;
-- progress reporting through `Wheel.run`'s `on_sweep` callback.
+  them, and you read results directly off the block objects you built;
+- progress reporting through `Wheel.run`'s `on_turn` callback.
 
 The data are one channel of two sinusoids in white noise -- physically a toy
 (amplitudes in arbitrary units), but the Gibbs structure is exactly the real
@@ -43,7 +43,7 @@ class FlatNoise:
         return np.full_like(freqs, 2.0 * self.sigma**2 / self._fs)
 
 
-class SineSegment:
+class SineBlock:
     """One sinusoidal source with a conjugate Gibbs draw for its amplitude.
 
     The frequency is treated as known; the amplitude posterior given white
@@ -78,7 +78,7 @@ class SineSegment:
         # does the PSD integration (and the Nyquist weighting) for us
         sigma2 = residual.noise_variance(ch)
 
-        # `residual` is already the data minus every OTHER segment -- fit it
+        # `residual` is already the data minus every OTHER block -- fit it
         # directly (no add-back), then subtract our new model and return.
         data_for_me = residual.tdi[ch]
         ss = float(s @ s)
@@ -91,11 +91,11 @@ class SineSegment:
         return replace(residual, tdi=new_tdi)
 
 
-class WhiteNoiseSegment:
-    """Noise segment: conjugate inverse-gamma draw for the white-noise sigma.
+class WhiteNoiseBlock:
+    """Noise block: conjugate inverse-gamma draw for the white-noise sigma.
 
     Removes nothing from the data; it returns the residual with an updated
-    `noise` model, which the signal segments read via `residual.noise_variance`
+    `noise` model, which the signal blocks read via `residual.noise_variance`
     (the time-domain view of the same model).
     """
 
@@ -109,7 +109,7 @@ class WhiteNoiseSegment:
         return replace(residual, noise=FlatNoise(self.sigma, residual.fs))
 
     def step(self, residual: Residuals) -> Residuals:
-        # residual here is data minus every signal segment's model: pure noise
+        # residual here is data minus every signal block's model: pure noise
         n_total = sum(arr.size for arr in residual.tdi.values())
         ssr = sum(float(arr @ arr) for arr in residual.tdi.values())
         # inverse-gamma(a, b) posterior with a weak IG(2, 1) prior
@@ -143,28 +143,28 @@ def make_observed(seed: int = 0) -> Residuals:
     )
 
 
-def run_toy_fit(n_sweeps: int = 300, burn_in: int = 100, seed: int = 0):
+def run_toy_fit(n_turns: int = 300, burn_in: int = 100, seed: int = 0):
     """Run the fit; returns {name: (posterior_mean, posterior_std)}."""
-    slow = SineSegment(name="slow", freq=0.004, seed=seed + 1)
-    fast = SineSegment(name="fast", freq=0.011, seed=seed + 2)
-    noise = WhiteNoiseSegment(name="noise", seed=seed + 3)
+    slow = SineBlock(name="slow", freq=0.004, seed=seed + 1)
+    fast = SineBlock(name="fast", freq=0.011, seed=seed + 2)
+    noise = WhiteNoiseBlock(name="noise", seed=seed + 3)
 
     wheel = Wheel(make_observed(seed))
     wheel.add(slow)
     wheel.add(fast)
-    wheel.add(noise)  # steps last each sweep: sees data minus both signals
+    wheel.add(noise)  # steps last each turn: sees data minus both signals
 
-    def progress(iteration: int, w: Wheel) -> None:
-        if (iteration + 1) % 100 == 0:
+    def progress(turn: int, w: Wheel) -> None:
+        if (turn + 1) % 100 == 0:
             rms = float(np.sqrt(np.mean(w.residual().tdi["A"] ** 2)))
             print(
-                f"sweep {iteration + 1:4d}: full-residual RMS = {rms:.4f}  "
+                f"turn {turn + 1:4d}: full-residual RMS = {rms:.4f}  "
                 f"(sigma draw = {noise.sigma:.4f})"
             )
 
-    wheel.run(n_sweeps, on_sweep=progress)
+    wheel.run(n_turns, on_turn=progress)
 
-    # chains live on the segment objects we constructed -- read them directly
+    # chains live on the block objects we constructed -- read them directly
     results = {}
     for seg in (slow, fast, noise):
         chain = np.asarray(seg.chain[burn_in:])

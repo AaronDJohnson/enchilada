@@ -33,54 +33,64 @@ First working release of the blocked-Gibbs orchestration layer.
   in prose -- the same convention `noise_psd` is normalized against, which a
   test now pins. Since data enters as a time series and transforms from there,
   `n_samples` never needs stating by hand in the normal workflow.
-- `Segment` protocol — two methods, `start(residual)` and `step(residual)`,
-  each returning the updated residual. The residual handed to a segment is
-  the data minus every *other* segment (its own model excluded), so the
-  segment fits it directly and subtracts its new model — there is no
+- Vocabulary, fixed before the first release so it never needs a deprecation
+  cycle. The unit of work is a **block** (`Block`, `NoiseBlock`, `EchoBlock`,
+  `check_block`, `turntable.block`) — the same word blocked Gibbs already uses
+  for a jointly-updated group of parameters, so the protocol name states what
+  the sampler is doing. One pass over every block is a **turn** of the wheel
+  (`Wheel.run(full_turns=...)`, `on_turn=...`, `check_block(n_turns=...)`);
+  the Monte Carlo literature calls it a sweep, but a block's own sampler also
+  *steps* many times inside one `step()` call, and turntable needs the two
+  scales to be unmistakable. "Iteration" is retired entirely: it was the one
+  word that could plausibly mean either.
+- `Block` protocol — two methods, `start(residual)` and `step(residual)`,
+  each returning the updated residual. The residual handed to a block is
+  the data minus every *other* block (its own model excluded), so the
+  block fits it directly and subtracts its new model — there is no
   add-back to forget. Everything else — parameters, RNG, chains, checkpoints,
-  and the segment's own current model — is segment-internal state the Wheel
-  never sees. Noise is not special: a noise segment returns the residual with
+  and the block's own current model — is block-internal state the Wheel
+  never sees. Noise is not special: a noise block returns the residual with
   an updated `noise` object (a zero ledger entry), consumed via
   `Residuals.noise_psd` (documented interface `psd(freqs[, channel])`).
 - `Wheel` boundary guards: `add` verifies `name`/`start`/`step` before
   registering anything; a returned residual may not drop the noise model
   (symmetric with the existing orbit check) and may not contain NaN/inf, which
-  would otherwise be recorded as that segment's model and handed to every
-  segment stepped later; and because the ledger is derived, the Wheel warns
-  when a previously non-zero model becomes exactly zero (a segment that returns
+  would otherwise be recorded as that block's model and handed to every
+  block stepped later; and because the ledger is derived, the Wheel warns
+  when a previously non-zero model becomes exactly zero (a block that returns
   the residual unchanged silently withdraws itself from the fit).
-- `Wheel`: the Gibbs ring, owning the pristine data and a per-segment ledger
-  (each segment's current model). It hands each segment the data minus every
-  other model and derives that segment's new ledger entry from what it
+- `Wheel`: the Gibbs ring, owning the pristine data and a per-block ledger
+  (each block's current model). It hands each block the data minus every
+  other model and derives that block's new ledger entry from what it
   returns, so the residual bookkeeping — and the add-back — lives in the
-  framework, not the segment (the split the GLASS global fit uses). Atomic
+  framework, not the block (the split the GLASS global fit uses). Atomic
   registration, per-step validation that the returned residual kept the fixed
   run settings, `residual(exclude=...)` and `contribution(name)` accessors,
-  and an `on_sweep` callback on `run`.
+  and an `on_turn` callback on `run`.
 - `NumericOrbit`: tabulated ephemerides with cubic-spline interpolation,
   loaders for LDC/Mojito HDF5 files and lisaorbits objects
   (validated against lisaorbits 3.0.3), equatorial-to-ecliptic frame
   rotation, and a hard refusal to extrapolate outside the tabulated span.
-- `turntable.testing`: `EchoSegment` and the `check_segment` conformance
-  helper for third-party segment implementations.
+- `turntable.testing`: `EchoBlock` and the `check_block` conformance
+  helper for third-party block implementations.
 - Examples: `examples/demo.py` (plumbing walkthrough), `examples/demo.ipynb`
   (annotated notebook incl. orbits), `examples/toy_fit.py` (a converging
   two-source + sampled-noise Gibbs fit), and
-  `examples/gb_segment_eryn.ipynb` + `examples/gb_model.py` -- a real LISA
-  source class (GBGPU waveforms, an Eryn sampler inside the segment, a fixed
+  `examples/gb_block_eryn.ipynb` + `examples/gb_model.py` -- a real LISA
+  source class (GBGPU waveforms, an Eryn sampler inside the block, a fixed
   LISA Analysis Tools PSD) recovering an injected galactic binary through the
   Wheel. That one needs an external stack (`gbgpu`, `eryn`,
   `lisaanalysistools`, `matplotlib`, `corner`) that is deliberately not a
   turntable dependency, so it is not exercised by CI.
 - Ergonomics: `turntable.replace` re-exports `dataclasses.replace`, so updating
-  a residual needs no second import; `Segment` is `runtime_checkable`, so
-  `isinstance(obj, Segment)` is a usable registration check. (`NoiseSegment`
-  deliberately is *not*: it declares no member beyond `Segment`, so a
-  runtime check against it would return True for every segment.)
+  a residual needs no second import; `Block` is `runtime_checkable`, so
+  `isinstance(obj, Block)` is a usable registration check. (`NoiseBlock`
+  deliberately is *not*: it declares no member beyond `Block`, so a
+  runtime check against it would return True for every block.)
 - `ModelWithdrawnWarning`: the withdrawal heuristic raises a named, filterable
   category rather than a bare `RuntimeWarning`, since a legitimate RJMCMC death
   move is indistinguishable from a forgotten re-subtraction from outside the
-  segment. Filter it if your sampler does death moves; `check_segment`
+  block. Filter it if your sampler does death moves; `check_block`
   escalates it to an error, because a conformance check is exactly where the
   strict reading belongs.
 - Packaging and release: installable via uv or pip (uv_build backend),

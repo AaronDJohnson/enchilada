@@ -1,4 +1,4 @@
-"""turntable.testing: EchoSegment and the check_segment conformance helper."""
+"""turntable.testing: EchoBlock and the check_block conformance helper."""
 
 from dataclasses import replace
 
@@ -6,12 +6,12 @@ import numpy as np
 import pytest
 
 from conftest import make_observed
-from turntable.testing import EchoSegment, check_segment
+from turntable.testing import EchoBlock, check_block
 
 
-class TestCheckSegment:
-    def test_conforming_segment_passes(self, observed):
-        check_segment(EchoSegment(name="echo"), observed)
+class TestCheckBlock:
+    def test_conforming_block_passes(self, observed):
+        check_block(EchoBlock(name="echo"), observed)
 
     def test_conforming_in_frequency_domain(self, rng):
         n = 64
@@ -20,49 +20,49 @@ class TestCheckSegment:
             domain="frequency",
             tdi={ch: rng.standard_normal(n // 2 + 1) + 0j for ch in ("A", "E", "T")},
         )
-        check_segment(EchoSegment(name="echo"), obs)
+        check_block(EchoBlock(name="echo"), obs)
 
     def test_non_residual_return_caught(self, observed):
-        class Bad(EchoSegment):
+        class Bad(EchoBlock):
             def step(self, residual):
                 return {"A": np.zeros(1)}  # not a Residuals
 
         with pytest.raises(TypeError, match="must return a Residuals"):
-            check_segment(Bad(name="bad"), observed)
+            check_block(Bad(name="bad"), observed)
 
     def test_changed_run_setting_caught(self, observed):
-        class Cheat(EchoSegment):
+        class Cheat(EchoBlock):
             def step(self, residual):
                 return replace(residual, observable="strain")
 
         with pytest.raises(ValueError, match="changed the run setting"):
-            check_segment(Cheat(name="cheat"), observed)
+            check_block(Cheat(name="cheat"), observed)
 
-    def test_conforming_noise_segment_passes(self, observed):
+    def test_conforming_noise_block_passes(self, observed):
         class FlatPSD:
             def psd(self, freqs, channel=None):
                 return np.full_like(freqs, 1.0)
 
-        class NoiseSeg(EchoSegment):
+        class NoiseSeg(EchoBlock):
             def step(self, residual):
                 return replace(residual, noise=FlatPSD())
 
-        check_segment(NoiseSeg(name="noise"), observed)
+        check_block(NoiseSeg(name="noise"), observed)
 
     def test_noise_model_violating_contract_caught(self, observed):
-        class BadNoise(EchoSegment):
+        class BadNoise(EchoBlock):
             def step(self, residual):
                 return replace(residual, noise=object())
 
         with pytest.raises(TypeError, match="does not expose"):
-            check_segment(BadNoise(name="bad"), observed)
+            check_block(BadNoise(name="bad"), observed)
 
 
-class TestEchoSegment:
+class TestEchoBlock:
     def test_keeps_its_own_step_counter(self, observed):
         from turntable import Wheel
 
-        echo = EchoSegment(name="echo")
+        echo = EchoBlock(name="echo")
         wheel = Wheel(observed)
         wheel.add(echo)
         wheel.run(3)
@@ -72,18 +72,18 @@ class TestEchoSegment:
         from turntable import Wheel
 
         wheel = Wheel(observed)
-        wheel.add(EchoSegment(name="echo"))
+        wheel.add(EchoBlock(name="echo"))
         wheel.run(1)
         for ch in observed.channels:
             np.testing.assert_array_equal(wheel.residual().tdi[ch], observed.tdi[ch])
 
 
-class TestCheckSegmentStrictness:
-    def test_a_withdrawing_segment_fails_the_conformance_check(self, observed):
+class TestCheckBlockStrictness:
+    def test_a_withdrawing_block_fails_the_conformance_check(self, observed):
         """The Wheel warns mid-run; the pre-campaign gate must refuse."""
         from turntable import ModelWithdrawnWarning, replace
 
-        class Forgetful(EchoSegment):
+        class Forgetful(EchoBlock):
             def __init__(self, name):
                 super().__init__(name)
                 self.calls = 0
@@ -98,4 +98,4 @@ class TestCheckSegmentStrictness:
                 return residual  # forgot to re-subtract: model leaves the fit
 
         with pytest.raises(ModelWithdrawnWarning):
-            check_segment(Forgetful(name="forgetful"), observed)
+            check_block(Forgetful(name="forgetful"), observed)

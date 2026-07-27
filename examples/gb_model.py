@@ -8,7 +8,7 @@ example — the parts a source-class group brings to a global fit:
   inner-product helpers (pure functions, no global state; ``waveform`` is the
   one-off convenience wrapper used for diagnostics and plots);
 - ``inject_gb`` — builds a synthetic frequency-domain dataset (signal + noise);
-- ``GBSegment`` — the turntable ``Segment`` implementation. It reads everything
+- ``GBBlock`` — the turntable ``Block`` implementation. It reads everything
   it needs (channels, grid, noise PSD) off the ``residual`` the Wheel hands it,
   so it never reaches back into this module's or the notebook's scope for run
   settings.
@@ -115,13 +115,13 @@ def inject_gb(truth, angles, Tobs, dt, n_samples, channels, noise, NB=128, seed=
     return tdi, {"band": band, "signal": signal, "snr": snr, "start_ind": si}
 
 
-# ---------------------------------------------------------------- the segment
-class GBSegment:
-    """turntable ``Segment``: one galactic binary, sampled with Eryn.
+# ---------------------------------------------------------------- the block
+class GBBlock:
+    """turntable ``Block``: one galactic binary, sampled with Eryn.
 
     Implements ``name`` / ``start`` / ``step``. Reads channels, the frequency
     grid, and the noise PSD off the ``residual`` it is handed (never from module
-    scope). The residual is already the data minus every other segment, so it
+    scope). The residual is already the data minus every other block, so it
     advances Eryn against it directly (no add-back), then returns the residual
     with its new point-estimate model subtracted. The posterior chain lives on
     the object (``self.chain``).
@@ -144,7 +144,7 @@ class GBSegment:
         angles,
         name="gb",
         n_walkers=24,
-        steps_per_sweep=40,
+        steps_per_turn=40,
         band=128,
         seed=0,
     ):
@@ -153,7 +153,7 @@ class GBSegment:
         b = np.asarray(bounds, float)
         self.lo, self.hi = b[:, 0], b[:, 1]
         self.angles, self.NB = angles, band
-        self.nw, self.k = n_walkers, steps_per_sweep
+        self.nw, self.k = n_walkers, steps_per_turn
         self.ndim = self.init.size
         self.rng = np.random.default_rng(seed)
         self.chain = None
@@ -235,7 +235,7 @@ class GBSegment:
         self.S = {
             ch: residual.noise_psd(ch) for ch in self.chans
         }  # current noise, off the residual
-        # `residual` is already the data minus every OTHER segment -- fit it
+        # `residual` is already the data minus every OTHER block -- fit it
         # directly (no add-back); the Wheel keeps the ledger.
         self._data = {ch: residual.tdi[ch] for ch in self.chans}
         self._state = self._sampler.run_mcmc(self._state, self.k, progress=False)
