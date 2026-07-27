@@ -166,9 +166,9 @@ def run_toy_fit(n_cycles: int = 300, burn_in: int = 100, seed: int = 0):
 
     # chains live on the block objects we constructed -- read them directly
     results = {}
-    for seg in (slow, fast, noise):
-        chain = np.asarray(seg.chain[burn_in:])
-        results[seg.name] = (float(chain.mean()), float(chain.std()))
+    for block in (slow, fast, noise):
+        chain = np.asarray(block.chain[burn_in:])
+        results[block.name] = (float(chain.mean()), float(chain.std()))
     return results
 
 

@@ -43,11 +43,11 @@ class TestCheckBlock:
             def psd(self, freqs, channel=None):
                 return np.full_like(freqs, 1.0)
 
-        class NoiseSeg(EchoBlock):
+        class FlatNoiseBlock(EchoBlock):
             def block_update(self, residual):
                 return replace(residual, noise=FlatPSD())
 
-        check_block(NoiseSeg(name="noise"), observed)
+        check_block(FlatNoiseBlock(name="noise"), observed)
 
     def test_noise_model_violating_contract_caught(self, observed):
         class BadNoise(EchoBlock):

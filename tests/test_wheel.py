@@ -43,7 +43,7 @@ class FlatPSD:
         return np.full_like(freqs, self.level)
 
 
-class NoiseSeg:
+class LevelNoiseBlock:
     """Noise block: sets residual.noise, level tracks its update count."""
 
     def __init__(self, name):
@@ -138,11 +138,11 @@ class TestLedger:
             np.testing.assert_array_equal(obs.tdi[ch], arr)  # observed untouched
 
     def test_blocks_keep_their_own_state(self, observed):
-        seg = ConstBlock("a", 1.0)
+        block = ConstBlock("a", 1.0)
         wheel = Wheel(observed)
-        wheel.add(seg)
+        wheel.add(block)
         wheel.run(4)
-        assert seg.updates == 4  # sampler state lives on the object, not the Wheel
+        assert block.updates == 4  # sampler state lives on the object, not the Wheel
 
     def test_zero_blocks_is_a_noop(self, observed):
         wheel = Wheel(observed)
@@ -260,14 +260,14 @@ class TestReturnedResidualValidation:
 class TestNoiseViaResidual:
     def test_noise_rides_the_residual_and_refreshes(self, observed):
         wheel = Wheel(observed)
-        wheel.add(NoiseSeg("noise"))
+        wheel.add(LevelNoiseBlock("noise"))
         assert wheel.residual().noise.level == 0.0  # set in start
         wheel.run(2)
         assert wheel.residual().noise.level == 2.0  # refreshed each update
 
     def test_noise_block_has_zero_ledger_entry(self, observed):
         wheel = Wheel(observed)
-        wheel.add(NoiseSeg("noise"))
+        wheel.add(LevelNoiseBlock("noise"))
         wheel.run(1)
         for ch in observed.channels:
             np.testing.assert_array_equal(
@@ -283,7 +283,7 @@ class TestNoiseViaResidual:
                 return super().start(residual)
 
         wheel = Wheel(observed)
-        wheel.add(NoiseSeg("noise"))
+        wheel.add(LevelNoiseBlock("noise"))
         wheel.add(Recorder("rec", 0.0))
         assert isinstance(seen["noise"], FlatPSD)
 
@@ -296,7 +296,7 @@ class TestNoiseViaResidual:
                 return super().block_update(residual)
 
         wheel = Wheel(observed)
-        wheel.add(NoiseSeg("noise"))  # updates first each cycle
+        wheel.add(LevelNoiseBlock("noise"))  # updates first each cycle
         wheel.add(Recorder("rec", 0.0))
         wheel.run(3)
         assert levels == [1.0, 2.0, 3.0]
@@ -650,10 +650,10 @@ class TestDocumentedContracts:
         class Numbered(ConstBlock):
             pass
 
-        seg = Numbered("x", 0.0)
-        seg.name = 5
+        block = Numbered("x", 0.0)
+        block.name = 5
         with pytest.raises(ValueError, match="non-empty string"):
-            Wheel(observed).add(seg)
+            Wheel(observed).add(block)
 
     def test_missing_name_gets_the_protocol_message(self, observed):
         class Anonymous:

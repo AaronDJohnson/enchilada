@@ -217,11 +217,11 @@ class Wheel:
                 f"n_cycles must be a non-negative integer, got {n_cycles!r}"
             )
         for cycle in range(n_cycles):
-            for seg in self._blocks:
-                handed = self.residual(exclude=seg.name)  # data minus OTHERS
-                returned = seg.block_update(self._mutable(handed))
-                self._validate_returned(returned, seg.name, "block_update")
-                self._adopt(seg.name, handed, returned, "block_update")
+            for block in self._blocks:
+                handed = self.residual(exclude=block.name)  # data minus OTHERS
+                returned = block.block_update(self._mutable(handed))
+                self._validate_returned(returned, block.name, "block_update")
+                self._adopt(block.name, handed, returned, "block_update")
             if on_cycle is not None:
                 on_cycle(cycle, self)
 

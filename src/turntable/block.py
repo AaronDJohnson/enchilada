@@ -14,7 +14,7 @@ class Block(Protocol):
       conventions off the residual, set yourself up, subtract your initial
       model, and return the updated residual (return it unchanged if you
       start from nothing).
-    - `block_update` once per cycle of the wheel. The residual you receive is
+    - `block_update` once each cycle. The residual you receive is
       the observed data with **every other** block's model already subtracted --
       **but not your own**. So it is exactly the data your source class must
       explain: fit against it directly, subtract your new model, and return
@@ -51,8 +51,7 @@ class Block(Protocol):
     object -- `replace(residual, noise=my_model)` -- so its ledger entry is
     zero, and signal blocks read the model back through `residual.noise_psd`
     (per-bin weight) or `residual.noise_variance` (per-sample variance, for a
-    time-domain likelihood).
-    See `NoiseBlock`.
+    time-domain likelihood). See `NoiseBlock`.
 
     Implementation notes:
         - `name` must be unique within a Wheel; it identifies your block in
@@ -68,10 +67,11 @@ class Block(Protocol):
           `noise` and `orbit` objects are shared by reference -- treat them as
           immutable, swapping via `replace(residual, noise=...)` rather than
           mutating in place.
-        - `residual.noise` may be `None`: no noise model is set, or you are updated
-          before the noise block is on the first cycle (registration
-          order). Both `noise_psd()` and `noise_variance()` return `None` in
-          that case -- guard for it rather than assuming a model is present.
+        - `residual.noise` may be `None`: either no noise model is set, or on
+          the first cycle you are updated before the noise block is
+          (registration order). Both `noise_psd()` and `noise_variance()`
+          return `None` in that case -- guard for it rather than assuming a
+          model is present.
         - Read the data conventions off the residual instead of assuming them:
           `residual.observable`, `residual.domain`, `residual.channels`. If
           your sampler only supports one convention, check these in `start` and
@@ -96,7 +96,7 @@ class Block(Protocol):
         ...
 
     def block_update(self, residual: Residuals) -> Residuals:
-        """Advance one cycle of the wheel and return the updated residual.
+        """Take your turn: update your model and return the residual.
 
         Args:
             residual: The observed data with every **other** block's current
@@ -133,7 +133,7 @@ class NoiseBlock(Block, Protocol):
     - ``psd(freqs[, channel]) -> ndarray`` -- the one-sided PSD (see
       `Residuals.noise_psd` for the pinned normalization convention).
 
-    `isinstance(seg, NoiseBlock)` cannot tell you anything -- it returns True
+    `isinstance(block, NoiseBlock)` cannot tell you anything -- it returns True
     for *every* block. That is not a bug to fix: a noise block declares no
     method a signal block lacks, because the difference between them is what
     they do with `tdi` and `noise`, not their shape. Use this protocol as
