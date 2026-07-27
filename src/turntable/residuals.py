@@ -12,13 +12,13 @@ class Residuals:
 
     One `Residuals` is constructed at the top of a run to hold the observed
     data and the campaign settings (sample rate, channels, epoch, ...). The
-    Wheel produces new `Residuals` each turn of the wheel with the same
+    Wheel produces new `Residuals` each cycle of the wheel with the same
     metadata fields but freshly computed `tdi` -- the data with every other
     block's current model subtracted.
 
     Every field below is part of the cross-group data contract, and
     `__post_init__` validates the whole object on every construction
-    (including the `replace(...)` the Wheel performs each turn): tdi keys
+    (including the `replace(...)` the Wheel performs each cycle): tdi keys
     must equal `channels`, array lengths must match `domain`/`n_samples`,
     and an attached `orbit` must span the observation. Inconsistent data
     fails loudly at construction, not deep inside a sampler.

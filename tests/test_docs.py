@@ -6,7 +6,7 @@ Three levels of check, weakest to strongest:
 * every fenced ``python`` block must parse -- catches syntax rot;
 * every call to a turntable API in any block must use keyword arguments that
   actually exist -- catches the rename class of rot (``n_iterations`` ->
-  ``full_turns``) even in illustrative fragments that cannot be executed;
+  ``n_cycles``) even in illustrative fragments that cannot be executed;
 * blocks tagged ``<!-- runnable -->`` must run to completion in a fresh
   interpreter -- the full check, for blocks that are self-contained.
 """
@@ -40,7 +40,7 @@ def _blocks():
 
 
 def test_the_readme_has_blocks_to_check():
-    """Guard the regex itself: a fence-syntax change must not silently turn
+    """Guard the regex itself: a fence-syntax change must not silently cycle
     this whole module into a no-op that passes."""
     blocks = _blocks()
     assert len(blocks) >= 3

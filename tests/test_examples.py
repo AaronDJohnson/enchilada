@@ -30,7 +30,7 @@ def test_demo_runs_clean():
 
 def test_toy_fit_converges_to_truth():
     toy = load_example("toy_fit")
-    results = toy.run_toy_fit(n_turns=200, burn_in=80, seed=0)
+    results = toy.run_toy_fit(n_cycles=200, burn_in=80, seed=0)
     truth = {
         "slow": toy.TRUTH["slow"],
         "fast": toy.TRUTH["fast"],

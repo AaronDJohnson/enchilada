@@ -50,7 +50,7 @@ uv sync --extra examples         # adds jupyterlab for the notebooks
 uv run python examples/demo.py
 ```
 
-runs three Gibbs turns over two no-op `EchoBlock`s on synthetic data —
+runs three Gibbs cycles over two no-op `EchoBlock`s on synthetic data —
 enough to watch the Wheel hand each block its residual. The whole thing is:
 
 <!-- runnable -->
@@ -78,10 +78,10 @@ mbhb = EchoBlock(name="mbhb")
 wheel = Wheel(observed)
 wheel.add(ucb)
 wheel.add(mbhb)
-wheel.run(full_turns=3)
+wheel.run(n_cycles=3)
 
 wheel.residual()   # the running residual: observed minus every block's model
-ucb.steps          # block internals live on YOUR objects, not the Wheel
+ucb.updates          # block internals live on YOUR objects, not the Wheel
 ```
 
 [`examples/demo.ipynb`](https://github.com/AaronDJohnson/turntable/blob/main/examples/demo.ipynb) is the same walkthrough with
@@ -111,7 +111,7 @@ Implement the two-method `Block` protocol — see the docstrings in
   settings off the residual, set yourself up, subtract your initial model,
   and return the updated residual (return it unchanged if you start from
   nothing).
-- `step(residual) -> residual` — one turn of the wheel. The residual you receive
+- `block_update(residual) -> residual` — one block update per cycle. The residual you receive
   is the data with every **other** block's model subtracted — *not* your
   own. So it is exactly the data your source class must explain: fit it
   directly, subtract your new model, and return the result. There is no
@@ -134,9 +134,9 @@ checkpoints, and your own current model all live inside your block object
 (or the external process it wraps) — the Wheel never sees or restores them. It
 owns only the residual bookkeeping (the pristine data and the per-block
 ledger). To log progress or checkpoint,
-pass an `on_turn` callback to `run` (or equivalently call `run(1)` in your
+pass an `on_cycle` callback to `run` (or equivalently call `run(1)` in your
 own loop) and read `wheel.residual()` — or anything off your own block
-objects — between turns.
+objects — between cycles.
 
 The Wheel does not care how you sample or what language your sampler is
 written in — a thin Python wrapper that shells out, moves files, and
@@ -151,7 +151,7 @@ check_block(MyBlock(name="ucb"), toy_observed)
 ```
 
 It drives the full protocol on a scratch Wheel and raises a pointed error at
-the first violation (a `start`/`step` that returns something other than a
+the first violation (a `start`/`block_update` that returns something other than a
 valid `Residuals`, changes a fixed run setting, or — for a noise block —
 puts a model on the residual that fails the noise contract). It needn't check
 the residual bookkeeping — the Wheel owns that — but whether your *sampler*
@@ -198,18 +198,18 @@ producing quietly wrong science:
   orbit must span the observation (catching GPS-vs-zero-based epoch
   mismatches at construction, not mid-run).
 - The `Wheel` validates each block fully **before** registering it (`name`,
-  `start` *and* `step`, so a failed `add` changes nothing), and re-validates the
-  residual returned by every `start`/`step`: it must be a `Residuals` that kept
+  `start` *and* `block_update`, so a failed `add` changes nothing), and re-validates the
+  residual returned by every `start`/`block_update`: it must be a `Residuals` that kept
   the fixed run settings, must not have dropped the noise model, and must be
   finite — a NaN from a blown-up sampler is refused rather than handed to every
-  block stepped after it. `Residuals` itself rejects wrong tdi shapes *and
+  block updated after it. `Residuals` itself rejects wrong tdi shapes *and
   dtypes*, so a mid-run drift raises immediately instead of corrupting the next
   block's residual. A noise model is checked where it is consumed
   (`noise_psd`/`noise_variance` raise if it lacks a `psd` method).
 - Because the ledger is *derived* from what a block returns, a block that
   hands the residual straight back withdraws its model from the fit. That is
   almost never intended, so the Wheel warns when a previously non-zero model
-  becomes exactly zero: re-subtract your current model on every step, even when
+  becomes exactly zero: re-subtract your current model on every block update, even when
   your parameters did not move.
 - `NumericOrbit.positions` refuses to extrapolate outside its tabulated
   ephemeris instead of returning cubic-polynomial garbage.

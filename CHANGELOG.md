@@ -33,17 +33,23 @@ First working release of the blocked-Gibbs orchestration layer.
   in prose -- the same convention `noise_psd` is normalized against, which a
   test now pins. Since data enters as a time series and transforms from there,
   `n_samples` never needs stating by hand in the normal workflow.
-- Vocabulary, fixed before the first release so it never needs a deprecation
-  cycle. The unit of work is a **block** (`Block`, `NoiseBlock`, `EchoBlock`,
-  `check_block`, `turntable.block`) — the same word blocked Gibbs already uses
-  for a jointly-updated group of parameters, so the protocol name states what
-  the sampler is doing. One pass over every block is a **turn** of the wheel
-  (`Wheel.run(full_turns=...)`, `on_turn=...`, `check_block(n_turns=...)`);
-  the Monte Carlo literature calls it a sweep, but a block's own sampler also
-  *steps* many times inside one `step()` call, and turntable needs the two
-  scales to be unmistakable. "Iteration" is retired entirely: it was the one
-  word that could plausibly mean either.
-- `Block` protocol — two methods, `start(residual)` and `step(residual)`,
+- Vocabulary, settled before the first release so none of it needs a
+  deprecation period. Three nested scales get three words, and no word does
+  double duty:
+  a **cycle** is one pass over every block (`Wheel.run(n_cycles=...)`,
+  `on_cycle=...`, `check_block(n_cycles=...)`);
+  a **block update** is one block's turn within that pass
+  (`Block.block_update(residual)`);
+  a **step** is what a block's own sampler does, many times, inside a single
+  `block_update()` call (`steps_per_cycle` in the GB example).
+  The unit itself is a **block** (`Block`, `NoiseBlock`, `EchoBlock`,
+  `check_block`, `turntable.block`) -- the word blocked Gibbs already uses for
+  a jointly-updated group of parameters. "Iteration" and "sweep" are not used
+  as API names: the first could mean any of the three scales, and the second
+  invites confusion with a block's own sampler steps. Note for anyone reading
+  GLASS alongside this: GLASS's `cycle` means repeat updates of a single
+  module, which is not what turntable calls a cycle.
+- `Block` protocol — two methods, `start(residual)` and `block_update(residual)`,
   each returning the updated residual. The residual handed to a block is
   the data minus every *other* block (its own model excluded), so the
   block fits it directly and subtracts its new model — there is no
@@ -52,11 +58,11 @@ First working release of the blocked-Gibbs orchestration layer.
   never sees. Noise is not special: a noise block returns the residual with
   an updated `noise` object (a zero ledger entry), consumed via
   `Residuals.noise_psd` (documented interface `psd(freqs[, channel])`).
-- `Wheel` boundary guards: `add` verifies `name`/`start`/`step` before
+- `Wheel` boundary guards: `add` verifies `name`/`start`/`block_update` before
   registering anything; a returned residual may not drop the noise model
   (symmetric with the existing orbit check) and may not contain NaN/inf, which
   would otherwise be recorded as that block's model and handed to every
-  block stepped later; and because the ledger is derived, the Wheel warns
+  block updated later; and because the ledger is derived, the Wheel warns
   when a previously non-zero model becomes exactly zero (a block that returns
   the residual unchanged silently withdraws itself from the fit).
 - `Wheel`: the Gibbs ring, owning the pristine data and a per-block ledger
@@ -64,9 +70,9 @@ First working release of the blocked-Gibbs orchestration layer.
   other model and derives that block's new ledger entry from what it
   returns, so the residual bookkeeping — and the add-back — lives in the
   framework, not the block (the split the GLASS global fit uses). Atomic
-  registration, per-step validation that the returned residual kept the fixed
+  registration, per-update validation that the returned residual kept the fixed
   run settings, `residual(exclude=...)` and `contribution(name)` accessors,
-  and an `on_turn` callback on `run`.
+  and an `on_cycle` callback on `run`.
 - `NumericOrbit`: tabulated ephemerides with cubic-spline interpolation,
   loaders for LDC/Mojito HDF5 files and lisaorbits objects
   (validated against lisaorbits 3.0.3), equatorial-to-ecliptic frame

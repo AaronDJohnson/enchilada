@@ -14,8 +14,8 @@ class Block(Protocol):
       conventions off the residual, set yourself up, subtract your initial
       model, and return the updated residual (return it unchanged if you
       start from nothing).
-    - `step` once per turn of the wheel. The residual you receive is the observed
-      data with **every other** block's current model already subtracted --
+    - `block_update` once per cycle of the wheel. The residual you receive is
+      the observed data with **every other** block's model already subtracted --
       **but not your own**. So it is exactly the data your source class must
       explain: fit against it directly, subtract your new model, and return
       the result. There is nothing to add back.
@@ -38,7 +38,7 @@ class Block(Protocol):
 
         from turntable import replace   # or: from dataclasses import replace
 
-        def step(self, residual):
+        def block_update(self, residual):
             tdi = dict(residual.tdi)             # keep the channels you do not touch
             for ch in residual.channels:
                 data = tdi[ch]                   # already data minus OTHERS
@@ -60,7 +60,7 @@ class Block(Protocol):
         - Return a `Residuals` with the same run settings you were handed
           (`channels`, `n_samples`, `sample_rate`, `domain`, `epoch`,
           `tdi_generation`, `observable`, `orbit`); only `tdi` and `noise` may
-          change. The Wheel validates this after `start` and every `step`, and
+          change. The Wheel validates this after `start` and every `block_update`, and
           `Residuals` itself validates that your `tdi` keeps the right keys and
           shapes.
         - You are handed a fresh copy of the `tdi` arrays each call, so you may
@@ -68,8 +68,8 @@ class Block(Protocol):
           `noise` and `orbit` objects are shared by reference -- treat them as
           immutable, swapping via `replace(residual, noise=...)` rather than
           mutating in place.
-        - `residual.noise` may be `None`: no noise model is set, or you step
-          before the noise block does on the first turn (registration
+        - `residual.noise` may be `None`: no noise model is set, or you are updated
+          before the noise block is on the first cycle (registration
           order). Both `noise_psd()` and `noise_variance()` return `None` in
           that case -- guard for it rather than assuming a model is present.
         - Read the data conventions off the residual instead of assuming them:
@@ -95,8 +95,8 @@ class Block(Protocol):
         """
         ...
 
-    def step(self, residual: Residuals) -> Residuals:
-        """Advance one turn of the wheel and return the updated residual.
+    def block_update(self, residual: Residuals) -> Residuals:
+        """Advance one cycle of the wheel and return the updated residual.
 
         Args:
             residual: The observed data with every **other** block's current
@@ -118,11 +118,11 @@ class NoiseBlock(Block, Protocol):
     """Convention for a `Block` that models the noise, not a signal.
 
     Structurally identical to `Block` -- a noise block implements the same
-    `start`/`step` -- but by convention it leaves `tdi` untouched (so its
+    `start`/`block_update` -- but by convention it leaves `tdi` untouched (so its
     ledger entry is zero) and instead returns the residual with an updated
     `noise` object:
 
-        def step(self, residual):
+        def block_update(self, residual):
             model = self.estimate_noise(residual.tdi)  # residual is ~pure noise
             return replace(residual, noise=model)
 
@@ -143,5 +143,5 @@ class NoiseBlock(Block, Protocol):
     That contract is enforced where the model is consumed (`noise_psd` raises
     if it is missing), not by the Wheel, which stays entirely noise-agnostic.
     The Wheel threads the updated noise onto every residual it forms after, so
-    every block stepped later sees the refreshed estimate.
+    every block updated later sees the refreshed estimate.
     """

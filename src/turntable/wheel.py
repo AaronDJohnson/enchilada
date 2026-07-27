@@ -10,16 +10,16 @@ from turntable.residuals import Residuals
 
 
 class ModelWithdrawnWarning(RuntimeWarning):
-    """A block's model went from non-zero to exactly zero in one step.
+    """A block's model went from non-zero to exactly zero in one update.
 
     The ledger is *derived* (what a block was handed minus what it returned),
     so the Wheel cannot tell these two apart from the outside:
 
     * the block's model is legitimately zero now -- a reversible-jump block
       whose last source died, or a cadenced block with nothing to contribute
-      this turn. Nothing is wrong.
+      this cycle. Nothing is wrong.
     * the block failed to re-subtract the model it still believes it has --
-      a wrapper whose external process errored, an all-rejected turn returned
+      a wrapper whose external process errored, an all-rejected cycle returned
       as "no change" -- and its model has silently left the fit.
 
     It warns rather than raises because it is a heuristic about intent. If the
@@ -59,8 +59,8 @@ class Wheel:
     bookkeeping.)
 
     Consistency checking. `add` validates a block fully before recording it
-    (`name`, `start` and `step`; a `start` that fails leaves the Wheel
-    untouched), and every `start`/`step` return must be a `Residuals` that
+    (`name`, `start` and `block_update`; a `start` that fails leaves the Wheel
+    untouched), and every `start`/`block_update` return must be a `Residuals` that
 
     * kept the fixed run settings (`_INVARIANT`) -- only `tdi` and `noise` move;
     * kept the same `orbit` object;
@@ -79,7 +79,7 @@ class Wheel:
       residual and never changes.
     * Sampled noise -- register a noise block (one that returns the residual
       with an updated `noise` and its tdi untouched, so its ledger entry is
-      zero; see `block.NoiseBlock`). Every block stepped after it sees the
+      zero; see `block.NoiseBlock`). Every block updated after it sees the
       refreshed estimate.
 
     Typical use:
@@ -94,7 +94,7 @@ class Wheel:
         wheel.add(ucb_block)
         wheel.add(mbhb_block)
         wheel.add(noise_block)  # optional; a block that edits residual.noise
-        wheel.run(full_turns=1000)
+        wheel.run(n_cycles=1000)
 
     `wheel.residual()` is the full residual (data minus every block);
     `wheel.residual(exclude=name)` is the residual that block sees. For a
@@ -157,13 +157,13 @@ class Wheel:
             )
         if name in self._ledger:
             raise ValueError(f"block name {name!r} already registered")
-        for method in ("start", "step"):
-            # check both up front: a missing `step` would otherwise register
-            # cleanly and die mid-turn, after other ledger entries had moved
+        for method in ("start", "block_update"):
+            # check both up front: a missing `block_update` would otherwise register
+            # cleanly and die mid-cycle, after other ledger entries had moved
             if not callable(getattr(block, method, None)):
                 raise TypeError(
                     f"block {name!r} does not implement {method}(residual); a "
-                    f"Block needs `name`, `start` and `step` "
+                    f"Block needs `name`, `start` and `block_update` "
                     f"(see turntable.block.Block)"
                 )
         handed = self.residual()  # data minus blocks registered so far
@@ -175,45 +175,55 @@ class Wheel:
 
     def run(
         self,
-        full_turns: int,
-        on_turn: Callable[[int, "Wheel"], None] | None = None,
+        n_cycles: int,
+        on_cycle: Callable[[int, "Wheel"], None] | None = None,
     ) -> None:
-        """Drive the blocked-Gibbs loop for `full_turns` turns of the wheel.
+        """Drive the blocked-Gibbs loop for `n_cycles` cycles of the wheel.
 
-        One full turn visits every block once, handing each the data minus
+        One full cycle visits every block once, handing each the data minus
         every *other* block's current model, validating what it returns, and
         updating that block's ledger entry from the difference. That is the
-        unit with statistical meaning: only after a complete turn is every
-        block conditioned on the current value of all the others. (The Monte
-        Carlo literature calls it a *sweep*; turntable says "turn" because a
-        block's own sampler also steps many times inside a single `step()`
-        call, and one word for both would be ambiguous.)
+        unit with statistical meaning: only after a complete cycle is every
+        block conditioned on the current value of all the others.
+
+        Three nested scales, three words, so no name does double duty:
+
+        * a **cycle** -- one pass over every block (this loop);
+        * a **block update** -- one block's `block_update()` call within it;
+        * a **step** -- what a block's own sampler does, many times, inside a
+          single `block_update()` call.
+
+        Two notes for readers coming from elsewhere. The Monte Carlo
+        literature calls a cycle a *sweep*. GLASS uses `cycle` for something
+        different -- the number of repeat updates given to one module -- so
+        when comparing notes, turntable's cycle is GLASS's outer Gibbs loop,
+        not its `cycle` variable.
 
         Args:
-            full_turns: Number of full turns of the wheel over all blocks.
-            on_turn: Optional progress/checkpoint hook, called as
-                `on_turn(turn, self)` after each completed turn
-                (`turn` counts from 0). Read `residual()` off the wheel --
+            n_cycles: Number of full cycles of the wheel over all blocks.
+            on_cycle: Optional progress/checkpoint hook, called as
+                `on_cycle(cycle, self)` after each completed cycle
+                (`cycle` counts from 0). Read `residual()` off the wheel --
                 or anything off your own block objects -- to log or
                 checkpoint; the hook must not mutate the wheel. Equivalent to
                 calling `run(1)` in your own loop.
         """
         if (
-            not isinstance(full_turns, (int, np.integer))
-            or isinstance(full_turns, bool)
-            or full_turns < 0
+            not isinstance(n_cycles, (int, np.integer))
+            or isinstance(n_cycles, bool)
+            or n_cycles < 0
         ):
             raise ValueError(
-                f"full_turns must be a non-negative integer, got {full_turns!r}"
+                f"n_cycles must be a non-negative integer, got {n_cycles!r}"
             )
-        for turn in range(full_turns):
+        for cycle in range(n_cycles):
             for seg in self._blocks:
                 handed = self.residual(exclude=seg.name)  # data minus OTHERS
-                returned = seg.step(self._mutable(handed))
-                self._validate_returned(returned, seg.name, "step")
-                self._adopt(seg.name, handed, returned, "step")
-            if on_turn is not None:
-                on_turn(turn, self)
+                returned = seg.block_update(self._mutable(handed))
+                self._validate_returned(returned, seg.name, "block_update")
+                self._adopt(seg.name, handed, returned, "block_update")
+            if on_cycle is not None:
+                on_cycle(cycle, self)
 
     def residual(self, exclude: str | None = None) -> Residuals:
         """A residual formed from the ledger, with the current noise on `.noise`.
@@ -231,7 +241,7 @@ class Wheel:
         # subtracted model share -- then the accumulation below can stay
         # in-place. (Subtracting out-of-place per block would also promote,
         # but allocates a fresh array per block per channel, which is the
-        # hot loop: run() calls this once per block per turn.)
+        # hot loop: run() calls this once per block per cycle.)
         entries = [c for name, c in self._ledger.items() if name != exclude]
         tdi = {}
         for ch in self.observed.channels:
@@ -288,12 +298,12 @@ class Wheel:
             warnings.warn(
                 f"{name}.{method}: this block's model went from non-zero to "
                 f"exactly zero, so it now contributes nothing to the fit. If that "
-                f"is intentional (a death move to zero sources, or a turn with "
+                f"is intentional (a death move to zero sources, or a cycle with "
                 f"nothing to contribute) this is fine -- silence it with "
                 f"warnings.filterwarnings('ignore', "
                 f"category=turntable.ModelWithdrawnWarning). If not, remember the "
                 f"ledger is derived from what you return, not remembered: "
-                f"re-subtract your current model on every step.",
+                f"re-subtract your current model on every block update.",
                 ModelWithdrawnWarning,
                 # _adopt -> run/add -> the user's call: 3 frames
                 stacklevel=3,
@@ -334,7 +344,7 @@ class Wheel:
                 f"property of the dataset and must be passed through unchanged"
             )
         # Losing the noise model is never intentional, and it is silent: every
-        # block stepped afterwards would whiten against nothing. Guard it the
+        # block updated afterwards would whiten against nothing. Guard it the
         # same way the orbit is guarded -- a block that rebuilds a Residuals
         # from scratch (rather than using `replace`) drops it by accident.
         if self._noise is not None and returned.noise is None:
@@ -347,7 +357,7 @@ class Wheel:
             )
         # The last silent cross-block failure: a blown-up sampler returning
         # NaN/inf would otherwise be recorded as that block's model and handed
-        # to every block stepped later in the turn.
+        # to every block updated later in the cycle.
         for ch in self.observed.channels:
             arr = returned.tdi[ch]
             if not np.isfinite(arr).all():
@@ -355,6 +365,6 @@ class Wheel:
                 raise ValueError(
                     f"{block_name}.{method} returned {n_bad} non-finite "
                     f"sample(s) in channel {ch!r} (NaN or inf); the residual "
-                    f"would poison every block stepped after it. Check the "
+                    f"would poison every block updated after it. Check the "
                     f"sampler's proposal and its noise weighting."
                 )

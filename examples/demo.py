@@ -1,6 +1,6 @@
 """Minimal turntable demo: the Residuals / Block / Wheel plumbing, end to end.
 
-Runs three blocked-Gibbs turns over two no-op EchoBlocks on synthetic
+Runs three blocked-Gibbs cycles over two no-op EchoBlocks on synthetic
 data -- no real waveforms or MCMC, just enough to watch the Wheel hand each
 block its residual. Run it with:
 
@@ -41,7 +41,7 @@ wheel = Wheel(observed)
 wheel.add(ucb)
 wheel.add(mbhb)
 
-wheel.run(full_turns=3)
+wheel.run(n_cycles=3)
 
-print(f"\nucb took {ucb.steps} steps; mbhb took {mbhb.steps} steps")
+print(f"\nucb took {ucb.updates} updates; mbhb took {mbhb.updates} updates")
 print("full residual RMS:", float(np.sqrt(np.mean(wheel.residual().tdi["A"] ** 2))))

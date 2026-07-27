@@ -20,7 +20,7 @@ class EchoBlock:
     """No-op block that prints what the Wheel passes to it.
 
     Subtracts nothing (its model is zero), so it returns the residual it was
-    handed unchanged and other blocks are unaffected. Keeps its own step
+    handed unchanged and other blocks are unaffected. Keeps its own update
     counter as internal state -- like any real block, its internals are
     its own business. Useful for verifying that the Gibbs ring wires
     blocks together correctly and that residual metadata survives the
@@ -29,7 +29,7 @@ class EchoBlock:
 
     def __init__(self, name: str):
         self.name = name
-        self.steps = 0
+        self.updates = 0
 
     def start(self, residual: Residuals) -> Residuals:
         print(
@@ -40,16 +40,18 @@ class EchoBlock:
         )
         return residual
 
-    def step(self, residual: Residuals) -> Residuals:
+    def block_update(self, residual: Residuals) -> Residuals:
         ch0 = residual.channels[0]
         # abs() so the RMS is real for frequency-domain (complex) data too
         rms = float(np.sqrt(np.mean(np.abs(residual.tdi[ch0]) ** 2)))
-        print(f"[{self.name}] step {self.steps}: residual RMS on {ch0!r} = {rms:.4e}")
-        self.steps += 1
+        print(
+            f"[{self.name}] update {self.updates}: residual RMS on {ch0!r} = {rms:.4e}"
+        )
+        self.updates += 1
         return residual
 
 
-def check_block(block: Block, observed: Residuals, n_turns: int = 2) -> None:
+def check_block(block: Block, observed: Residuals, n_cycles: int = 2) -> None:
     """Conformance check for a `Block` implementation.
 
     Drives the full Wheel protocol against `observed` on a scratch Wheel and
@@ -57,7 +59,7 @@ def check_block(block: Block, observed: Residuals, n_turns: int = 2) -> None:
 
     - `start` returns a valid `Residuals` that keeps every run setting
       unchanged (only `tdi`/`noise` may move);
-    - each of `n_turns` `step` calls does the same (mid-run drift raises);
+    - each of `n_cycles` `block_update` calls does the same (mid-run drift raises);
     - if the block sets a noise model on the residual (a noise block),
       that model satisfies the consumption contract -- `residual.noise_psd`
       succeeds rather than raising for want of a `psd` method.
@@ -65,7 +67,7 @@ def check_block(block: Block, observed: Residuals, n_turns: int = 2) -> None:
     It also escalates the `ModelWithdrawnWarning` the Wheel merely warns about,
     so a block that stops re-subtracting its model fails here rather than
     quietly leaving the fit later. (If your block legitimately drops to a
-    zero model during these turns -- a death move -- give it a starting state
+    zero model during these cycles -- a death move -- give it a starting state
     that does not, or filter the warning around your own call.)
 
     It does not check the residual bookkeeping -- the `Wheel` owns that, so
@@ -92,7 +94,7 @@ def check_block(block: Block, observed: Residuals, n_turns: int = 2) -> None:
     with warnings.catch_warnings():
         warnings.simplefilter("error", ModelWithdrawnWarning)
         wheel.add(block)  # start(): validated for a well-formed residual
-        wheel.run(n_turns)  # step() x n_turns: each return validated
+        wheel.run(n_cycles)  # block_update() x n_cycles: each return validated
 
     # if this block threads a noise model, it must satisfy the contract signal
     # blocks consume it through: a callable psd(freqs[, channel])

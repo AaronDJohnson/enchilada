@@ -119,7 +119,7 @@ def inject_gb(truth, angles, Tobs, dt, n_samples, channels, noise, NB=128, seed=
 class GBBlock:
     """turntable ``Block``: one galactic binary, sampled with Eryn.
 
-    Implements ``name`` / ``start`` / ``step``. Reads channels, the frequency
+    Implements ``name`` / ``start`` / ``block_update``. Reads channels, the frequency
     grid, and the noise PSD off the ``residual`` it is handed (never from module
     scope). The residual is already the data minus every other block, so it
     advances Eryn against it directly (no add-back), then returns the residual
@@ -144,7 +144,7 @@ class GBBlock:
         angles,
         name="gb",
         n_walkers=24,
-        steps_per_turn=40,
+        steps_per_cycle=40,
         band=128,
         seed=0,
     ):
@@ -153,7 +153,7 @@ class GBBlock:
         b = np.asarray(bounds, float)
         self.lo, self.hi = b[:, 0], b[:, 1]
         self.angles, self.NB = angles, band
-        self.nw, self.k = n_walkers, steps_per_turn
+        self.nw, self.k = n_walkers, steps_per_cycle
         self.ndim = self.init.size
         self.rng = np.random.default_rng(seed)
         self.chain = None
@@ -231,7 +231,7 @@ class GBBlock:
             residual, tdi={ch: residual.tdi[ch] - self._model[ch] for ch in self.chans}
         )
 
-    def step(self, residual):
+    def block_update(self, residual):
         self.S = {
             ch: residual.noise_psd(ch) for ch in self.chans
         }  # current noise, off the residual

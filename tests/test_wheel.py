@@ -20,13 +20,13 @@ class ConstBlock:
     def __init__(self, name, value):
         self.name = name
         self.value = value
-        self.steps = 0
+        self.updates = 0
 
     def start(self, residual):
         return self._subtract(residual)
 
-    def step(self, residual):
-        self.steps += 1
+    def block_update(self, residual):
+        self.updates += 1
         return self._subtract(residual)
 
     def _subtract(self, residual):
@@ -44,18 +44,18 @@ class FlatPSD:
 
 
 class NoiseSeg:
-    """Noise block: sets residual.noise, level tracks its step count."""
+    """Noise block: sets residual.noise, level tracks its update count."""
 
     def __init__(self, name):
         self.name = name
-        self.steps = 0
+        self.updates = 0
 
     def start(self, residual):
         return replace(residual, noise=FlatPSD(0.0))
 
-    def step(self, residual):
-        self.steps += 1
-        return replace(residual, noise=FlatPSD(float(self.steps)))
+    def block_update(self, residual):
+        self.updates += 1
+        return replace(residual, noise=FlatPSD(float(self.updates)))
 
 
 class TestLedger:
@@ -102,7 +102,7 @@ class TestLedger:
             def start(self, residual):
                 return residual  # zero contribution
 
-            def step(self, residual):
+            def block_update(self, residual):
                 for ch in residual.tdi:
                     residual.tdi[ch] -= 3.0  # mutate in place
                 return residual  # return the SAME object
@@ -127,9 +127,9 @@ class TestLedger:
         snapshot = {ch: arr.copy() for ch, arr in obs.tdi.items()}
 
         class Mutator(ConstBlock):
-            def step(self, residual):
+            def block_update(self, residual):
                 residual.tdi[next(iter(residual.tdi))][:] = -999.0  # mutate the copy
-                return super().step(residual)
+                return super().block_update(residual)
 
         wheel = Wheel(obs)
         wheel.add(Mutator("mut", 0.0))
@@ -142,7 +142,7 @@ class TestLedger:
         wheel = Wheel(observed)
         wheel.add(seg)
         wheel.run(4)
-        assert seg.steps == 4  # sampler state lives on the object, not the Wheel
+        assert seg.updates == 4  # sampler state lives on the object, not the Wheel
 
     def test_zero_blocks_is_a_noop(self, observed):
         wheel = Wheel(observed)
@@ -152,10 +152,10 @@ class TestLedger:
 
     def test_run_rejects_bad_turn_counts(self, observed):
         wheel = Wheel(observed)
-        with pytest.raises(ValueError, match="full_turns"):
+        with pytest.raises(ValueError, match="n_cycles"):
             wheel.run(-1)
-        with pytest.raises(ValueError, match="full_turns"):
-            wheel.run(True)  # bool is not a turn count
+        with pytest.raises(ValueError, match="n_cycles"):
+            wheel.run(True)  # bool is not a cycle count
 
     def test_run_accepts_numpy_integers(self, observed):
         wheel = Wheel(observed)
@@ -166,14 +166,14 @@ class TestLedger:
 class TestNoAddBack:
     def test_each_block_sees_data_minus_others(self, rng):
         # with two non-trivial blocks, each must be handed the data minus the
-        # OTHER (never itself); record what each sees at step time.
+        # OTHER (never itself); record what each sees at update time.
         obs = make_observed(rng)
         seen = {}
 
         class Recorder(ConstBlock):
-            def step(self, residual):
+            def block_update(self, residual):
                 seen[self.name] = {ch: residual.tdi[ch].copy() for ch in residual.tdi}
-                return super().step(residual)
+                return super().block_update(residual)
 
         wheel = Wheel(obs)
         wheel.add(Recorder("a", 2.0))
@@ -214,17 +214,17 @@ class TestAtomicRegistration:
 class TestReturnedResidualValidation:
     def test_non_residual_return_named(self, observed):
         class Bad(ConstBlock):
-            def step(self, residual):
+            def block_update(self, residual):
                 return {"A": np.zeros(1)}  # a dict, not a Residuals
 
         wheel = Wheel(observed)
         wheel.add(Bad("bad", 0.0))
-        with pytest.raises(TypeError, match="bad.step must return a Residuals"):
+        with pytest.raises(TypeError, match="bad.block_update must return a Residuals"):
             wheel.run(1)
 
     def test_changed_run_setting_rejected(self, observed):
         class Cheat(ConstBlock):
-            def step(self, residual):
+            def block_update(self, residual):
                 return replace(residual, tdi_generation="9.9")
 
         wheel = Wheel(observed)
@@ -236,7 +236,7 @@ class TestReturnedResidualValidation:
 
     def test_bad_tdi_shape_raises_via_residuals(self, observed):
         class Drifter(ConstBlock):
-            def step(self, residual):
+            def block_update(self, residual):
                 return replace(
                     residual, tdi={ch: np.zeros(2) for ch in residual.channels}
                 )
@@ -248,7 +248,7 @@ class TestReturnedResidualValidation:
 
     def test_changed_orbit_rejected(self, observed):
         class Cheat(ConstBlock):
-            def step(self, residual):
+            def block_update(self, residual):
                 return replace(residual, orbit=object())
 
         wheel = Wheel(observed)
@@ -263,7 +263,7 @@ class TestNoiseViaResidual:
         wheel.add(NoiseSeg("noise"))
         assert wheel.residual().noise.level == 0.0  # set in start
         wheel.run(2)
-        assert wheel.residual().noise.level == 2.0  # refreshed each step
+        assert wheel.residual().noise.level == 2.0  # refreshed each update
 
     def test_noise_block_has_zero_ledger_entry(self, observed):
         wheel = Wheel(observed)
@@ -287,16 +287,16 @@ class TestNoiseViaResidual:
         wheel.add(Recorder("rec", 0.0))
         assert isinstance(seen["noise"], FlatPSD)
 
-    def test_step_sees_current_noise(self, observed):
+    def test_block_update_sees_current_noise(self, observed):
         levels = []
 
         class Recorder(ConstBlock):
-            def step(self, residual):
+            def block_update(self, residual):
                 levels.append(residual.noise.level)
-                return super().step(residual)
+                return super().block_update(residual)
 
         wheel = Wheel(observed)
-        wheel.add(NoiseSeg("noise"))  # steps first each turn
+        wheel.add(NoiseSeg("noise"))  # updates first each cycle
         wheel.add(Recorder("rec", 0.0))
         wheel.run(3)
         assert levels == [1.0, 2.0, 3.0]
@@ -309,12 +309,12 @@ class TestNoiseViaResidual:
         assert wheel.residual().noise.level == 7.0  # unchanged, threaded along
 
 
-class TestOnTurn:
+class TestOnCycle:
     def test_callback_called_per_turn_with_wheel(self, observed):
         calls = []
         wheel = Wheel(observed)
         wheel.add(ConstBlock("a", 1.0))
-        wheel.run(3, on_turn=lambda i, w: calls.append((i, w is wheel)))
+        wheel.run(3, on_cycle=lambda i, w: calls.append((i, w is wheel)))
         assert calls == [(0, True), (1, True), (2, True)]
 
 
@@ -325,7 +325,7 @@ class TestBoundaryGuards:
         obs = make_observed(rng, noise=FlatPSD(3.0))
 
         class Rebuilder(ConstBlock):
-            def step(self, residual):
+            def block_update(self, residual):
                 # rebuilds instead of using replace() -> loses noise silently
                 return Residuals(
                     tdi=residual.tdi,
@@ -345,7 +345,7 @@ class TestBoundaryGuards:
 
     def test_non_finite_return_raises_and_names_the_channel(self, observed):
         class Blowup(ConstBlock):
-            def step(self, residual):
+            def block_update(self, residual):
                 return replace(
                     residual, tdi={ch: arr * np.nan for ch, arr in residual.tdi.items()}
                 )
@@ -355,15 +355,15 @@ class TestBoundaryGuards:
         with pytest.raises(ValueError, match="non-finite sample"):
             wheel.run(1)
 
-    def test_missing_step_is_caught_at_registration(self, observed):
-        class NoStep:
-            name = "nostep"
+    def test_missing_block_update_is_caught_at_registration(self, observed):
+        class NoBlockUpdate:
+            name = "noupdate"
 
             def start(self, residual):
                 return residual
 
-        with pytest.raises(TypeError, match="does not implement step"):
-            Wheel(observed).add(NoStep())
+        with pytest.raises(TypeError, match="does not implement block_update"):
+            Wheel(observed).add(NoBlockUpdate())
 
     def test_withdrawing_a_model_warns(self, observed):
         class Fickle(ConstBlock):
@@ -371,11 +371,11 @@ class TestBoundaryGuards:
                 super().__init__(name, value)
                 self.calls = 0
 
-            def step(self, residual):
+            def block_update(self, residual):
                 self.calls += 1
                 if self.calls == 2:
                     return residual  # "nothing changed" -- silently withdraws
-                return super().step(residual)
+                return super().block_update(residual)
 
         wheel = Wheel(observed)
         wheel.add(Fickle("f", 1.0))
@@ -385,7 +385,7 @@ class TestBoundaryGuards:
     def test_the_withdrawal_warning_points_at_the_caller(self, observed):
         # the location IS the payload: it tells the user which call did it
         class Fickle(ConstBlock):
-            def step(self, residual):
+            def block_update(self, residual):
                 return residual
 
         wheel = Wheel(observed)
@@ -401,7 +401,7 @@ class TestBoundaryGuards:
         import warnings as _w
 
         class Death(ConstBlock):
-            def step(self, residual):
+            def block_update(self, residual):
                 self.value = 0.0  # k -> 0 sources
                 return self._subtract(residual)
 
@@ -413,7 +413,7 @@ class TestBoundaryGuards:
             wheel.run(1)
 
     def test_a_genuinely_zero_model_does_not_warn(self, observed):
-        # EchoBlock contributes zero on every step; that is not a withdrawal
+        # EchoBlock contributes zero on every update; that is not a withdrawal
         import warnings as _w
 
         wheel = Wheel(observed)
@@ -441,7 +441,7 @@ class TestBoundaryGuards:
         )
 
         class Wider(ConstBlock):
-            def step(self, residual):
+            def block_update(self, residual):
                 return replace(
                     residual,
                     tdi={
@@ -495,7 +495,7 @@ class TestBoundaryGuards:
         }[field]
 
         class Cheat(ConstBlock):
-            def step(self, residual):
+            def block_update(self, residual):
                 kw = {field: bad}
                 if field in ("channels", "n_samples", "domain"):
                     # keep tdi self-consistent so Residuals' own checks pass and
@@ -538,7 +538,7 @@ class TestDocumentedContracts:
                     tdi={ch: arr - self.value for ch, arr in residual.tdi.items()},
                 )
 
-            def step(self, residual):
+            def block_update(self, residual):
                 return replace(
                     residual,
                     tdi={ch: arr - self.value for ch, arr in residual.tdi.items()},
@@ -575,7 +575,7 @@ class TestDocumentedContracts:
         obs = make_observed(rng)
 
         class Blowup(ConstBlock):
-            def step(self, residual):
+            def block_update(self, residual):
                 tdi = dict(residual.tdi)
                 tdi[channel] = tdi[channel].copy()
                 tdi[channel][3] = bad
@@ -609,7 +609,7 @@ class TestDocumentedContracts:
             def start(self, residual):
                 return self._model(residual)
 
-            def step(self, residual):
+            def block_update(self, residual):
                 return self._model(residual)
 
         wheel = Wheel(obs)
@@ -638,7 +638,7 @@ class TestDocumentedContracts:
                     },
                 )
 
-            def step(self, residual):
+            def block_update(self, residual):
                 return residual  # withdraws A and E
 
         wheel = Wheel(obs)
@@ -660,7 +660,7 @@ class TestDocumentedContracts:
             def start(self, residual):
                 return residual
 
-            def step(self, residual):
+            def block_update(self, residual):
                 return residual
 
         with pytest.raises((ValueError, TypeError), match="name"):
