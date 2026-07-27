@@ -27,7 +27,7 @@ jobs:
         os: [ubuntu-latest, macos-latest]
         python-version: ["3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v9.0.0
         with:
           python-version: ${{ matrix.python-version }}
@@ -44,7 +44,7 @@ jobs:
       matrix:
         python-version: ["3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v9.0.0
         with:
           python-version: ${{ matrix.python-version }}
@@ -54,7 +54,7 @@ jobs:
   floors:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v9.0.0
         with:
           python-version: "3.12"
@@ -65,7 +65,7 @@ jobs:
     needs: [gate, core-only, floors]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v9.0.0
         with:
           python-version: "3.12"

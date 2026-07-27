@@ -19,7 +19,7 @@ jobs:
         os: [ubuntu-latest, macos-latest]
         python-version: ["3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       # pinned to an exact release: setup-uv publishes v9.0.0 but no floating v9
       - uses: astral-sh/setup-uv@v9.0.0
         with:
@@ -61,7 +61,7 @@ jobs:
       matrix:
         python-version: ["3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v9.0.0
         with:
           python-version: ${{ matrix.python-version }}
@@ -75,7 +75,7 @@ jobs:
   floors:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v9.0.0
         with:
           python-version: "3.12"
@@ -90,7 +90,7 @@ jobs:
   sdist:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v9.0.0
         with:
           python-version: "3.12"
