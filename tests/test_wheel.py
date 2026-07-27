@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from conftest import make_observed
-from turntable import Residuals, Wheel
+from turntable import ModelWithdrawnWarning, Residuals, Wheel
 from turntable.testing import EchoSegment
 
 
@@ -379,8 +379,38 @@ class TestBoundaryGuards:
 
         wheel = Wheel(observed)
         wheel.add(Fickle("f", 1.0))
-        with pytest.warns(RuntimeWarning, match="returned the residual unchanged"):
+        with pytest.warns(ModelWithdrawnWarning, match="contributes nothing"):
             wheel.run(2)
+
+    def test_the_withdrawal_warning_points_at_the_caller(self, observed):
+        # the location IS the payload: it tells the user which call did it
+        class Fickle(ConstSegment):
+            def step(self, residual):
+                return residual
+
+        wheel = Wheel(observed)
+        wheel.add(ConstSegment("f", 1.0))
+        wheel._segments[0].__class__ = Fickle
+        with pytest.warns(ModelWithdrawnWarning) as record:
+            wheel.run(1)  # <- this line must be blamed
+        assert record[0].filename == __file__, record[0].filename
+
+    def test_a_legitimate_death_move_can_be_silenced_precisely(self, observed):
+        # a reversible-jump block whose last source dies is CORRECT; the user
+        # must be able to keep -W error while ignoring exactly this heuristic
+        import warnings as _w
+
+        class Death(ConstSegment):
+            def step(self, residual):
+                self.value = 0.0  # k -> 0 sources
+                return self._subtract(residual)
+
+        wheel = Wheel(observed)
+        wheel.add(Death("rj", 1.0))
+        with _w.catch_warnings():
+            _w.simplefilter("error")
+            _w.filterwarnings("ignore", category=ModelWithdrawnWarning)
+            wheel.run(1)
 
     def test_a_genuinely_zero_model_does_not_warn(self, observed):
         # EchoSegment contributes zero on every step; that is not a withdrawal
@@ -392,31 +422,67 @@ class TestBoundaryGuards:
             _w.simplefilter("error")  # any warning becomes a failure
             wheel.run(3)
 
-    def test_complex_model_against_real_frequency_data_promotes(self, rng):
-        # a real-dtype spectrum is a valid Residuals; the ledger must promote
-        # rather than raise a raw numpy casting error
+    def test_real_frequency_domain_data_is_rejected(self, rng):
+        # a real one-sided spectrum would let a segment return `.real` and be
+        # credited with the entire imaginary part as its model
+        with pytest.raises(TypeError, match="real but domain='frequency'"):
+            make_observed(
+                rng,
+                domain="frequency",
+                tdi={ch: np.zeros(33) for ch in ("A", "E", "T")},
+                n_samples=64,
+            )
+
+    def test_wider_model_promotes_rather_than_raising(self, rng):
+        # float32 observed + float64 model must promote, not fail the way the
+        # old in-place subtraction did
         obs = make_observed(
-            rng,
-            domain="frequency",
-            tdi={ch: np.zeros(33) for ch in ("A", "E", "T")},
-            n_samples=64,
+            rng, tdi={ch: np.zeros(64, np.float32) for ch in ("A", "E", "T")}
         )
 
-        class Complexify(ConstSegment):
+        class Wider(ConstSegment):
             def step(self, residual):
                 return replace(
                     residual,
-                    tdi={ch: arr - (0.5 + 0.5j) for ch, arr in residual.tdi.items()},
+                    tdi={
+                        ch: arr - np.ones(64, np.float64)
+                        for ch, arr in residual.tdi.items()
+                    },
                 )
 
         wheel = Wheel(obs)
-        wheel.add(Complexify("c", 0.0))
+        wheel.add(Wider("w", 0.0))
         wheel.run(1)
-        assert np.iscomplexobj(wheel.residual().tdi["A"])
+        assert wheel.residual().tdi["A"].dtype == np.float64
+        assert wheel.observed.tdi["A"].dtype == np.float32  # left alone
 
-    @pytest.mark.parametrize("field", Wheel._INVARIANT)
+    def test_invariant_list_is_exactly_this(self):
+        """Pinned literally: parametrizing over _INVARIANT would let a field be
+        deleted from the tuple AND from its own test in one edit."""
+        assert Wheel._INVARIANT == (
+            "channels",
+            "n_samples",
+            "sample_rate",
+            "tdi_generation",
+            "observable",
+            "domain",
+            "epoch",
+        )
+
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "channels",
+            "n_samples",
+            "sample_rate",
+            "tdi_generation",
+            "observable",
+            "domain",
+            "epoch",
+        ],
+    )
     def test_every_invariant_run_setting_is_guarded(self, rng, field):
-        """Each field in _INVARIANT must actually be enforced, not just listed."""
+        """Each field must actually be enforced, not merely listed."""
         obs = make_observed(rng, sample_rate=1.0)
         bad = {
             "channels": ("A",),
@@ -449,3 +515,175 @@ class TestBoundaryGuards:
         wheel.add(Cheat("cheat", 0.0))
         with pytest.raises(ValueError, match=f"changed the run setting {field!r}"):
             wheel.run(1)
+
+
+class TestDocumentedContracts:
+    """Guarantees the docstrings make that nothing else pins."""
+
+    def test_start_is_handed_data_minus_already_registered_segments(self, rng):
+        """add()'s docstring promise. A segment that *reads* what it is handed
+        is the only way to see this -- segments that subtract a constant give
+        the same ledger entry either way."""
+        obs = make_observed(rng)
+        seen = {}
+
+        class Reader:
+            def __init__(self, name, value):
+                self.name, self.value = name, value
+
+            def start(self, residual):
+                seen[self.name] = residual.tdi["A"].copy()
+                return replace(
+                    residual,
+                    tdi={ch: arr - self.value for ch, arr in residual.tdi.items()},
+                )
+
+            def step(self, residual):
+                return replace(
+                    residual,
+                    tdi={ch: arr - self.value for ch, arr in residual.tdi.items()},
+                )
+
+        wheel = Wheel(obs)
+        wheel.add(Reader("first", 3.0))
+        wheel.add(Reader("second", 5.0))
+        # the first joiner sees raw data; the second sees it minus the first
+        np.testing.assert_allclose(seen["first"], obs.tdi["A"])
+        np.testing.assert_allclose(seen["second"], obs.tdi["A"] - 3.0)
+
+    def test_residual_returns_fresh_arrays(self, rng):
+        """residual()'s docstring: 'callers may mutate freely'."""
+        obs = make_observed(rng)
+        snapshot = obs.tdi["A"].copy()
+        wheel = Wheel(obs)  # no segments: the aliasing case
+        wheel.residual().tdi["A"][0] = -999.0
+        np.testing.assert_array_equal(obs.tdi["A"], snapshot)
+        wheel.add(ConstSegment("a", 1.0))
+        wheel.residual(exclude="a").tdi["A"][0] = -999.0
+        np.testing.assert_array_equal(obs.tdi["A"], snapshot)
+
+    def test_contribution_returns_a_copy_of_the_ledger_entry(self, observed):
+        wheel = Wheel(observed)
+        wheel.add(ConstSegment("a", 2.0))
+        got = wheel.contribution("a")
+        got["A"][:] = 100.0
+        np.testing.assert_allclose(wheel.contribution("a")["A"], 2.0)
+
+    @pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf])
+    @pytest.mark.parametrize("channel", ["A", "E", "T"])
+    def test_non_finite_is_caught_in_any_channel_and_any_form(self, rng, bad, channel):
+        obs = make_observed(rng)
+
+        class Blowup(ConstSegment):
+            def step(self, residual):
+                tdi = dict(residual.tdi)
+                tdi[channel] = tdi[channel].copy()
+                tdi[channel][3] = bad
+                return replace(residual, tdi=tdi)
+
+        wheel = Wheel(obs)
+        wheel.add(Blowup("b", 0.0))
+        with pytest.raises(ValueError, match="non-finite sample"):
+            wheel.run(1)
+
+    def test_withdrawal_is_judged_across_all_channels_not_any(self, rng):
+        """_all_zero must be all(), not any(): a model that is zero in one
+        channel and non-zero in others has NOT been withdrawn."""
+        import warnings as _w
+
+        obs = make_observed(rng)
+
+        class PartlyZero:
+            name = "p"
+
+            def _model(self, residual):
+                # non-zero in A and E, zero in T
+                return replace(
+                    residual,
+                    tdi={
+                        ch: (arr - 1.0 if ch != "T" else arr)
+                        for ch, arr in residual.tdi.items()
+                    },
+                )
+
+            def start(self, residual):
+                return self._model(residual)
+
+            def step(self, residual):
+                return self._model(residual)
+
+        wheel = Wheel(obs)
+        wheel.add(PartlyZero())
+        with _w.catch_warnings():
+            _w.simplefilter("error")  # a spurious warning fails the test
+            wheel.run(2)
+        np.testing.assert_allclose(wheel.contribution("p")["T"], 0.0)
+        np.testing.assert_allclose(wheel.contribution("p")["A"], 1.0)
+
+    def test_a_real_withdrawal_is_caught_even_if_one_channel_was_always_zero(self, rng):
+        obs = make_observed(rng)
+
+        class ThenStops:
+            name = "s"
+
+            def __init__(self):
+                self.calls = 0
+
+            def start(self, residual):
+                return replace(
+                    residual,
+                    tdi={
+                        ch: (arr - 1.0 if ch != "T" else arr)
+                        for ch, arr in residual.tdi.items()
+                    },
+                )
+
+            def step(self, residual):
+                return residual  # withdraws A and E
+
+        wheel = Wheel(obs)
+        wheel.add(ThenStops())
+        with pytest.warns(ModelWithdrawnWarning):
+            wheel.run(1)
+
+    def test_segment_name_must_be_a_string_not_just_non_empty(self, observed):
+        class Numbered(ConstSegment):
+            pass
+
+        seg = Numbered("x", 0.0)
+        seg.name = 5
+        with pytest.raises(ValueError, match="non-empty string"):
+            Wheel(observed).add(seg)
+
+    def test_missing_name_gets_the_protocol_message(self, observed):
+        class Anonymous:
+            def start(self, residual):
+                return residual
+
+            def step(self, residual):
+                return residual
+
+        with pytest.raises((ValueError, TypeError), match="name"):
+            Wheel(observed).add(Anonymous())
+
+
+class TestObservedDataIsChecked:
+    """Wheel.__init__ checks the data itself, so the first segment to touch it
+    is not blamed by the return-value guard for damage it did not do."""
+
+    def test_non_finite_observed_data_is_refused_at_construction(self, rng):
+        obs = make_observed(rng)
+        obs.tdi["E"][7] = np.nan
+        with pytest.raises(ValueError, match=r"observed.tdi\['E'\] has 1 non-finite"):
+            Wheel(obs)
+
+    def test_the_message_points_at_the_missing_gap_support(self, rng):
+        """NaN is how a user marks a gap today, and gaps are not in the
+        contract yet -- the error has to say so or it reads as a bug."""
+        obs = make_observed(rng)
+        obs.tdi["A"][:3] = np.nan
+        with pytest.raises(ValueError, match="no data-quality mask yet"):
+            Wheel(obs)
+
+    def test_finite_data_constructs_normally(self, observed):
+        assert Wheel(observed).residual() is not None

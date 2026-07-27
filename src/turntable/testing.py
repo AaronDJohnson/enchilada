@@ -62,6 +62,12 @@ def check_segment(segment: Segment, observed: Residuals, n_sweeps: int = 2) -> N
       that model satisfies the consumption contract -- `residual.noise_psd`
       succeeds rather than raising for want of a `psd` method.
 
+    It also escalates the `ModelWithdrawnWarning` the Wheel merely warns about,
+    so a segment that stops re-subtracting its model fails here rather than
+    quietly leaving the fit later. (If your segment legitimately drops to a
+    zero model during these sweeps -- a death move -- give it a starting state
+    that does not, or filter the warning around your own call.)
+
     It does not check the residual bookkeeping -- the `Wheel` owns that, so
     there is no cross-segment arithmetic in a segment to get wrong (see the
     `Wheel` docstring for the ledger). Whether your *sampler* recovers truth
@@ -74,11 +80,19 @@ def check_segment(segment: Segment, observed: Residuals, n_sweeps: int = 2) -> N
         from turntable.testing import check_segment
         check_segment(MySegment(name="ucb"), toy_observed)
     """
-    from turntable.wheel import Wheel  # local import: avoid circularity
+    import warnings
+
+    from turntable.wheel import ModelWithdrawnWarning, Wheel
 
     wheel = Wheel(observed)
-    wheel.add(segment)  # start(): validated for a well-formed returned residual
-    wheel.run(n_sweeps)  # step() x n_sweeps: each return validated
+    # The Wheel only *warns* when a model is withdrawn, because mid-run it
+    # cannot tell a legitimate death move from a forgotten re-subtraction. A
+    # pre-campaign conformance check is exactly where that heuristic should be
+    # strict, so escalate it here.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", ModelWithdrawnWarning)
+        wheel.add(segment)  # start(): validated for a well-formed residual
+        wheel.run(n_sweeps)  # step() x n_sweeps: each return validated
 
     # if this segment threads a noise model, it must satisfy the contract signal
     # segments consume it through: a callable psd(freqs[, channel])

@@ -89,6 +89,12 @@ class Residuals:
     within a given segment or script so readers are not tracking two
     vocabularies. Call `Residuals.aliases()` for the full long-to-short table.
 
+    Equality is identity (`eq=False`). A generated `__eq__` would compare the
+    tdi arrays elementwise and raise "truth value of an array is ambiguous",
+    so `r1 == r2` is True only for the same object -- which is also what the
+    Wheel's orbit check relies on. Use `numpy.allclose` on the arrays to
+    compare contents.
+
     Deliberately *not* in the contract yet: data quality
     ---------------------------------------------------
     There is no gap/quality mask. Every sample is currently treated as
@@ -263,6 +269,13 @@ class Residuals:
                 raise TypeError(
                     f"tdi[{ch!r}] is complex but domain='time'; time-domain TDI is "
                     f"real (did you mean domain='frequency'?)"
+                )
+            if self.domain == "frequency" and not np.iscomplexobj(arr):
+                raise TypeError(
+                    f"tdi[{ch!r}] is real but domain='frequency'; a one-sided "
+                    f"spectrum is complex. Accepting a real array here would let "
+                    f"a segment return `spectrum.real` and be silently credited "
+                    f"with the whole imaginary part as its model."
                 )
             # dtype is part of the contract too: integer or object arrays would
             # otherwise be accepted here and then fail deep inside the Wheel's
@@ -469,6 +482,21 @@ class Residuals:
             if channel is None
             else self.noise.psd(freqs[1:], channel)
         )
+        # A noise segment leaves tdi untouched, so the Wheel's finiteness guard
+        # cannot see it blow up -- the damage travels through this object
+        # instead. An ill-conditioned Whittle/spline fit returning NaN, or a
+        # least-squares PSD going negative in a low-power band, would otherwise
+        # silently hand every later segment a NaN or imaginary sigma.
+        interior = psd[1:]
+        if not np.isfinite(interior).all() or np.any(interior <= 0.0):
+            bad = int((~np.isfinite(interior)).sum() + (interior <= 0.0).sum())
+            raise ValueError(
+                f"noise model {type(self.noise).__name__}.psd returned {bad} "
+                f"non-finite or non-positive value(s) on this run's frequency "
+                f"grid; a PSD must be finite and strictly positive to whiten "
+                f"against (check the noise segment's fit, not the signal "
+                f"segment asking for it)"
+            )
         return psd
 
     def noise_variance(self, channel: str | None = None) -> float | None:

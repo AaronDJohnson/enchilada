@@ -518,3 +518,49 @@ class TestPsdGridAndAliases:
         assert obs.sample_interval == pytest.approx(2.0)  # 1 / fs
         assert obs.observation_time == pytest.approx(128.0)  # n / fs
         assert obs.frequency_resolution == pytest.approx(1 / 128.0)  # 1 / Tobs
+
+
+class TestNoisePsdSanity:
+    """A noise segment leaves tdi untouched, so the Wheel's finiteness guard
+    never sees a bad fit -- the damage travels through the noise object. These
+    pin the only place it can be caught."""
+
+    @pytest.mark.parametrize(
+        ("bad", "what"),
+        [
+            (np.nan, "NaN from an ill-conditioned Whittle fit"),
+            (np.inf, "inf from a divide-by-zero in the model"),
+            (-1e-40, "negative from a least-squares PSD in a low-power band"),
+            (0.0, "exactly zero: 1/S is inf, so it is not whitenable either"),
+        ],
+    )
+    def test_a_psd_that_is_not_finite_and_positive_is_refused(self, rng, bad, what):
+        class BrokenNoise:
+            def psd(self, freqs, channel=None):
+                out = np.full(freqs.shape, 1e-40)
+                out[2] = bad
+                return out
+
+        r = make_observed(rng, noise=BrokenNoise())
+        with pytest.raises(ValueError, match="non-finite or non-positive"):
+            r.noise_psd()
+
+    def test_the_message_blames_the_noise_model_by_name(self, rng):
+        class WhittleFit:
+            def psd(self, freqs, channel=None):
+                return np.full(freqs.shape, np.nan)
+
+        r = make_observed(rng, noise=WhittleFit())
+        with pytest.raises(ValueError, match=r"noise model WhittleFit\.psd"):
+            r.noise_psd()
+
+    def test_a_finite_positive_psd_passes_through_untouched(self, rng):
+        """The guard must not reject the DC bin it sets to +inf itself."""
+
+        class GoodNoise:
+            def psd(self, freqs, channel=None):
+                return np.full(freqs.shape, 3e-41)
+
+        psd = make_observed(rng, noise=GoodNoise()).noise_psd()
+        assert psd[0] == np.inf  # DC carries zero weight by construction
+        assert np.all(psd[1:] == 3e-41)

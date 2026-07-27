@@ -49,7 +49,9 @@ class Segment(Protocol):
     Noise is not special. A segment that models the noise instead of a signal
     removes nothing from `tdi`; it returns the residual with an updated `noise`
     object -- `replace(residual, noise=my_model)` -- so its ledger entry is
-    zero, and signal segments read the model back through `residual.noise_psd`.
+    zero, and signal segments read the model back through `residual.noise_psd`
+    (per-bin weight) or `residual.noise_variance` (per-sample variance, for a
+    time-domain likelihood).
     See `NoiseSegment`.
 
     Implementation notes:
@@ -68,7 +70,8 @@ class Segment(Protocol):
           mutating in place.
         - `residual.noise` may be `None`: no noise model is set, or you step
           before the noise segment does on the first sweep (registration
-          order). Guard `noise_psd()`/`residual.noise` for `None`.
+          order). Both `noise_psd()` and `noise_variance()` return `None` in
+          that case -- guard for it rather than assuming a model is present.
         - Read the data conventions off the residual instead of assuming them:
           `residual.observable`, `residual.domain`, `residual.channels`. If
           your sampler only supports one convention, check these in `start` and
@@ -111,7 +114,6 @@ class Segment(Protocol):
         ...
 
 
-@runtime_checkable
 class NoiseSegment(Segment, Protocol):
     """Convention for a `Segment` that models the noise, not a signal.
 
@@ -125,10 +127,18 @@ class NoiseSegment(Segment, Protocol):
             return replace(residual, noise=model)
 
     The `noise` object it puts on the residual is consumed by signal segments
-    through `Residuals.noise_psd`, so it must expose
+    through `Residuals.noise_psd` (and `Residuals.noise_variance`, which
+    integrates it for time-domain use), so it must expose
 
     - ``psd(freqs[, channel]) -> ndarray`` -- the one-sided PSD (see
       `Residuals.noise_psd` for the pinned normalization convention).
+
+    `isinstance(seg, NoiseSegment)` cannot tell you anything -- it returns True
+    for *every* segment. That is not a bug to fix: a noise segment declares no
+    method a signal segment lacks, because the difference between them is what
+    they do with `tdi` and `noise`, not their shape. Use this protocol as
+    documentation and as a type annotation; to find the noise segment in a
+    campaign, track which one you registered for that job.
 
     That contract is enforced where the model is consumed (`noise_psd` raises
     if it is missing), not by the Wheel, which stays entirely noise-agnostic.

@@ -9,6 +9,29 @@ from turntable.residuals import Residuals
 from turntable.segment import Segment
 
 
+class ModelWithdrawnWarning(RuntimeWarning):
+    """A segment's model went from non-zero to exactly zero in one step.
+
+    The ledger is *derived* (what a segment was handed minus what it returned),
+    so the Wheel cannot tell these two apart from the outside:
+
+    * the segment's model is legitimately zero now -- a reversible-jump block
+      whose last source died, or a cadenced block with nothing to contribute
+      this sweep. Nothing is wrong.
+    * the segment failed to re-subtract the model it still believes it has --
+      a wrapper whose external process errored, an all-rejected sweep returned
+      as "no change" -- and its model has silently left the fit.
+
+    It warns rather than raises because it is a heuristic about intent. If the
+    first case is yours, silence it precisely::
+
+        warnings.filterwarnings("ignore", category=turntable.ModelWithdrawnWarning)
+
+    `turntable.testing.check_segment` escalates it to an error, on the grounds
+    that a conformance check should be strict where a running fit should not.
+    """
+
+
 class Wheel:
     """Runs a blocked-Gibbs global fit by handing each segment a clean residual.
 
@@ -36,10 +59,17 @@ class Wheel:
     bookkeeping.)
 
     Consistency checking. `add` validates a segment fully before recording it
-    (a `start` that fails leaves the Wheel untouched), and every `start`/`step`
-    return is checked to be a `Residuals` that kept the fixed run settings --
-    only `tdi` and `noise` may move. `Residuals` itself validates the returned
-    tdi shapes, so a mid-run drift raises immediately.
+    (`name`, `start` and `step`; a `start` that fails leaves the Wheel
+    untouched), and every `start`/`step` return must be a `Residuals` that
+
+    * kept the fixed run settings (`_INVARIANT`) -- only `tdi` and `noise` move;
+    * kept the same `orbit` object;
+    * did not drop a noise model that was set;
+    * contains no NaN or inf.
+
+    `Residuals` itself re-validates shapes and dtypes, so a mid-run drift
+    raises immediately. One failure is only a warning, because it cannot be
+    diagnosed from outside: see `ModelWithdrawnWarning`.
 
     Noise. Signal segments whiten against `residual.noise`. Two ways to supply
     it:
@@ -90,6 +120,20 @@ class Wheel:
             observed: TDI data with the run settings attached. Kept pristine;
                 every residual the Wheel forms starts from it.
         """
+        for ch in observed.channels:
+            # Otherwise the first segment to touch it gets blamed by the
+            # finiteness guard below for data that was already broken. NaN is
+            # also the natural way a user marks gaps today, and gap support is
+            # not in the contract yet -- so say that plainly here.
+            if not np.isfinite(observed.tdi[ch]).all():
+                n_bad = int((~np.isfinite(observed.tdi[ch])).sum())
+                raise ValueError(
+                    f"observed.tdi[{ch!r}] has {n_bad} non-finite sample(s); the "
+                    f"data itself is not usable as a residual. If these mark "
+                    f"gaps or excised glitches, note that turntable has no "
+                    f"data-quality mask yet (see the Residuals docstring); "
+                    f"fill or trim them before starting a run."
+                )
         self.observed = observed
         self._segments: list[Segment] = []
         # the ledger: name -> that segment's current contribution (summed model)
@@ -104,9 +148,13 @@ class Wheel:
         (carrying the current noise). All validation happens before the Wheel
         records anything, so a failed `add` leaves the Wheel exactly as it was.
         """
-        name = segment.name
+        name = getattr(segment, "name", None)
         if not isinstance(name, str) or not name:
-            raise ValueError(f"segment name must be a non-empty string, got {name!r}")
+            raise ValueError(
+                f"segment name must be a non-empty string, got {name!r}; every "
+                f"Segment needs a `name` unique within the Wheel "
+                f"(see turntable.segment.Segment)"
+            )
         if name in self._ledger:
             raise ValueError(f"segment name {name!r} already registered")
         for method in ("start", "step"):
@@ -174,14 +222,24 @@ class Wheel:
             raise ValueError(
                 f"unknown segment {exclude!r}; registered: {sorted(self._ledger)}"
             )
-        tdi = {ch: self.observed.tdi[ch].copy() for ch in self.observed.channels}
-        for name, contribution in self._ledger.items():
-            if name == exclude:
-                continue
+        # Promote once, up front, to whatever dtype the observed data and every
+        # subtracted model share -- then the accumulation below can stay
+        # in-place. (Subtracting out-of-place per segment would also promote,
+        # but allocates a fresh array per segment per channel, which is the
+        # hot loop: run() calls this once per segment per sweep.)
+        entries = [c for name, c in self._ledger.items() if name != exclude]
+        tdi = {}
+        for ch in self.observed.channels:
+            base = self.observed.tdi[ch]
+            dtype = (
+                np.result_type(base, *(e[ch] for e in entries))
+                if entries
+                else base.dtype
+            )
+            tdi[ch] = base.astype(dtype, copy=True)
+        for entry in entries:
             for ch in tdi:
-                # out-of-place: promotes dtype rather than raising if a
-                # contribution is wider than the observed array
-                tdi[ch] = tdi[ch] - contribution[ch]
+                tdi[ch] -= entry[ch]
         return replace(self.observed, tdi=tdi, noise=self._noise)
 
     def contribution(self, name: str) -> dict[str, np.ndarray]:
@@ -210,12 +268,10 @@ class Wheel:
     ) -> None:
         """Record a segment's new ledger entry and the noise it threaded.
 
-        Warns if a model that was previously non-zero has become exactly zero.
-        The ledger is derived (handed minus returned), so a segment that hands
-        the residual straight back -- a plausible way to mean "nothing changed
-        this sweep", e.g. a cadenced block, an all-rejected sweep, or a wrapper
-        whose external process failed -- silently withdraws its model from the
-        fit. A segment must re-subtract its current model on *every* step.
+        Warns (`ModelWithdrawnWarning`) if a model that was previously non-zero
+        has become exactly zero -- which may be a legitimate death move or a
+        segment that forgot to re-subtract itself. See that class for why the
+        Wheel cannot distinguish them and how to silence it.
         """
         contribution = self._contribution(handed, returned)
         previous = self._ledger.get(name)
@@ -225,13 +281,17 @@ class Wheel:
             and not self._all_zero(previous)
         ):
             warnings.warn(
-                f"{name}.{method} returned the residual unchanged, so its model "
-                f"went from non-zero to zero and has left the fit. A segment must "
-                f"re-subtract its current model every step, even when its "
-                f"parameters did not move (the ledger is derived from what you "
-                f"return, not remembered).",
-                RuntimeWarning,
-                stacklevel=4,
+                f"{name}.{method}: this segment's model went from non-zero to "
+                f"exactly zero, so it now contributes nothing to the fit. If that "
+                f"is intentional (a death move to zero sources, or a sweep with "
+                f"nothing to contribute) this is fine -- silence it with "
+                f"warnings.filterwarnings('ignore', "
+                f"category=turntable.ModelWithdrawnWarning). If not, remember the "
+                f"ledger is derived from what you return, not remembered: "
+                f"re-subtract your current model on every step.",
+                ModelWithdrawnWarning,
+                # _adopt -> run/add -> the user's call: 3 frames
+                stacklevel=3,
             )
         self._ledger[name] = contribution
         self._noise = returned.noise
@@ -243,6 +303,13 @@ class Wheel:
     def _validate_returned(
         self, returned: object, segment_name: str, method: str
     ) -> None:
+        """Refuse a return that would corrupt the run, in five checks.
+
+        Type, then the fixed run settings, then orbit identity, then the noise
+        model, then finiteness -- ordered cheapest-and-most-fundamental first
+        so the message a segment author sees names the most basic thing they
+        got wrong.
+        """
         if not isinstance(returned, Residuals):
             raise TypeError(
                 f"{segment_name}.{method} must return a Residuals "

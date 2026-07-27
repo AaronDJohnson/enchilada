@@ -76,3 +76,26 @@ class TestEchoSegment:
         wheel.run(1)
         for ch in observed.channels:
             np.testing.assert_array_equal(wheel.residual().tdi[ch], observed.tdi[ch])
+
+
+class TestCheckSegmentStrictness:
+    def test_a_withdrawing_segment_fails_the_conformance_check(self, observed):
+        """The Wheel warns mid-run; the pre-campaign gate must refuse."""
+        from turntable import ModelWithdrawnWarning, replace
+
+        class Forgetful(EchoSegment):
+            def __init__(self, name):
+                super().__init__(name)
+                self.calls = 0
+
+            def start(self, residual):
+                return replace(
+                    residual,
+                    tdi={ch: arr - 1.0 for ch, arr in residual.tdi.items()},
+                )
+
+            def step(self, residual):
+                return residual  # forgot to re-subtract: model leaves the fit
+
+        with pytest.raises(ModelWithdrawnWarning):
+            check_segment(Forgetful(name="forgetful"), observed)

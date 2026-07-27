@@ -8,7 +8,7 @@ tests pin that, because the guarantee is documented and easy to regress
 assignable to everything, so it suppresses the error instead of raising it).
 """
 
-import shutil
+import importlib.util
 import subprocess
 import sys
 import textwrap
@@ -27,7 +27,9 @@ y: str = r.T_obs   # typo in assignment position
 """
 
 
-@pytest.mark.skipif(shutil.which("mypy") is None, reason="mypy not installed")
+@pytest.mark.skipif(
+    importlib.util.find_spec("mypy") is None, reason="mypy not installed"
+)
 def test_consumer_typos_are_static_errors(tmp_path):
     f = tmp_path / "consumer.py"
     f.write_text(textwrap.dedent(CONSUMER))
@@ -81,3 +83,24 @@ def test_replace_is_re_exported():
 
     assert turntable.replace is dataclasses.replace
     assert "replace" in turntable.__all__
+
+
+def test_public_surface_is_pinned():
+    """__all__ governs re-export for consumers running mypy --strict, so a
+    dropped entry silently becomes a type error downstream while CI stays
+    green. Pin it literally."""
+    import turntable
+
+    assert turntable.__all__ == [
+        "ModelWithdrawnWarning",
+        "NoiseSegment",
+        "NumericOrbit",
+        "Orbit",
+        "Residuals",
+        "Segment",
+        "Wheel",
+        "__version__",
+        "replace",
+    ]
+    for name in turntable.__all__:
+        assert hasattr(turntable, name), name
