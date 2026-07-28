@@ -1,6 +1,6 @@
-"""Galactic-binary model pieces for the turntable example.
+"""Galactic-binary model pieces for the enchilada example.
 
-**Nothing in this file is turntable.** It is the user-supplied side of the
+**Nothing in this file is enchilada.** It is the user-supplied side of the
 example — the parts a source-class group brings to a global fit:
 
 - ``FixedLISANoise`` — a noise model exposing ``psd(freqs[, channel])``;
@@ -8,13 +8,13 @@ example — the parts a source-class group brings to a global fit:
   inner-product helpers (pure functions, no global state; ``waveform`` is the
   one-off convenience wrapper used for diagnostics and plots);
 - ``inject_gb`` — builds a synthetic frequency-domain dataset (signal + noise);
-- ``GBBlock`` — the turntable ``Block`` implementation. It reads everything
+- ``GBBlock`` — the enchilada ``Block`` implementation. It reads everything
   it needs (channels, grid, noise PSD) off the ``residual`` the Wheel hands it,
   so it never reaches back into this module's or the notebook's scope for run
   settings.
 
-The notebook imports these and drives them through turntable's ``Residuals`` and
-``Wheel``; keeping them here makes it obvious which code is turntable and which
+The notebook imports these and drives them through enchilada's ``Residuals`` and
+``Wheel``; keeping them here makes it obvious which code is enchilada and which
 is the model plugged into it.
 
 Requires the LISA stack: ``gbgpu`` (master), ``eryn`` (dev),
@@ -37,7 +37,7 @@ from lisatools.sensitivity import A1TDISens, get_sensitivity
 class FixedLISANoise:
     """One-sided LISA PSD from lisatools ``get_sensitivity`` (A == E).
 
-    The only contract a turntable noise object needs: ``psd(freqs[, channel])``.
+    The only contract a enchilada noise object needs: ``psd(freqs[, channel])``.
     """
 
     def psd(self, f, channel=None):
@@ -117,7 +117,7 @@ def inject_gb(truth, angles, Tobs, dt, n_samples, channels, noise, NB=128, seed=
 
 # ---------------------------------------------------------------- the block
 class GBBlock:
-    """turntable ``Block``: one galactic binary, sampled with Eryn.
+    """enchilada ``Block``: one galactic binary, sampled with Eryn.
 
     Implements ``name`` / ``start`` / ``update``. Reads channels, the frequency
     grid, and the noise PSD off the ``residual`` it is handed (never from module
@@ -187,7 +187,7 @@ class GBBlock:
         self.gb = GBGPU()
         self.S = {
             ch: residual.noise_psd(ch) for ch in self.chans
-        }  # noise via turntable
+        }  # noise via enchilada
 
     def _template(self, params):
         return gb_template(self.gb, params, self.angles, self.Tobs, self.dt, self.NB)

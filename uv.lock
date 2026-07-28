@@ -581,6 +581,50 @@ wheels = [
 ]
 
 [[package]]
+name = "enchilada"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "numpy" },
+]
+
+[package.optional-dependencies]
+examples = [
+    { name = "jupyterlab" },
+]
+numeric-orbits = [
+    { name = "h5py" },
+    { name = "lisaorbits" },
+    { name = "scipy" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "mypy" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "h5py", marker = "extra == 'numeric-orbits'", specifier = ">=3.0" },
+    { name = "jupyterlab", marker = "extra == 'examples'", specifier = ">=4" },
+    { name = "lisaorbits", marker = "extra == 'numeric-orbits'", specifier = ">=3.0.3" },
+    { name = "numpy", specifier = ">=1.23" },
+    { name = "scipy", marker = "extra == 'numeric-orbits'", specifier = ">=1.8" },
+]
+provides-extras = ["numeric-orbits", "examples"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "mypy", specifier = ">=1.11" },
+    { name = "pytest", specifier = ">=8" },
+    { name = "pytest-cov", specifier = ">=5" },
+    { name = "ruff", specifier = ">=0.8" },
+]
+
+[[package]]
 name = "executing"
 version = "2.2.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2438,50 +2482,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/57/a9/a2584b8313b89f94869ddb3c4074617a691de1812a614d2d50e32ca5a7a6/traitlets-5.15.1.tar.gz", hash = "sha256:7b1c07854fe25acb39e009bae49f11b79ff6cbb2f27999104e9110e7a6b53722", size = 163344, upload-time = "2026-06-03T12:26:06.181Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/96/8d/1080ee4c231f361b6ce4470d556c8c435b67c7e0753aaa641497ee92f88b/traitlets-5.15.1-py3-none-any.whl", hash = "sha256:770a53705f84b81ac107e83a1b3328ff2dae16094d8fc3cfc004e4b22dfd8e92", size = 85858, upload-time = "2026-06-03T12:26:04.395Z" },
-]
-
-[[package]]
-name = "turntable"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "numpy" },
-]
-
-[package.optional-dependencies]
-examples = [
-    { name = "jupyterlab" },
-]
-numeric-orbits = [
-    { name = "h5py" },
-    { name = "lisaorbits" },
-    { name = "scipy" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "mypy" },
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "h5py", marker = "extra == 'numeric-orbits'", specifier = ">=3.0" },
-    { name = "jupyterlab", marker = "extra == 'examples'", specifier = ">=4" },
-    { name = "lisaorbits", marker = "extra == 'numeric-orbits'", specifier = ">=3.0.3" },
-    { name = "numpy", specifier = ">=1.23" },
-    { name = "scipy", marker = "extra == 'numeric-orbits'", specifier = ">=1.8" },
-]
-provides-extras = ["numeric-orbits", "examples"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "mypy", specifier = ">=1.11" },
-    { name = "pytest", specifier = ">=8" },
-    { name = "pytest-cov", specifier = ">=5" },
-    { name = "ruff", specifier = ">=0.8" },
 ]
 
 [[package]]

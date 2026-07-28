@@ -1,13 +1,18 @@
-# turntable
+# enchilada
 
 [![CI](https://github.com/AaronDJohnson/turntable/actions/workflows/ci.yml/badge.svg)](https://github.com/AaronDJohnson/turntable/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/AaronDJohnson/turntable/blob/main/LICENSE)
 
 Blocked-Gibbs global-fit orchestration for LISA.
 
+*The whole enchilada*: a global fit infers every source population and the
+instrument noise **together**, because none of them can be measured cleanly
+without the others. This is the layer that makes that one joint fit out of
+many separately-owned pieces.
+
 A LISA global fit has to jointly infer many source populations (galactic
 binaries, massive black-hole binaries, ...) plus the instrument noise, with
-each block typically owned by a different group and sampler. turntable is the
+each block typically owned by a different group and sampler. enchilada is the
 orchestration layer — and only that. A `Wheel` keeps the pristine data and a
 **ledger** of each block's current model, and hands every registered
 `Block` the data minus *every other* block — exactly the residual that
@@ -23,21 +28,21 @@ language), while the Wheel owns only the residual bookkeeping.
 Requires Python ≥ 3.12 (floor set by lisaorbits).
 
 ```sh
-pip install turntable      # or: uv add turntable
+pip install enchilada      # or: uv add enchilada
 ```
 
-To work on turntable itself, clone it and use [uv](https://docs.astral.sh/uv/):
+To work on enchilada itself, clone it and use [uv](https://docs.astral.sh/uv/):
 
 ```sh
 git clone https://github.com/AaronDJohnson/turntable.git
-cd turntable
+cd turntable   # the repository has not been renamed; the package has
 uv sync
 ```
 
 or with pip: `pip install -e .`
 
 The core package depends only on numpy. Loading tabulated spacecraft
-ephemerides (`turntable.orbits.NumericOrbit`) needs the extra:
+ephemerides (`enchilada.orbits.NumericOrbit`) needs the extra:
 
 ```sh
 uv sync --extra numeric-orbits   # adds h5py, scipy, lisaorbits
@@ -56,8 +61,8 @@ enough to watch the Wheel hand each block its residual. The whole thing is:
 <!-- runnable -->
 ```python
 import numpy as np
-from turntable import Residuals, Wheel
-from turntable.testing import EchoBlock
+from enchilada import Residuals, Wheel
+from enchilada.testing import EchoBlock
 
 rng = np.random.default_rng(0)
 n_samples = 1024
@@ -94,17 +99,17 @@ white-noise block, converging to known truth — run
 For a **real LISA source class**, [`examples/gb_block_eryn.ipynb`](https://github.com/AaronDJohnson/turntable/blob/main/examples/gb_block_eryn.ipynb)
 fits an injected galactic binary through the Wheel using GBGPU waveforms, an
 Eryn sampler living inside the block, and a fixed LISA noise PSD from LISA
-Analysis Tools. Everything that is *not* turntable lives in
+Analysis Tools. Everything that is *not* enchilada lives in
 [`examples/gb_model.py`](https://github.com/AaronDJohnson/turntable/blob/main/examples/gb_model.py), so the notebook shows only the
-turntable touchpoints. That example needs the external LISA stack (`gbgpu`,
+enchilada touchpoints. That example needs the external LISA stack (`gbgpu`,
 `eryn`, `lisaanalysistools`) plus `matplotlib`/`corner` for its plots — none of
-which are turntable dependencies, so it is not exercised by CI. Its outputs are
+which are enchilada dependencies, so it is not exercised by CI. Its outputs are
 not committed; run it to populate them.
 
 ## Plugging in your sampler
 
 Implement the two-method `Block` protocol — see the docstrings in
-[`src/turntable/block.py`](https://github.com/AaronDJohnson/turntable/blob/main/src/turntable/block.py) for the full contract:
+[`src/enchilada/block.py`](https://github.com/AaronDJohnson/turntable/blob/main/src/enchilada/block.py) for the full contract:
 
 - `name` — unique within a Wheel; identifies you in diagnostics and errors.
 - `start(residual) -> residual` — called once at registration; read the run
@@ -118,7 +123,7 @@ Implement the two-method `Block` protocol — see the docstrings in
   add-back; the Wheel keeps the ledger and derives your new entry from what
   you return.
 
-`replace` is re-exported for convenience (`from turntable import replace`), since
+`replace` is re-exported for convenience (`from enchilada import replace`), since
 every block needs it to return an updated residual.
 
 A block that models the noise instead of a signal removes nothing from the
@@ -126,7 +131,7 @@ data; it returns the residual with an updated `noise` object —
 `replace(residual, noise=my_model)` (so its ledger entry is zero) — and signal
 blocks read it back through `Residuals.noise_psd` for a frequency-domain
 weight, or `Residuals.noise_variance` for the per-sample variance a time-domain
-likelihood needs (turntable does the PSD integration, including the Nyquist
+likelihood needs (enchilada does the PSD integration, including the Nyquist
 weighting, so the answer does not depend on the parity of `n_samples`).
 
 Everything about your sampler is *yours*: parameters, RNG, posterior chains,
@@ -146,7 +151,7 @@ Before plugging a block into a shared campaign, run the conformance check
 in your own test suite:
 
 ```python
-from turntable.testing import check_block
+from enchilada.testing import check_block
 check_block(MyBlock(name="ucb"), toy_observed)
 ```
 
@@ -159,7 +164,7 @@ recovers truth is still yours to verify; `examples/toy_fit.py` is the pattern.
 
 ## Conventions and consistency checking
 
-Cross-group runs fail through silently mismatched conventions, so turntable
+Cross-group runs fail through silently mismatched conventions, so enchilada
 makes every convention an explicit, validated part of `Residuals`:
 
 - `observable` (required) — what the TDI samples physically are:
@@ -171,7 +176,7 @@ makes every convention an explicit, validated part of `Residuals`:
   `Tobs`/`df`/`dt` and the PSD grid stay well defined in both. The residual a
   block returns must keep the observed representation.
 - `n_samples` — **you should never have to state it.** Data enters a campaign
-  as a time series, where the arrays carry it exactly, so turntable reads it
+  as a time series, where the arrays carry it exactly, so enchilada reads it
   off them; `residual.to_frequency()` then carries it across the transform:
 
   ```python
@@ -218,11 +223,11 @@ producing quietly wrong science:
 
 The constellation ephemeris the data was produced with rides on
 `Residuals.orbit` so every block builds its response from the *same*
-spacecraft positions. `turntable.orbits.NumericOrbit` tabulates and
+spacecraft positions. `enchilada.orbits.NumericOrbit` tabulates and
 cubic-spline-interpolates an ephemeris, with loaders for LDC/Mojito-style
 HDF5 files (`from_hdf5`) and lisaorbits objects (`from_lisaorbits`); both
 need the `numeric-orbits` extra. See the module docstring in
-[`src/turntable/orbits.py`](https://github.com/AaronDJohnson/turntable/blob/main/src/turntable/orbits.py) for frames and
+[`src/enchilada/orbits.py`](https://github.com/AaronDJohnson/turntable/blob/main/src/enchilada/orbits.py) for frames and
 conventions.
 
 ## Development
@@ -231,7 +236,7 @@ conventions.
 uv sync --extra numeric-orbits   # dev group (pytest, pytest-cov, ruff, mypy)
 uv run pytest                    # full suite, incl. examples and orbit loaders
 uv run pytest --cov --cov-report=term-missing   # coverage (gate: 95%)
-uv run mypy                      # turntable ships py.typed; keep it honest
+uv run mypy                      # enchilada ships py.typed; keep it honest
 uv run ruff check src tests examples
 uv run ruff format --check src tests examples   # CI gates on this too
 ```
@@ -263,7 +268,7 @@ oversights:
   a gap, and whether windowing becomes a campaign convention too).
 - **One noise model at a time.** `Residuals.noise` is a single slot, so two
   noise blocks (say instrument noise and galactic confusion) cannot each own a
-  component and have turntable combine them — the last block to write it
+  component and have enchilada combine them — the last block to write it
   wins. Sample them inside one noise block that publishes a combined model,
   or treat the confusion foreground as a signal block that subtracts from
   `tdi`, where the ledger *does* combine contributions. The Wheel no longer

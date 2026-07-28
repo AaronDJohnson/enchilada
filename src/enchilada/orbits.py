@@ -2,7 +2,7 @@
 
 The orbit is a *fixed property of the dataset* -- the spacecraft positions the
 data was produced with -- that every block must share to build its response.
-turntable carries an orbit object opaquely on `Residuals.orbit` (like `noise`)
+enchilada carries an orbit object opaquely on `Residuals.orbit` (like `noise`)
 and never interprets it; this module defines the contract (`Orbit`) and the
 concrete forms a dataset can supply.
 
@@ -10,7 +10,7 @@ Two shapes, per the user's data:
 
 * **Analytic** -- a closed-form constellation a block generates itself (each
   piece's own `AnalyticOrbit` in `global_fit_pieces`); used for self-consistent
-  synthetic tests. turntable does not implement one; it only defines the
+  synthetic tests. enchilada does not implement one; it only defines the
   protocol such an object satisfies.
 * **Numerical** -- :class:`NumericOrbit`, a tabulated ephemeris (spacecraft
   positions on a coarse time grid) cubic-spline-interpolated to any requested
@@ -27,7 +27,7 @@ equatorial / ICRS (e.g. Mojito spacecraft positions) are rotated on load
 (``frame="equatorial"``).
 
 The heavy dependencies (`scipy`, `h5py`, `lisaorbits`) are imported lazily so
-turntable's core stays dependency-free.
+enchilada's core stays dependency-free.
 """
 
 from __future__ import annotations
@@ -131,7 +131,7 @@ class NumericOrbit:
         L: float | None = None,
         fstar: float | None = None,
     ) -> None:
-        from scipy.interpolate import CubicSpline  # lazy: keep turntable dep-free
+        from scipy.interpolate import CubicSpline  # lazy: keep enchilada dep-free
 
         self._t = np.ascontiguousarray(times, dtype=float)
         pos = np.ascontiguousarray(positions, dtype=float)

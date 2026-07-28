@@ -5,8 +5,8 @@ from typing import ClassVar
 
 import numpy as np
 
-from turntable.block import Block
-from turntable.residuals import Residuals
+from enchilada.block import Block
+from enchilada.residuals import Residuals
 
 
 class ModelWithdrawnWarning(RuntimeWarning):
@@ -25,9 +25,9 @@ class ModelWithdrawnWarning(RuntimeWarning):
     It warns rather than raises because it is a heuristic about intent. If the
     first case is yours, silence it precisely::
 
-        warnings.filterwarnings("ignore", category=turntable.ModelWithdrawnWarning)
+        warnings.filterwarnings("ignore", category=enchilada.ModelWithdrawnWarning)
 
-    `turntable.testing.check_block` escalates it to an error, on the grounds
+    `enchilada.testing.check_block` escalates it to an error, on the grounds
     that a conformance check should be strict where a running fit should not.
     """
 
@@ -49,7 +49,7 @@ class NoiseOverwrittenWarning(RuntimeWarning):
     silence it precisely::
 
         warnings.filterwarnings(
-            "ignore", category=turntable.NoiseOverwrittenWarning
+            "ignore", category=enchilada.NoiseOverwrittenWarning
         )
     """
 
@@ -154,7 +154,7 @@ class Wheel:
                 raise ValueError(
                     f"observed.tdi[{ch!r}] has {n_bad} non-finite sample(s); the "
                     f"data itself is not usable as a residual. If these mark "
-                    f"gaps or excised glitches, note that turntable has no "
+                    f"gaps or excised glitches, note that enchilada has no "
                     f"data-quality mask yet (see the Residuals docstring); "
                     f"fill or trim them before starting a run."
                 )
@@ -179,7 +179,7 @@ class Wheel:
             raise ValueError(
                 f"block name must be a non-empty string, got {name!r}; every "
                 f"Block needs a `name` unique within the Wheel "
-                f"(see turntable.block.Block)"
+                f"(see enchilada.block.Block)"
             )
         if name in self._ledger:
             raise ValueError(f"block name {name!r} already registered")
@@ -190,7 +190,7 @@ class Wheel:
                 raise TypeError(
                     f"block {name!r} does not implement {method}(residual); a "
                     f"Block needs `name`, `start` and `update` "
-                    f"(see turntable.block.Block)"
+                    f"(see enchilada.block.Block)"
                 )
         handed = self.residual()  # data minus blocks registered so far
         returned = block.start(self._mutable(handed))
@@ -222,7 +222,7 @@ class Wheel:
         Two notes for readers coming from elsewhere. The Monte Carlo
         literature calls a cycle a *sweep*. GLASS uses `cycle` for something
         different -- the number of repeat updates given to one module -- so
-        when comparing notes, turntable's cycle is GLASS's outer Gibbs loop,
+        when comparing notes, enchilada's cycle is GLASS's outer Gibbs loop,
         not its `cycle` variable.
 
         Args:
@@ -327,7 +327,7 @@ class Wheel:
                 f"is intentional (a death move to zero sources, or a cycle with "
                 f"nothing to contribute) this is fine -- silence it with "
                 f"warnings.filterwarnings('ignore', "
-                f"category=turntable.ModelWithdrawnWarning). If not, remember the "
+                f"category=enchilada.ModelWithdrawnWarning). If not, remember the "
                 f"ledger is derived from what you return, not remembered: "
                 f"re-subtract your current model on every block update.",
                 ModelWithdrawnWarning,
@@ -344,7 +344,7 @@ class Wheel:
                     f"{self._noise_owner!r}'s is now gone and every block sees "
                     f"only {name!r}'s. If you are modelling two components, "
                     f"publish one combined model from a single noise block "
-                    f"(see turntable.NoiseOverwrittenWarning).",
+                    f"(see enchilada.NoiseOverwrittenWarning).",
                     NoiseOverwrittenWarning,
                     # _adopt -> run/add -> the user's call: 3 frames
                     stacklevel=3,

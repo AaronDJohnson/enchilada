@@ -27,11 +27,11 @@ from dataclasses import replace
 
 import numpy as np
 
-from turntable import Residuals, Wheel
+from enchilada import Residuals, Wheel
 
 
 class FlatNoise:
-    """White-noise model satisfying the turntable noise contract."""
+    """White-noise model satisfying the enchilada noise contract."""
 
     def __init__(self, sigma: float, sample_rate: float):
         self.sigma = sigma
@@ -74,7 +74,7 @@ class SineBlock:
     def update(self, residual: Residuals) -> Residuals:
         ch = residual.channels[0]
         s = self._basis[ch]
-        # per-sample noise variance from the threaded noise model -- turntable
+        # per-sample noise variance from the threaded noise model -- enchilada
         # does the PSD integration (and the Nyquist weighting) for us
         sigma2 = residual.noise_variance(ch)
 

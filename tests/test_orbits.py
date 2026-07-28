@@ -5,8 +5,8 @@ import pytest
 
 pytest.importorskip("scipy", reason="orbits need the numeric-orbits extra")
 
-from turntable import NumericOrbit
-from turntable.orbits import _NOMINAL_ARMLENGTH, _OBLIQUITY, Orbit
+from enchilada import NumericOrbit
+from enchilada.orbits import _NOMINAL_ARMLENGTH, _OBLIQUITY, Orbit
 
 AU = 1.495978707e11
 YEAR = 365.25 * 86400.0

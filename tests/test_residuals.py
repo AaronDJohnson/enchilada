@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from conftest import make_observed
-from turntable import Residuals
+from enchilada import Residuals
 
 
 class TestPostInitValidation:
@@ -288,7 +288,7 @@ class TestNSamplesDerivation:
 
     def test_frequency_domain_requires_it_and_says_why(self):
         # 513 bins are consistent with n=1024 and n=1025 -- the parity is lost,
-        # so turntable asks instead of guessing
+        # so enchilada asks instead of guessing
         with pytest.raises(ValueError, match="does not determine it") as exc:
             Residuals(
                 tdi={ch: np.zeros(513, complex) for ch in ("A", "E")},

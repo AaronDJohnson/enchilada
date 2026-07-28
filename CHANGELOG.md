@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to turntable are documented here. The format follows
+All notable changes to enchilada are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow
 [SemVer](https://semver.org/) once tagged.
 
@@ -43,12 +43,12 @@ First working release of the blocked-Gibbs orchestration layer.
   a **step** is what a block's own sampler does, many times, inside a single
   `update()` call (`steps_per_cycle` in the GB example).
   The unit itself is a **block** (`Block`, `NoiseBlock`, `EchoBlock`,
-  `check_block`, `turntable.block`) -- the word blocked Gibbs already uses for
+  `check_block`, `enchilada.block`) -- the word blocked Gibbs already uses for
   a jointly-updated group of parameters. "Iteration" and "sweep" are not used
   as API names: the first could mean any of the three scales, and the second
   invites confusion with a block's own sampler steps. Note for anyone reading
   GLASS alongside this: GLASS's `cycle` means repeat updates of a single
-  module, which is not what turntable calls a cycle.
+  module, which is not what enchilada calls a cycle.
 - `Block` protocol — two methods, `start(residual)` and `update(residual)`,
   each returning the updated residual. The residual handed to a block is
   the data minus every *other* block (its own model excluded), so the
@@ -86,7 +86,7 @@ First working release of the blocked-Gibbs orchestration layer.
   loaders for LDC/Mojito HDF5 files and lisaorbits objects
   (validated against lisaorbits 3.0.3), equatorial-to-ecliptic frame
   rotation, and a hard refusal to extrapolate outside the tabulated span.
-- `turntable.testing`: `EchoBlock` and the `check_block` conformance
+- `enchilada.testing`: `EchoBlock` and the `check_block` conformance
   helper for third-party block implementations.
 - Examples: `examples/demo.py` (plumbing walkthrough), `examples/demo.ipynb`
   (annotated notebook incl. orbits), `examples/toy_fit.py` (a converging
@@ -96,8 +96,8 @@ First working release of the blocked-Gibbs orchestration layer.
   LISA Analysis Tools PSD) recovering an injected galactic binary through the
   Wheel. That one needs an external stack (`gbgpu`, `eryn`,
   `lisaanalysistools`, `matplotlib`, `corner`) that is deliberately not a
-  turntable dependency, so it is not exercised by CI.
-- Ergonomics: `turntable.replace` re-exports `dataclasses.replace`, so updating
+  enchilada dependency, so it is not exercised by CI.
+- Ergonomics: `enchilada.replace` re-exports `dataclasses.replace`, so updating
   a residual needs no second import; `Block` is `runtime_checkable`, so
   `isinstance(obj, Block)` is a usable registration check. (`NoiseBlock`
   deliberately is *not*: it declares no member beyond `Block`, so a

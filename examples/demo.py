@@ -1,4 +1,4 @@
-"""Minimal turntable demo: the Residuals / Block / Wheel plumbing, end to end.
+"""Minimal enchilada demo: the Residuals / Block / Wheel plumbing, end to end.
 
 Runs three blocked-Gibbs cycles over two no-op EchoBlocks on synthetic
 data -- no real waveforms or MCMC, just enough to watch the Wheel hand each
@@ -11,8 +11,8 @@ See examples/demo.ipynb for the same walkthrough with commentary.
 
 import numpy as np
 
-from turntable import Residuals, Wheel
-from turntable.testing import EchoBlock
+from enchilada import Residuals, Wheel
+from enchilada.testing import EchoBlock
 
 # One frozen object holds the TDI arrays and the run settings everyone
 # in the run agrees on.

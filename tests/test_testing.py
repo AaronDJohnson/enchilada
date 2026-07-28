@@ -1,4 +1,4 @@
-"""turntable.testing: EchoBlock and the check_block conformance helper."""
+"""enchilada.testing: EchoBlock and the check_block conformance helper."""
 
 from dataclasses import replace
 
@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from conftest import make_observed
-from turntable.testing import EchoBlock, check_block
+from enchilada.testing import EchoBlock, check_block
 
 
 class TestCheckBlock:
@@ -60,7 +60,7 @@ class TestCheckBlock:
 
 class TestEchoBlock:
     def test_keeps_its_own_update_counter(self, observed):
-        from turntable import Wheel
+        from enchilada import Wheel
 
         echo = EchoBlock(name="echo")
         wheel = Wheel(observed)
@@ -69,7 +69,7 @@ class TestEchoBlock:
         assert echo.updates == 3
 
     def test_passes_residual_through_unchanged(self, observed):
-        from turntable import Wheel
+        from enchilada import Wheel
 
         wheel = Wheel(observed)
         wheel.add(EchoBlock(name="echo"))
@@ -81,7 +81,7 @@ class TestEchoBlock:
 class TestCheckBlockStrictness:
     def test_a_withdrawing_block_fails_the_conformance_check(self, observed):
         """The Wheel warns mid-run; the pre-campaign gate must refuse."""
-        from turntable import ModelWithdrawnWarning, replace
+        from enchilada import ModelWithdrawnWarning, replace
 
         class Forgetful(EchoBlock):
             def __init__(self, name):

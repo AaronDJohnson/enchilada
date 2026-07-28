@@ -1,6 +1,6 @@
 from typing import Protocol, runtime_checkable
 
-from turntable.residuals import Residuals
+from enchilada.residuals import Residuals
 
 
 @runtime_checkable
@@ -36,7 +36,7 @@ class Block(Protocol):
 
     The pattern:
 
-        from turntable import replace   # or: from dataclasses import replace
+        from enchilada import replace   # or: from dataclasses import replace
 
         def update(self, residual):
             tdi = dict(residual.tdi)             # keep the channels you do not touch

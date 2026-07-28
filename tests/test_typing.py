@@ -1,6 +1,6 @@
 """The py.typed promise: consumer typos are static errors, not silent Any.
 
-turntable ships py.typed, so its annotations are load-bearing for consumers.
+enchilada ships py.typed, so its annotations are load-bearing for consumers.
 `Residuals.__getattr__` is therefore hidden from type checkers -- any
 `__getattr__` would tell a checker that every attribute name exists. These
 tests pin that, because the guarantee is documented and easy to regress
@@ -17,7 +17,7 @@ import pytest
 
 CONSUMER = """
 import numpy as np
-from turntable import Residuals
+from enchilada import Residuals
 
 r = Residuals(tdi={"A": np.zeros(8)}, sample_rate=1.0, channels=("A",),
               tdi_generation="2.0", observable="strain")
@@ -50,7 +50,7 @@ def test_consumer_typos_are_static_errors(tmp_path):
 def test_runtime_attribute_hints_still_work():
     import numpy as np
 
-    from turntable import Residuals
+    from enchilada import Residuals
 
     r = Residuals(
         tdi={"A": np.zeros(8)},
@@ -65,8 +65,8 @@ def test_runtime_attribute_hints_still_work():
 
 
 def test_block_protocol_is_runtime_checkable():
-    from turntable import Block
-    from turntable.testing import EchoBlock
+    from enchilada import Block
+    from enchilada.testing import EchoBlock
 
     assert isinstance(EchoBlock("e"), Block)
 
@@ -79,19 +79,19 @@ def test_block_protocol_is_runtime_checkable():
 def test_replace_is_re_exported():
     import dataclasses
 
-    import turntable
+    import enchilada
 
-    assert turntable.replace is dataclasses.replace
-    assert "replace" in turntable.__all__
+    assert enchilada.replace is dataclasses.replace
+    assert "replace" in enchilada.__all__
 
 
 def test_public_surface_is_pinned():
     """__all__ governs re-export for consumers running mypy --strict, so a
     dropped entry silently becomes a type error downstream while CI stays
     green. Pin it literally."""
-    import turntable
+    import enchilada
 
-    assert turntable.__all__ == [
+    assert enchilada.__all__ == [
         "Block",
         "ModelWithdrawnWarning",
         "NoiseBlock",
@@ -103,5 +103,5 @@ def test_public_surface_is_pinned():
         "__version__",
         "replace",
     ]
-    for name in turntable.__all__:
-        assert hasattr(turntable, name), name
+    for name in enchilada.__all__:
+        assert hasattr(enchilada, name), name

@@ -1,5 +1,5 @@
 [project]
-name = "turntable"
+name = "enchilada"
 version = "0.1.0"
 description = "Blocked-Gibbs global-fit orchestration for LISA: the Wheel/Block/Residuals protocol"
 readme = "README.md"
@@ -83,9 +83,9 @@ source-include = [
 testpaths = ["tests"]
 
 [tool.mypy]
-files = ["src/turntable"]
+files = ["src/enchilada"]
 python_version = "3.12"
-# turntable ships py.typed, so consumers' checkers trust these annotations.
+# enchilada ships py.typed, so consumers' checkers trust these annotations.
 # Without this, an unannotated function body is not checked at all.
 check_untyped_defs = true
 warn_unused_ignores = true
@@ -98,7 +98,7 @@ module = ["scipy.*", "h5py.*"]
 ignore_missing_imports = true
 
 [tool.coverage.run]
-source = ["src/turntable"]
+source = ["src/enchilada"]
 branch = true
 
 [tool.coverage.report]

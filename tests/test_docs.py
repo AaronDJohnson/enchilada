@@ -4,7 +4,7 @@ suite touches it.
 Three levels of check, weakest to strongest:
 
 * every fenced ``python`` block must parse -- catches syntax rot;
-* every call to a turntable API in any block must use keyword arguments that
+* every call to a enchilada API in any block must use keyword arguments that
   actually exist -- catches the rename class of rot (``n_iterations`` ->
   ``n_cycles``) even in illustrative fragments that cannot be executed;
 * blocks tagged ``<!-- runnable -->`` must run to completion in a fresh
@@ -21,8 +21,8 @@ from pathlib import Path
 
 import pytest
 
-import turntable
-from turntable import Residuals, Wheel
+import enchilada
+from enchilada import Residuals, Wheel
 
 README = Path(__file__).resolve().parent.parent / "README.md"
 
@@ -62,7 +62,7 @@ _CALLABLES = {
 
 
 def _keyword_targets():
-    from turntable.testing import check_block
+    from enchilada.testing import check_block
 
     targets = dict(_CALLABLES)
     targets["check_block"] = check_block
@@ -75,7 +75,7 @@ def _keyword_targets():
 
 
 @pytest.mark.parametrize("index", [i for i, _, _ in _blocks()])
-def test_calls_into_turntable_use_real_keywords(index):
+def test_calls_into_enchilada_use_real_keywords(index):
     """A renamed parameter leaves the README compiling but wrong. Check the
     keywords against the live signatures instead of trusting prose."""
     _, _, body = _blocks()[index]
@@ -120,16 +120,16 @@ def test_runnable_blocks_actually_run(index):
 
 
 def test_readme_names_only_real_exports():
-    """Every `turntable.X` the README mentions must exist -- a dropped export
+    """Every `enchilada.X` the README mentions must exist -- a dropped export
     should fail here, not in a new user's first session."""
-    # Strip URLs first: the clone line ends in "turntable.git", which is not
+    # Strip URLs first: the clone line ends in "enchilada.git", which is not
     # an attribute lookup.
     prose = re.sub(r"https?://\S+", "", README.read_text())
-    mentioned = set(re.findall(r"\bturntable\.([A-Za-z_][A-Za-z0-9_]*)", prose))
+    mentioned = set(re.findall(r"\benchilada\.([A-Za-z_][A-Za-z0-9_]*)", prose))
     submodules = {"testing", "orbits", "residuals", "block", "wheel"}
     for name in mentioned - submodules:
-        assert hasattr(turntable, name), (
-            f"README references turntable.{name}, which does not exist"
+        assert hasattr(enchilada, name), (
+            f"README references enchilada.{name}, which does not exist"
         )
 
 
@@ -161,7 +161,7 @@ RETIRED = [
 
 _DOC_FILES = sorted(
     p
-    for d in ("src/turntable", "tests", "examples")
+    for d in ("src/enchilada", "tests", "examples")
     for p in (Path(__file__).resolve().parent.parent / d).glob("*")
     if p.suffix in {".py", ".ipynb"}
 ) + [

@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from turntable import Residuals
+from enchilada import Residuals
 
 
 @pytest.fixture

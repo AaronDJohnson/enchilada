@@ -33,7 +33,7 @@ jobs:
       - name: Format
         run: uv run ruff format --check src tests examples
       - name: Type-check
-        # turntable ships py.typed, so its annotations are load-bearing for
+        # enchilada ships py.typed, so its annotations are load-bearing for
         # consumers' type checkers -- validate them here
         run: uv run mypy
       - name: Test (with coverage gate)
@@ -45,9 +45,9 @@ jobs:
         # `uv build` alone only proves the build did not crash
         run: |
           uv run --no-project --isolated --with dist/*.whl python -c "
-          import importlib.resources as r, turntable
-          print('version:', turntable.__version__)
-          assert r.files('turntable').joinpath('py.typed').is_file(), 'py.typed missing'
+          import importlib.resources as r, enchilada
+          print('version:', enchilada.__version__)
+          assert r.files('enchilada').joinpath('py.typed').is_file(), 'py.typed missing'
           print('py.typed present in installed wheel')
           "
 

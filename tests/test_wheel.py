@@ -7,13 +7,13 @@ import numpy as np
 import pytest
 
 from conftest import make_observed
-from turntable import (
+from enchilada import (
     ModelWithdrawnWarning,
     NoiseOverwrittenWarning,
     Residuals,
     Wheel,
 )
-from turntable.testing import EchoBlock
+from enchilada.testing import EchoBlock
 
 
 class ConstBlock:

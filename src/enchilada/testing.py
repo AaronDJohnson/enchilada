@@ -1,4 +1,4 @@
-"""Helpers for sanity-checking the turntable interface.
+"""Helpers for sanity-checking the enchilada interface.
 
 Importable utilities for verifying that the Wheel/Block protocol works
 end-to-end without needing a real waveform model:
@@ -12,8 +12,8 @@ end-to-end without needing a real waveform model:
 
 import numpy as np
 
-from turntable.block import Block
-from turntable.residuals import Residuals
+from enchilada.block import Block
+from enchilada.residuals import Residuals
 
 
 class EchoBlock:
@@ -91,12 +91,12 @@ def check_block(block: Block, observed: Residuals, n_cycles: int = 2) -> None:
     when the block conforms. Run this in your own test suite before
     plugging a block into a shared campaign:
 
-        from turntable.testing import check_block
+        from enchilada.testing import check_block
         check_block(MyBlock(name="ucb"), toy_observed)
     """
     import warnings
 
-    from turntable.wheel import ModelWithdrawnWarning, Wheel
+    from enchilada.wheel import ModelWithdrawnWarning, Wheel
 
     wheel = Wheel(observed)
     # The Wheel only *warns* when a model is withdrawn, because mid-run it

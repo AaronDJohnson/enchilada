@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Never
 
 import numpy as np
 
-from turntable.orbits import Orbit
+from enchilada.orbits import Orbit
 
 
 @dataclass(frozen=True, eq=False)
@@ -42,7 +42,7 @@ class Residuals:
             real series has `n // 2 + 1` bins, which loses the parity of n:
             513 bins are consistent with n=1024 *and* n=1025, and those imply
             different `Tobs` and `df`. The data cannot answer the question, so
-            turntable asks rather than guessing (guessing would silently
+            enchilada asks rather than guessing (guessing would silently
             mis-scale every frequency-domain weight).
         channels: TDI channel names in this run, e.g. ("A", "E", "T"). A
             name implies the campaign's agreed channel definition *including
@@ -75,7 +75,7 @@ class Residuals:
             `block.NoiseBlock`.
         orbit: The LISA constellation ephemeris the data was produced with --
             the spacecraft positions every block must share to build its
-            response (see `turntable.orbits.Orbit`). A *fixed* property of the
+            response (see `enchilada.orbits.Orbit`). A *fixed* property of the
             dataset, like `epoch`/`tdi_generation`: set once on the observed
             data and the Wheel threads it unchanged (it is never sampled).
             Opaque to the Wheel, exactly like `noise`; blocks read
@@ -428,7 +428,7 @@ class Residuals:
         """One-sided noise PSD on this run's rfft grid, or ``None``.
 
         The frequency-domain noise piece: the per-bin variance a Fourier-domain
-        block whitens against. Turntable assembles it on the run's frequency
+        block whitens against. Enchilada assembles it on the run's frequency
         grid (from `n_samples`/`sample_rate`) so blocks never recompute the
         normalization. DC (bin 0) is ``+inf`` (zero weight). Returns ``None``
         when no noise model is set (`self.noise is None`).

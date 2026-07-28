@@ -95,9 +95,9 @@ jobs:
       - name: Smoke-test the wheel that will be published
         run: |
           uv run --no-project --isolated --with dist/*.whl python -c "
-          import importlib.resources as r, turntable
-          assert r.files('turntable').joinpath('py.typed').is_file()
-          print('publishing version', turntable.__version__)
+          import importlib.resources as r, enchilada
+          assert r.files('enchilada').joinpath('py.typed').is_file()
+          print('publishing version', enchilada.__version__)
           "
       - uses: actions/upload-artifact@v7
         with:
@@ -113,7 +113,7 @@ jobs:
     # long-lived API token ever exists to leak.
     environment:
       name: pypi
-      url: https://pypi.org/p/turntable
+      url: https://pypi.org/p/enchilada
     permissions:
       id-token: write # OIDC for trusted publishing (the only extra scope needed)
     steps:
@@ -127,4 +127,4 @@ jobs:
         # instead of a hard 400, so a retried job is safe
         run: |
           uv publish --trusted-publishing always \
-            --check-url https://pypi.org/simple/turntable/
+            --check-url https://pypi.org/simple/enchilada/
