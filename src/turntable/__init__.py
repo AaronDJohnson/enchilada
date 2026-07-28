@@ -4,7 +4,11 @@ from importlib.metadata import PackageNotFoundError, version
 from turntable.block import Block, NoiseBlock
 from turntable.orbits import NumericOrbit, Orbit
 from turntable.residuals import Residuals
-from turntable.wheel import ModelWithdrawnWarning, Wheel
+from turntable.wheel import (
+    ModelWithdrawnWarning,
+    NoiseOverwrittenWarning,
+    Wheel,
+)
 
 try:
     __version__ = version("turntable")
@@ -15,6 +19,7 @@ __all__ = [
     "Block",
     "ModelWithdrawnWarning",
     "NoiseBlock",
+    "NoiseOverwrittenWarning",
     "NumericOrbit",
     "Orbit",
     "Residuals",

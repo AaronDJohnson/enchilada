@@ -95,6 +95,7 @@ def test_public_surface_is_pinned():
         "Block",
         "ModelWithdrawnWarning",
         "NoiseBlock",
+        "NoiseOverwrittenWarning",
         "NumericOrbit",
         "Orbit",
         "Residuals",

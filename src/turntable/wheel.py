@@ -32,6 +32,28 @@ class ModelWithdrawnWarning(RuntimeWarning):
     """
 
 
+class NoiseOverwrittenWarning(RuntimeWarning):
+    """Two blocks are writing `Residuals.noise`, so one is losing.
+
+    `noise` is a single slot: whichever block writes last owns the model every
+    block sees afterwards. That is fine when one noise block owns it, and fine
+    when a noise block takes over the model the dataset arrived with. It is
+    almost never what you want when two blocks each maintain a component --
+    instrument noise and the galactic confusion foreground, say -- because the
+    Wheel does not combine them, it just keeps the last one.
+
+    Fix it by sampling both components inside a single noise block that
+    publishes one combined model, or by treating the foreground as a signal
+    block that subtracts from `tdi` (where the ledger *does* combine
+    contributions). If you really do mean to hand ownership between blocks,
+    silence it precisely::
+
+        warnings.filterwarnings(
+            "ignore", category=turntable.NoiseOverwrittenWarning
+        )
+    """
+
+
 class Wheel:
     """Runs a blocked-Gibbs global fit by handing each block a clean residual.
 
@@ -68,8 +90,10 @@ class Wheel:
     * contains no NaN or inf.
 
     `Residuals` itself re-validates shapes and dtypes, so a mid-run drift
-    raises immediately. One failure is only a warning, because it cannot be
-    diagnosed from outside: see `ModelWithdrawnWarning`.
+    raises immediately. Two failures are only warnings, because neither can be
+    proven wrong from outside: a model that vanishes
+    (`ModelWithdrawnWarning`) and a second block writing the single `noise`
+    slot (`NoiseOverwrittenWarning`).
 
     Noise. Signal blocks whiten against `residual.noise`. Two ways to supply
     it:
@@ -138,8 +162,10 @@ class Wheel:
         self._blocks: list[Block] = []
         # the ledger: name -> that block's current contribution (summed model)
         self._ledger: dict[str, dict[str, np.ndarray]] = {}
-        # the current noise model threaded onto every handed residual
+        # the current noise model threaded onto every handed residual, and the
+        # block that last wrote it (None = the model the dataset arrived with)
         self._noise = observed.noise
+        self._noise_owner: str | None = None
 
     def add(self, block: Block) -> None:
         """Register a block: call its `start` and record its contribution.
@@ -309,6 +335,21 @@ class Wheel:
                 stacklevel=3,
             )
         self._ledger[name] = contribution
+        if returned.noise is not self._noise:  # this block wrote the slot
+            if self._noise_owner is not None and self._noise_owner != name:
+                warnings.warn(
+                    f"{name}.{method} replaced the noise model that "
+                    f"{self._noise_owner!r} owns. `Residuals.noise` is a single "
+                    f"slot -- the Wheel does not combine noise models, so "
+                    f"{self._noise_owner!r}'s is now gone and every block sees "
+                    f"only {name!r}'s. If you are modelling two components, "
+                    f"publish one combined model from a single noise block "
+                    f"(see turntable.NoiseOverwrittenWarning).",
+                    NoiseOverwrittenWarning,
+                    # _adopt -> run/add -> the user's call: 3 frames
+                    stacklevel=3,
+                )
+            self._noise_owner = name
         self._noise = returned.noise
 
     @staticmethod

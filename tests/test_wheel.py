@@ -1,12 +1,18 @@
 """Wheel: the ledger, data-minus-others handoff, and boundary validation."""
 
+import warnings
 from dataclasses import replace
 
 import numpy as np
 import pytest
 
 from conftest import make_observed
-from turntable import ModelWithdrawnWarning, Residuals, Wheel
+from turntable import (
+    ModelWithdrawnWarning,
+    NoiseOverwrittenWarning,
+    Residuals,
+    Wheel,
+)
 from turntable.testing import EchoBlock
 
 
@@ -687,3 +693,70 @@ class TestObservedDataIsChecked:
 
     def test_finite_data_constructs_normally(self, observed):
         assert Wheel(observed).residual() is not None
+
+
+class TestNoiseOwnership:
+    """`Residuals.noise` is a single slot, so a second writer silently wins.
+    The Wheel cannot forbid that (handing ownership over may be deliberate),
+    but it must not stay silent either."""
+
+    @staticmethod
+    def _noise_block(name, level):
+        class NoiseWriter:
+            def __init__(self):
+                self.name = name
+
+            def start(self, residual):
+                return replace(residual, noise=FlatPSD(level))
+
+            def update(self, residual):
+                # a real noise block re-estimates, so it returns a NEW object
+                # every cycle -- that must not read as an overwrite
+                return replace(residual, noise=FlatPSD(level))
+
+        return NoiseWriter()
+
+    def test_two_noise_blocks_warn_that_one_is_being_lost(self, observed):
+        wheel = Wheel(observed)
+        wheel.add(self._noise_block("instrument", 1.0))
+        with pytest.warns(NoiseOverwrittenWarning, match="'instrument' owns"):
+            wheel.add(self._noise_block("confusion", 2.0))
+
+    def test_the_message_names_both_blocks_and_the_fix(self, observed):
+        wheel = Wheel(observed)
+        wheel.add(self._noise_block("a", 1.0))
+        with pytest.warns(NoiseOverwrittenWarning) as rec:
+            wheel.add(self._noise_block("b", 2.0))
+        msg = str(rec[0].message)
+        assert "b.start" in msg and "'a'" in msg
+        assert "single" in msg and "combined model" in msg
+
+    def test_one_noise_block_re_estimating_every_cycle_is_silent(self, observed):
+        """The common case: the same block writes a fresh model each cycle."""
+        wheel = Wheel(observed)
+        wheel.add(self._noise_block("noise", 1.0))
+        wheel.add(ConstBlock("signal", 0.5))
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")  # any warning fails this test
+            wheel.run(3)
+
+    def test_taking_over_the_datasets_own_model_is_silent(self, rng):
+        """A noise block replacing the model the data arrived with is the
+        documented workflow, not an overwrite -- nobody owned it."""
+        obs = make_observed(rng, noise=FlatPSD(9.0))
+        wheel = Wheel(obs)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            wheel.add(self._noise_block("noise", 1.0))
+        assert wheel.residual().noise.level == 1.0
+
+    def test_a_block_passing_noise_through_does_not_claim_ownership(self, observed):
+        """Signal blocks return the same noise object they were handed; that
+        must not make them the owner and frame the real noise block as the
+        intruder on the next cycle."""
+        wheel = Wheel(observed)
+        wheel.add(ConstBlock("signal", 0.5))  # passes noise through untouched
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            wheel.add(self._noise_block("noise", 1.0))
+            wheel.run(2)

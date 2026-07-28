@@ -255,7 +255,9 @@ oversights:
   in `Residuals` — otherwise each group invents its own. It is left out while
   the datasets in play are gap-free, because a field nobody exercises would be
   guessed at rather than designed. **TODO: add it as soon as the simulated data
-  grows gaps** — see the "Deliberately not in the contract yet" section of the
+  grows gaps.** Adding the field later is additive, not breaking; what
+  breaks is the *semantics* (whether the ledger arithmetic and the PSD grid
+  respect it), so the bill is a future behaviour change, not a major version — see the "Deliberately not in the contract yet" section of the
   `Residuals` docstring for the specific decisions it involves (representation,
   whether the Wheel's arithmetic must respect it, what the PSD grid means over
   a gap, and whether windowing becomes a campaign convention too).
@@ -264,8 +266,40 @@ oversights:
   component and have turntable combine them — the last block to write it
   wins. Sample them inside one noise block that publishes a combined model,
   or treat the confusion foreground as a signal block that subtracts from
-  `tdi`. Dropping the model entirely is an error, but one noise block
-  silently overwriting another's is not yet detected.
+  `tdi`, where the ledger *does* combine contributions. The Wheel no longer
+  loses this silently: dropping the model is an error, and a second block
+  writing the slot raises `NoiseOverwrittenWarning`. It stays a warning
+  because handing ownership between blocks may be deliberate.
+- **No lifecycle end.** The `Block` protocol is `start` plus `update` — there
+  is no `close`/`finalize`, and the Wheel never signals that a campaign is
+  over. That matters mainly for the wrap-an-external-process case the protocol
+  invites: the subprocess, MPI job or scratch directory behind your wrapper is
+  yours to tear down. You constructed the block objects and you hold the
+  references, so `run()` returning is the signal; use a context manager on your
+  own wrapper if you want it automatic.
+
+## Scaling
+
+The Wheel's own cost is `n_blocks` × (two full-array copies + one subtraction
+per *other* block) per cycle, so it grows a little faster than linearly in the
+number of blocks. Measured on 4.2M samples × 3 channels (101 MB per copy),
+with do-nothing blocks so this is orchestration only:
+
+| blocks | ms/cycle | ms/block |
+|-------:|---------:|---------:|
+|      1 |       25 |       25 |
+|      4 |      113 |       28 |
+|      8 |      295 |       37 |
+|     16 |      885 |       55 |
+
+Those are one laptop, memory-bandwidth bound, and vary ±20% run to run — the
+shape is the point, not the absolute numbers. The quadratic term does not
+overtake the fixed per-block copies until roughly 16 blocks, so a realistic 5–8 block campaign pays ~0.1–0.3 s per cycle — next
+to nothing against blocks whose samplers each run hundreds of likelihood
+evaluations. If profiling ever says otherwise, forming the full residual once
+per cycle and adding each block's own entry back turns the `O(n_blocks²)` term
+into `O(n_blocks)`; that add-back would live inside the Wheel, never in a
+block.
 
 ## Status
 

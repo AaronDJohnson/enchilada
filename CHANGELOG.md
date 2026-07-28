@@ -58,6 +58,15 @@ First working release of the blocked-Gibbs orchestration layer.
   never sees. Noise is not special: a noise block returns the residual with
   an updated `noise` object (a zero ledger entry), consumed via
   `Residuals.noise_psd` (documented interface `psd(freqs[, channel])`).
+- `NoiseOverwrittenWarning`: `Residuals.noise` is a single slot, so when a
+  second block writes it the first block's model is simply gone -- the Wheel
+  does not combine noise models. That was documented but undetected; it now
+  warns, naming both blocks and the fix (publish one combined model from a
+  single noise block, or make the foreground a signal block where the ledger
+  *does* combine). It stays a warning rather than an error because handing
+  ownership between blocks may be deliberate, and it deliberately stays quiet
+  for the two legitimate cases: one noise block re-estimating every cycle, and
+  a noise block taking over the model the dataset arrived with.
 - `Wheel` boundary guards: `add` verifies `name`/`start`/`update` before
   registering anything; a returned residual may not drop the noise model
   (symmetric with the existing orbit check) and may not contain NaN/inf, which

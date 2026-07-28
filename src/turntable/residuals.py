@@ -107,8 +107,11 @@ class Residuals:
     It is left out for now because the datasets in play are gap-free, and a
     field nobody exercises would be guessed at rather than designed. **TODO:
     add it to the contract as soon as the simulated data grows gaps** -- that
-    is the trigger. Doing it then still costs a breaking change for consumers,
-    so it should land before the first tag if the timing allows.
+    is the trigger. Adding the *field* later is additive and costs consumers
+    nothing; what a late addition breaks is the *semantics* -- whether the
+    Wheel's arithmetic and the PSD grid must respect it -- so the bill is a
+    behaviour change, not a major version. That is why waiting for real gapped
+    data to settle the design beats guessing now.
 
     Whoever picks this up: the decisions are (1) representation -- a boolean
     mask per channel, a list of good-data intervals, or NaN-in-place with a
