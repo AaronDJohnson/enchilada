@@ -1,7 +1,7 @@
 # enchilada
 
-[![CI](https://github.com/AaronDJohnson/turntable/actions/workflows/ci.yml/badge.svg)](https://github.com/AaronDJohnson/turntable/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/AaronDJohnson/turntable/blob/main/LICENSE)
+[![CI](https://github.com/AaronDJohnson/enchilada/actions/workflows/ci.yml/badge.svg)](https://github.com/AaronDJohnson/enchilada/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/AaronDJohnson/enchilada/blob/main/LICENSE)
 
 Blocked-Gibbs global-fit orchestration for LISA.
 
@@ -34,8 +34,8 @@ pip install enchilada      # or: uv add enchilada
 To work on enchilada itself, clone it and use [uv](https://docs.astral.sh/uv/):
 
 ```sh
-git clone https://github.com/AaronDJohnson/turntable.git
-cd turntable   # the repository has not been renamed; the package has
+git clone https://github.com/AaronDJohnson/enchilada.git
+cd enchilada
 uv sync
 ```
 
@@ -89,18 +89,18 @@ wheel.residual()   # the running residual: observed minus every block's model
 ucb.updates          # block internals live on YOUR objects, not the Wheel
 ```
 
-[`examples/demo.ipynb`](https://github.com/AaronDJohnson/turntable/blob/main/examples/demo.ipynb) is the same walkthrough with
+[`examples/demo.ipynb`](https://github.com/AaronDJohnson/enchilada/blob/main/examples/demo.ipynb) is the same walkthrough with
 commentary, plus the `Residuals` long/short name aliases (`Tobs`, `fs`, `dt`,
 ...), the typo catcher, and attaching a constellation ephemeris. For a real
 (toy) sampler — two conjugate-Gibbs source blocks plus a sampled
 white-noise block, converging to known truth — run
-[`examples/toy_fit.py`](https://github.com/AaronDJohnson/turntable/blob/main/examples/toy_fit.py).
+[`examples/toy_fit.py`](https://github.com/AaronDJohnson/enchilada/blob/main/examples/toy_fit.py).
 
-For a **real LISA source class**, [`examples/gb_block_eryn.ipynb`](https://github.com/AaronDJohnson/turntable/blob/main/examples/gb_block_eryn.ipynb)
+For a **real LISA source class**, [`examples/gb_block_eryn.ipynb`](https://github.com/AaronDJohnson/enchilada/blob/main/examples/gb_block_eryn.ipynb)
 fits an injected galactic binary through the Wheel using GBGPU waveforms, an
 Eryn sampler living inside the block, and a fixed LISA noise PSD from LISA
 Analysis Tools. Everything that is *not* enchilada lives in
-[`examples/gb_model.py`](https://github.com/AaronDJohnson/turntable/blob/main/examples/gb_model.py), so the notebook shows only the
+[`examples/gb_model.py`](https://github.com/AaronDJohnson/enchilada/blob/main/examples/gb_model.py), so the notebook shows only the
 enchilada touchpoints. That example needs the external LISA stack (`gbgpu`,
 `eryn`, `lisaanalysistools`) plus `matplotlib`/`corner` for its plots — none of
 which are enchilada dependencies, so it is not exercised by CI. Its outputs are
@@ -109,7 +109,7 @@ not committed; run it to populate them.
 ## Plugging in your sampler
 
 Implement the two-method `Block` protocol — see the docstrings in
-[`src/enchilada/block.py`](https://github.com/AaronDJohnson/turntable/blob/main/src/enchilada/block.py) for the full contract:
+[`src/enchilada/block.py`](https://github.com/AaronDJohnson/enchilada/blob/main/src/enchilada/block.py) for the full contract:
 
 - `name` — unique within a Wheel; identifies you in diagnostics and errors.
 - `start(residual) -> residual` — called once at registration; read the run
@@ -227,7 +227,7 @@ spacecraft positions. `enchilada.orbits.NumericOrbit` tabulates and
 cubic-spline-interpolates an ephemeris, with loaders for LDC/Mojito-style
 HDF5 files (`from_hdf5`) and lisaorbits objects (`from_lisaorbits`); both
 need the `numeric-orbits` extra. See the module docstring in
-[`src/enchilada/orbits.py`](https://github.com/AaronDJohnson/turntable/blob/main/src/enchilada/orbits.py) for frames and
+[`src/enchilada/orbits.py`](https://github.com/AaronDJohnson/enchilada/blob/main/src/enchilada/orbits.py) for frames and
 conventions.
 
 ## Development
@@ -247,7 +247,7 @@ macOS; plus a core-only leg (numpy alone, through 3.14) and a leg that resolves
 to the declared dependency floors, so both claims are tested rather than
 asserted. Tagging `v*` runs the same gate and publishes via PyPI Trusted
 Publishing. See
-[CHANGELOG.md](https://github.com/AaronDJohnson/turntable/blob/main/CHANGELOG.md) for release notes.
+[CHANGELOG.md](https://github.com/AaronDJohnson/enchilada/blob/main/CHANGELOG.md) for release notes.
 
 ## Known limitations
 

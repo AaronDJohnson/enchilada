@@ -38,10 +38,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/AaronDJohnson/turntable"
-Repository = "https://github.com/AaronDJohnson/turntable"
-Changelog = "https://github.com/AaronDJohnson/turntable/blob/main/CHANGELOG.md"
-Issues = "https://github.com/AaronDJohnson/turntable/issues"
+Homepage = "https://github.com/AaronDJohnson/enchilada"
+Repository = "https://github.com/AaronDJohnson/enchilada"
+Changelog = "https://github.com/AaronDJohnson/enchilada/blob/main/CHANGELOG.md"
+Issues = "https://github.com/AaronDJohnson/enchilada/issues"
 
 [project.optional-dependencies]
 numeric-orbits = [
