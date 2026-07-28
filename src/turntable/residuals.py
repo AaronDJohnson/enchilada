@@ -128,9 +128,6 @@ class Residuals:
     channels: tuple[str, ...]
     tdi_generation: str
     observable: str
-    #: Number of *time-domain* samples. Leave it out (the ``0`` sentinel) for
-    #: time-domain data and it is read off the tdi arrays, which carry it
-    #: exactly. Frequency-domain data must state it -- see the class docstring.
     n_samples: int = 0
     epoch: float = 0.0
     domain: str = "time"
