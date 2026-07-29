@@ -308,5 +308,6 @@ block.
 
 ## Status
 
-Pre-release (0.1.0, unreleased) under active development: interfaces may
-still move until the first tag. MIT licensed. Issues and questions welcome.
+0.1.0 — the first tagged release, and an alpha: the protocol is settled enough
+to build blocks against, but interfaces may still move, so pin a version for a
+running campaign. MIT licensed. Issues and questions welcome.

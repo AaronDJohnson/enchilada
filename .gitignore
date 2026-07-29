@@ -14,7 +14,7 @@ wheels/
 .ruff_cache/
 .DS_Store
 
-# Large data + output files (turntable carries no data; keep it that way).
+# Large data + output files (enchilada carries no data; keep it that way).
 # Use `git add -f <file>` to track an exception deliberately.
 *.h5
 *.hdf5

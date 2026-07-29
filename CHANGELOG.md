@@ -4,7 +4,7 @@ All notable changes to enchilada are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow
 [SemVer](https://semver.org/) once tagged.
 
-## [0.1.0] — unreleased
+## [0.1.0] — 2026-07-29
 
 First working release of the blocked-Gibbs orchestration layer.
 
