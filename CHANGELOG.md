@@ -4,6 +4,24 @@ All notable changes to enchilada are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow
 [SemVer](https://semver.org/) once tagged.
 
+## [Unreleased]
+
+### Added
+- `examples/requirements-gb.txt` -- one command for the external stack the
+  galactic-binary example needs (`uv pip install -r examples/requirements-gb.txt`),
+  replacing a prose list of five package names in the README. Deliberately a
+  requirements file rather than an extra: an extra would put a promise in
+  enchilada's *published metadata* about a stack enchilada does not control,
+  and one that cannot be kept everywhere. `gbgpu` and `lisaanalysistools` ship
+  wheels but no sdist, so the example runs on Python 3.12-3.13 on Linux or
+  Apple-silicon macOS only; Intel macOS, Windows and 3.14 get
+  "No matching distribution found" rather than a build error. That matrix now
+  lives in the file's header. Promoting this to a `[gb-example]` extra later is
+  additive; removing a published extra would not be, which is why it starts
+  here. The notebook also opens with a preflight cell naming the missing
+  packages and the install command, instead of an ImportError from inside
+  `gb_model.py`.
+
 ## [0.1.0] — 2026-07-29
 
 First working release of the blocked-Gibbs orchestration layer.

@@ -76,6 +76,7 @@ source-include = [
     "tests/**/*.py",
     "examples/**/*.py",
     "examples/**/*.ipynb",
+    "examples/**/*.txt",
     "CHANGELOG.md",
 ]
 

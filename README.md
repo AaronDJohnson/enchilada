@@ -101,10 +101,20 @@ fits an injected galactic binary through the Wheel using GBGPU waveforms, an
 Eryn sampler living inside the block, and a fixed LISA noise PSD from LISA
 Analysis Tools. Everything that is *not* enchilada lives in
 [`examples/gb_model.py`](https://github.com/AaronDJohnson/enchilada/blob/main/examples/gb_model.py), so the notebook shows only the
-enchilada touchpoints. That example needs the external LISA stack (`gbgpu`,
-`eryn`, `lisaanalysistools`) plus `matplotlib`/`corner` for its plots — none of
-which are enchilada dependencies, so it is not exercised by CI. Its outputs are
-not committed; run it to populate them.
+enchilada touchpoints. That example needs an external LISA stack — none of it
+an enchilada dependency, so it is not exercised by CI:
+
+```sh
+uv pip install -r examples/requirements-gb.txt   # then --extra examples for JupyterLab
+```
+
+Every piece of it ships wheels, so nothing compiles. But `gbgpu` and
+`lisaanalysistools` publish *no* sdist, which fixes the example's window
+narrower than enchilada's own: **Python 3.12–3.13, on Linux or Apple-silicon
+macOS**. Intel macOS, Windows, and 3.14 have no wheels, and pip reports that as
+`No matching distribution found` rather than a build error — see the header of
+[`examples/requirements-gb.txt`](https://github.com/AaronDJohnson/enchilada/blob/main/examples/requirements-gb.txt)
+for the full matrix. Its outputs are not committed; run it to populate them.
 
 ## Plugging in your sampler
 

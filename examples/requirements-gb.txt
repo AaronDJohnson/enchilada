@@ -1,0 +1,37 @@
+# External stack for examples/gb_block_eryn.ipynb (the galactic-binary example).
+#
+#     uv pip install -r examples/requirements-gb.txt
+#
+# JupyterLab is not listed here -- it comes from enchilada's own `examples`
+# extra (`uv sync --extra examples`), since every notebook needs it.
+#
+# None of these are enchilada dependencies, and this is deliberately a
+# requirements file rather than an extra: the example demonstrates that a real
+# LISA source-class sampler plugs into the Wheel, it is not part of the
+# package's contract. An extra would put a promise in enchilada's published
+# metadata about a stack enchilada does not control -- and one that cannot be
+# kept on every platform (see below). Promoting this to `[gb-example]` later is
+# additive; removing a published extra is a metadata break.
+#
+# Platform support, read off the PyPI wheel tags. `gbgpu` and
+# `lisaanalysistools` publish wheels ONLY -- no sdist -- so an unsupported
+# platform fails with "No matching distribution found" rather than a build
+# error, which reads like a typo instead of "not supported here":
+#
+#   Linux x86_64 / aarch64    Python 3.12, 3.13    ok
+#   macOS arm64               Python 3.12, 3.13    ok
+#   macOS x86_64 (Intel)      --                   lisaanalysistools is arm64-only
+#   Windows                   --                   neither package builds for it
+#   any platform              Python 3.14          no wheels yet (enchilada itself
+#                                                  supports 3.14; this example
+#                                                  does not)
+#
+# Floors are the versions the example was verified against, not guesses --
+# `uv pip compile` resolves this set cleanly on both 3.12 and 3.13.
+gbgpu>=1.2.4
+eryn>=1.2.6
+lisaanalysistools>=1.2.8
+
+# Plots only: the residual/PSD figure and the final corner plot.
+matplotlib>=3.11.1
+corner>=2.3.0
