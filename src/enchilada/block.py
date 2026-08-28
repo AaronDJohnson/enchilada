@@ -1,6 +1,6 @@
 from typing import Protocol, runtime_checkable
 
-from enchilada.residuals import L1Data
+from enchilada.data import L1Data
 
 
 @runtime_checkable

@@ -6,7 +6,7 @@ from typing import ClassVar
 import numpy as np
 
 from enchilada.block import Block
-from enchilada.residuals import L1Data
+from enchilada.data import L1Data
 
 
 class ModelWithdrawnWarning(RuntimeWarning):

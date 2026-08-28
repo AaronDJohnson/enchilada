@@ -2,8 +2,8 @@ from dataclasses import replace  # re-exported: every block needs it
 from importlib.metadata import PackageNotFoundError, version
 
 from enchilada.block import Block, NoiseBlock
+from enchilada.data import L1Data
 from enchilada.orbits import NumericOrbit, Orbit
-from enchilada.residuals import L1Data
 from enchilada.wheel import (
     ModelWithdrawnWarning,
     NoiseOverwrittenWarning,

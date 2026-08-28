@@ -13,7 +13,7 @@ end-to-end without needing a real waveform model:
 import numpy as np
 
 from enchilada.block import Block
-from enchilada.residuals import L1Data
+from enchilada.data import L1Data
 
 
 class EchoBlock:

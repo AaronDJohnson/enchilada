@@ -126,7 +126,7 @@ def test_readme_names_only_real_exports():
     # an attribute lookup.
     prose = re.sub(r"https?://\S+", "", README.read_text())
     mentioned = set(re.findall(r"\benchilada\.([A-Za-z_][A-Za-z0-9_]*)", prose))
-    submodules = {"testing", "orbits", "residuals", "block", "wheel"}
+    submodules = {"testing", "orbits", "data", "block", "wheel"}
     for name in mentioned - submodules:
         assert hasattr(enchilada, name), (
             f"README references enchilada.{name}, which does not exist"

@@ -28,7 +28,8 @@ All notable changes to enchilada are documented here. The format follows
   data the run starts from, the residual a block is handed, and the model it
   returns. **Breaking**: `from enchilada import Residuals` no longer resolves;
   replace it with `L1Data` (constructor, `.aliases()`, `.noise_psd`, ... are
-  otherwise unchanged). Module names (`enchilada.residuals`) and the
+  otherwise unchanged). The module moves with it: `enchilada.residuals` is now
+  `enchilada.data` (import `L1Data` from the package root as before). The
   `residual` parameter names in `Block.start`/`Block.update` are kept.
 
 ## [0.1.0] — 2026-07-29
