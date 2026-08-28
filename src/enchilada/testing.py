@@ -13,7 +13,7 @@ end-to-end without needing a real waveform model:
 import numpy as np
 
 from enchilada.block import Block
-from enchilada.residuals import L1
+from enchilada.residuals import L1Data
 
 
 class EchoBlock:
@@ -31,7 +31,7 @@ class EchoBlock:
         self.name = name
         self.updates = 0
 
-    def start(self, residual: L1) -> L1:
+    def start(self, residual: L1Data) -> L1Data:
         """Print the run settings the Wheel handed over, and subtract nothing.
 
         Registration is where a real block would read the conventions off the
@@ -46,7 +46,7 @@ class EchoBlock:
         )
         return residual
 
-    def update(self, residual: L1) -> L1:
+    def update(self, residual: L1Data) -> L1Data:
         """Print the RMS of the residual handed over, and return it unchanged.
 
         Because the model stays zero, the ledger entry stays zero and no other
@@ -63,13 +63,13 @@ class EchoBlock:
         return residual
 
 
-def check_block(block: Block, observed: L1, n_cycles: int = 2) -> None:
+def check_block(block: Block, observed: L1Data, n_cycles: int = 2) -> None:
     """Conformance check for a `Block` implementation.
 
     Drives the full Wheel protocol against `observed` on a scratch Wheel and
     verifies:
 
-    - `start` returns a valid `L1` that keeps every run setting
+    - `start` returns a valid `L1Data` that keeps every run setting
       unchanged (only `tdi`/`noise` may move);
     - each of `n_cycles` block updates does the same (mid-run drift raises);
     - if the block sets a noise model on the residual (a noise block),

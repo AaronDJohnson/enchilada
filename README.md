@@ -61,7 +61,7 @@ enough to watch the Wheel hand each block its residual. The whole thing is:
 <!-- runnable -->
 ```python
 import numpy as np
-from enchilada import L1, Wheel
+from enchilada import L1Data, Wheel
 from enchilada.testing import EchoBlock
 
 rng = np.random.default_rng(0)
@@ -69,7 +69,7 @@ n_samples = 1024
 channels = ("A", "E", "T")
 
 # One frozen object holds the TDI arrays and the run settings everyone shares.
-observed = L1(
+observed = L1Data(
     tdi={ch: rng.standard_normal(n_samples) for ch in channels},
     sample_rate=0.1,
     channels=channels,
@@ -90,7 +90,7 @@ ucb.updates          # block internals live on YOUR objects, not the Wheel
 ```
 
 [`examples/demo.ipynb`](https://github.com/AaronDJohnson/enchilada/blob/main/examples/demo.ipynb) is the same walkthrough with
-commentary, plus the `L1` long/short name aliases (`Tobs`, `fs`, `dt`,
+commentary, plus the `L1Data` long/short name aliases (`Tobs`, `fs`, `dt`,
 ...), the typo catcher, and attaching a constellation ephemeris. For a real
 (toy) sampler — two conjugate-Gibbs source blocks plus a sampled
 white-noise block, converging to known truth — run
@@ -139,8 +139,8 @@ every block needs it to return an updated residual.
 A block that models the noise instead of a signal removes nothing from the
 data; it returns the residual with an updated `noise` object —
 `replace(residual, noise=my_model)` (so its ledger entry is zero) — and signal
-blocks read it back through `L1.noise_psd` for a frequency-domain
-weight, or `L1.noise_variance` for the per-sample variance a time-domain
+blocks read it back through `L1Data.noise_psd` for a frequency-domain
+weight, or `L1Data.noise_variance` for the per-sample variance a time-domain
 likelihood needs (enchilada does the PSD integration, including the Nyquist
 weighting, so the answer does not depend on the parity of `n_samples`).
 
@@ -167,7 +167,7 @@ check_block(MyBlock(name="ucb"), toy_observed)
 
 It drives the full protocol on a scratch Wheel and raises a pointed error at
 the first violation (a `start`/`update` that returns something other than a
-valid `L1`, changes a fixed run setting, or — for a noise block —
+valid `L1Data`, changes a fixed run setting, or — for a noise block —
 puts a model on the residual that fails the noise contract). It needn't check
 the residual bookkeeping — the Wheel owns that — but whether your *sampler*
 recovers truth is still yours to verify; `examples/toy_fit.py` is the pattern.
@@ -175,7 +175,7 @@ recovers truth is still yours to verify; `examples/toy_fit.py` is the pattern.
 ## Conventions and consistency checking
 
 Cross-group runs fail through silently mismatched conventions, so enchilada
-makes every convention an explicit, validated part of `L1`:
+makes every convention an explicit, validated part of `L1Data`:
 
 - `observable` (required) — what the TDI samples physically are:
   `"fractional_frequency"`, `"phase"`, `"strain"`, or a campaign-agreed
@@ -190,7 +190,7 @@ makes every convention an explicit, validated part of `L1`:
   off them; `residual.to_frequency()` then carries it across the transform:
 
   ```python
-  observed = L1(tdi=time_series, sample_rate=fs, channels=("A", "E"),
+  observed = L1Data(tdi=time_series, sample_rate=fs, channels=("A", "E"),
                        tdi_generation="1.5", observable="fractional_frequency")
   spectrum = observed.to_frequency()      # n_samples rides along
   ```
@@ -203,21 +203,21 @@ makes every convention an explicit, validated part of `L1`:
   `n_samples`, because `n // 2 + 1` bins fit both n=1024 and n=1025, which mean
   different `Tobs` and `df`.
 - `channels` — names imply the campaign's normalized definitions
-  (e.g. A = (Z − X)/√2); see the `L1` docstring.
+  (e.g. A = (Z − X)/√2); see the `L1Data` docstring.
 
 And it checks consistency at every boundary, failing loudly rather than
 producing quietly wrong science:
 
-- `L1` validates itself on every construction: tdi keys must equal
+- `L1Data` validates itself on every construction: tdi keys must equal
   `channels`, array lengths must match `domain`/`n_samples`, and an attached
   orbit must span the observation (catching GPS-vs-zero-based epoch
   mismatches at construction, not mid-run).
 - The `Wheel` validates each block fully **before** registering it (`name`,
   `start` *and* `update`, so a failed `add` changes nothing), and re-validates the
-  residual returned by every `start`/`update`: it must be a `L1` that kept
+  residual returned by every `start`/`update`: it must be an `L1Data` that kept
   the fixed run settings, must not have dropped the noise model, and must be
   finite — a NaN from a blown-up sampler is refused rather than handed to every
-  block updated after it. `L1` itself rejects wrong tdi shapes *and
+  block updated after it. `L1Data` itself rejects wrong tdi shapes *and
   dtypes*, so a mid-run drift raises immediately instead of corrupting the next
   block's residual. A noise model is checked where it is consumed
   (`noise_psd`/`noise_variance` raise if it lacks a `psd` method).
@@ -232,7 +232,7 @@ producing quietly wrong science:
 ## Orbits
 
 The constellation ephemeris the data was produced with rides on
-`L1.orbit` so every block builds its response from the *same*
+`L1Data.orbit` so every block builds its response from the *same*
 spacecraft positions. `enchilada.orbits.NumericOrbit` tabulates and
 cubic-spline-interpolates an ephemeris, with loaders for LDC/Mojito-style
 HDF5 files (`from_hdf5`) and lisaorbits objects (`from_lisaorbits`); both
@@ -267,16 +267,16 @@ oversights:
 - **No data-quality / gap mask.** Every sample is treated as carrying
   information. Real LISA data has scheduled gaps (antenna repointing) and
   excised glitches, and a mask is exactly the kind of convention that belongs
-  in `L1` — otherwise each group invents its own. It is left out while
+  in `L1Data` — otherwise each group invents its own. It is left out while
   the datasets in play are gap-free, because a field nobody exercises would be
   guessed at rather than designed. **TODO: add it as soon as the simulated data
   grows gaps.** Adding the field later is additive, not breaking; what
   breaks is the *semantics* (whether the ledger arithmetic and the PSD grid
   respect it), so the bill is a future behaviour change, not a major version — see the "Deliberately not in the contract yet" section of the
-  `L1` docstring for the specific decisions it involves (representation,
+  `L1Data` docstring for the specific decisions it involves (representation,
   whether the Wheel's arithmetic must respect it, what the PSD grid means over
   a gap, and whether windowing becomes a campaign convention too).
-- **One noise model at a time.** `L1.noise` is a single slot, so two
+- **One noise model at a time.** `L1Data.noise` is a single slot, so two
   noise blocks (say instrument noise and galactic confusion) cannot each own a
   component and have enchilada combine them — the last block to write it
   wins. Sample them inside one noise block that publishes a combined model,

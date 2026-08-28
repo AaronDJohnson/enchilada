@@ -1,6 +1,6 @@
 from typing import Protocol, runtime_checkable
 
-from enchilada.residuals import L1
+from enchilada.residuals import L1Data
 
 
 @runtime_checkable
@@ -63,11 +63,11 @@ class Block(Protocol):
     Implementation notes:
         - `name` must be unique within a Wheel; it identifies your block in
           diagnostics and error messages.
-        - Return a `L1` with the same run settings you were handed
+        - Return an `L1Data` with the same run settings you were handed
           (`channels`, `n_samples`, `sample_rate`, `domain`, `epoch`,
           `tdi_generation`, `observable`, `orbit`); only `tdi` and `noise` may
           change. The Wheel validates this after `start` and every `update`, and
-          `L1` itself validates that your `tdi` keeps the right keys and
+          `L1Data` itself validates that your `tdi` keeps the right keys and
           shapes.
         - You are handed a fresh copy of the `tdi` arrays each call, so you may
           mutate them in place if convenient; just return the result. The
@@ -91,7 +91,7 @@ class Block(Protocol):
 
     name: str
 
-    def start(self, residual: L1) -> L1:
+    def start(self, residual: L1Data) -> L1Data:
         """Join a run: set yourself up and return the residual you produce.
 
         Called once when the block is added to a Wheel. `residual` is the
@@ -102,7 +102,7 @@ class Block(Protocol):
         """
         ...
 
-    def update(self, residual: L1) -> L1:
+    def update(self, residual: L1Data) -> L1Data:
         """Perform one block update: revise your model, return the residual.
 
         Args:
@@ -134,11 +134,11 @@ class NoiseBlock(Block, Protocol):
             return replace(residual, noise=model)
 
     The `noise` object it puts on the residual is consumed by signal blocks
-    through `L1.noise_psd` (and `L1.noise_variance`, which
+    through `L1Data.noise_psd` (and `L1Data.noise_variance`, which
     integrates it for time-domain use), so it must expose
 
     - ``psd(freqs[, channel]) -> ndarray`` -- the one-sided PSD (see
-      `L1.noise_psd` for the pinned normalization convention).
+      `L1Data.noise_psd` for the pinned normalization convention).
 
     `isinstance(block, NoiseBlock)` cannot tell you anything -- it returns True
     for *every* block. That is not a bug to fix: a noise block declares no

@@ -22,6 +22,15 @@ All notable changes to enchilada are documented here. The format follows
   packages and the install command, instead of an ImportError from inside
   `gb_model.py`.
 
+### Changed
+- `Residuals` is renamed `L1Data`. The class is a fairly complete description
+  of the L1 data product, and one type now plays all three roles: the observed
+  data the run starts from, the residual a block is handed, and the model it
+  returns. **Breaking**: `from enchilada import Residuals` no longer resolves;
+  replace it with `L1Data` (constructor, `.aliases()`, `.noise_psd`, ... are
+  otherwise unchanged). Module names (`enchilada.residuals`) and the
+  `residual` parameter names in `Block.start`/`Block.update` are kept.
+
 ## [0.1.0] — 2026-07-29
 
 First working release of the blocked-Gibbs orchestration layer.

@@ -13,7 +13,7 @@ example — the parts a source-class group brings to a global fit:
   so it never reaches back into this module's or the notebook's scope for run
   settings.
 
-The notebook imports these and drives them through enchilada's ``L1`` and
+The notebook imports these and drives them through enchilada's ``L1Data`` and
 ``Wheel``; keeping them here makes it obvious which code is enchilada and which
 is the model plugged into it.
 
@@ -26,8 +26,7 @@ from dataclasses import replace
 
 import numpy as np
 from eryn.ensemble import EnsembleSampler
-from eryn.prior import ProbDistContainer
-from eryn.prior import UniformDistribution
+from eryn.prior import ProbDistContainer, UniformDistribution
 from eryn.state import State
 from gbgpu.gbgpu import GBGPU
 from lisatools.sensitivity import A1TDISens, get_sensitivity
@@ -82,11 +81,11 @@ def inject_gb(truth, angles, Tobs, dt, n_samples, channels, noise, NB=128, seed=
 
     Note this dataset never exists as a time series -- GBGPU emits narrowband
     frequency-domain templates directly -- which is why the caller must state
-    ``n_samples`` when wrapping it in a ``L1``. Data loaded as a time
-    series instead gets it derived, and ``L1.to_frequency()`` carries it.
+    ``n_samples`` when wrapping it in an ``L1Data``. Data loaded as a time
+    series instead gets it derived, and ``L1Data.to_frequency()`` carries it.
 
     Returns ``(tdi, info)``: ``tdi`` is the channel->array dict to wrap in a
-    ``L1``; ``info`` carries ``band``, the noiseless ``signal``, the
+    ``L1Data``; ``info`` carries ``band``, the noiseless ``signal``, the
     optimal ``snr``, and the template's ``start_ind`` for diagnostics.
     """
     df = 1.0 / Tobs

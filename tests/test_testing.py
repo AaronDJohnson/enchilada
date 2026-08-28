@@ -25,9 +25,9 @@ class TestCheckBlock:
     def test_non_residual_return_caught(self, observed):
         class Bad(EchoBlock):
             def update(self, residual):
-                return {"A": np.zeros(1)}  # not a L1
+                return {"A": np.zeros(1)}  # not an L1Data
 
-        with pytest.raises(TypeError, match="must return a L1"):
+        with pytest.raises(TypeError, match="must return an L1Data"):
             check_block(Bad(name="bad"), observed)
 
     def test_changed_run_setting_caught(self, observed):

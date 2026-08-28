@@ -1,4 +1,4 @@
-"""Minimal enchilada demo: the L1 / Block / Wheel plumbing, end to end.
+"""Minimal enchilada demo: the L1Data / Block / Wheel plumbing, end to end.
 
 Runs three blocked-Gibbs cycles over two no-op EchoBlocks on synthetic
 data -- no real waveforms or MCMC, just enough to watch the Wheel hand each
@@ -11,7 +11,7 @@ See examples/demo.ipynb for the same walkthrough with commentary.
 
 import numpy as np
 
-from enchilada import L1, Wheel
+from enchilada import L1Data, Wheel
 from enchilada.testing import EchoBlock
 
 # One frozen object holds the TDI arrays and the run settings everyone
@@ -20,7 +20,7 @@ rng = np.random.default_rng(0)
 n_samples = 1024
 channels = ("A", "E", "T")
 
-observed = L1(
+observed = L1Data(
     tdi={ch: rng.standard_normal(n_samples) for ch in channels},
     sample_rate=0.1,
     channels=channels,  # n_samples is read off the arrays in the time domain

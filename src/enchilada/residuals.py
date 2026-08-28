@@ -7,13 +7,13 @@ from enchilada.orbits import Orbit
 
 
 @dataclass(frozen=True, eq=False)
-class L1:
+class L1Data:
     """L1 data plus the fixed settings that say how to interpret it.
 
-    One `L1` object is constructed at the top of a run to hold the observed
+    One `L1Data` object is constructed at the top of a run to hold the observed
     data and the campaign settings (sample rate, channels, epoch, ...). The
-    Wheel produces a new `L1` object each cycle of the wheel with the same
-    metadata fields but freshly computed residual `tdi` -- the data with every 
+    Wheel produces a new `L1Data` object each cycle of the wheel with the same
+    metadata fields but freshly computed residual `tdi` -- the data with every
     other block's current model subtracted.
 
     Every field below is part of the cross-group data contract, and
@@ -41,8 +41,8 @@ class L1:
             **Frequency-domain data must specify it.** An rfft of a length-n
             real series has `n // 2 + 1` bins, which loses the parity of n:
             513 bins are consistent with n=1024 *and* n=1025, and those imply
-            different `Tobs` and `df`. 
-        channels: TDI channel names in this run, e.g. ("A", "E", "T"). 
+            different `Tobs` and `df`.
+        channels: TDI channel names in this run, e.g. ("A", "E", "T").
         tdi_generation: TDI generation string, e.g. "1.5" or "2.0".
         observable: Physical interpretation of the data. Recommended values:
             "fractional_frequency" (relative frequency deviation dnu/nu, the
@@ -52,7 +52,7 @@ class L1:
             correctly, rather than letting each group assume its own.
         domain: "time" (default) or "frequency". Selects the tdi
             representation described above; the model a block returns
-            must keep it (`L1` validates the tdi shapes).
+            must keep it (`L1Data` validates the tdi shapes).
         epoch: GPS seconds corresponding to sample index 0. Defaults to
             ``0.0`` -- fine for synthetic data with no absolute-time
             reference. Set it for real data: it anchors the constellation
@@ -60,14 +60,14 @@ class L1:
             check, and the frequency-domain phase reference. Shadowed by `t0`.
         noise: The current noise/covariance model the residual should be
             whitened with, or `None`. Noise blocks update this field and
-            on the model they return, and the Wheel copies that model to 
+            on the model they return, and the Wheel copies that model to
             every other block. `None` when no noise model is set. See
             `block.NoiseBlock`.
         orbit: The LISA constellation ephemeris  --
             the spacecraft positions every block must share to build its
-            response (see `enchilada.orbits.Orbit`). Currently a *fixed* property 
-            of the dataset, like `epoch`/`tdi_generation`: set it once on the 
-            observed data and the Wheel copies it unchanged. Blocks read `data.orbit` 
+            response (see `enchilada.orbits.Orbit`). Currently a *fixed* property
+            of the dataset, like `epoch`/`tdi_generation`: set it once on the
+            observed data and the Wheel copies it unchanged. Blocks read `data.orbit`
             rather than constructing their own, ensuring every piece
             uses the *same* constellation. `None` lets a block fall back to
             its own default orbit (back-compatible with orbit-less runs).
@@ -76,7 +76,7 @@ class L1:
     the short symbols LISA papers use. Both spellings return the same value
     -- pick whichever reads better in context, but prefer *one* consistently
     within a given block or script so readers are not tracking two
-    vocabularies. Call `L1.aliases()` for the full long-to-short table.
+    vocabularies. Call `L1Data.aliases()` for the full long-to-short table.
 
     Equality is identity (`eq=False`). A generated `__eq__` would compare the
     tdi arrays elementwise and raise "truth value of an array is ambiguous",
@@ -187,9 +187,9 @@ class L1:
     def _resolve_and_check_n_samples(self) -> None:
         """Fill in `n_samples` from the data where that is exact.
 
-        Time domain: read it off the arrays. 
-        Frequency domain: it cannot be recovered from the data (see the `n_samples` field
-        docstring for why), so it must have been stated. 
+        Time domain: read it off the arrays.
+        Frequency domain: it cannot be recovered from the data (see the
+        `n_samples` field docstring for why), so it must have been stated.
         Also validates an explicitly supplied value.
         """
         if self.n_samples == 0:  # sentinel: not supplied
@@ -251,7 +251,8 @@ class L1:
                 )
 
     def _validate_orbit_span(self) -> None:
-        """Check that a tabulated orbit (one exposing t_range) must cover the data span."""
+        """Check that a tabulated orbit (one exposing t_range) covers the data
+        span."""
         if self.orbit is None:
             return
         t_range = getattr(self.orbit, "t_range", None)
@@ -343,15 +344,15 @@ class L1:
 
     # ---- domain transforms (fixing the campaign's FFT convention) ------
 
-    def to_frequency(self) -> "L1":
+    def to_frequency(self) -> "L1Data":
         """Transform the dataset to a one-sided dft (``domain="frequency"``).
 
         Applies the campaign's Fourier convention -- ``X(f) = dt * rfft(x)``,
-        consistent with the :meth:`noise_psd` normalization. ``n_samples`` is 
+        consistent with the :meth:`noise_psd` normalization. ``n_samples`` is
         preserved to ensure the transform is invertible (see :meth:`to_time`).
 
         Data enters a campaign as a time series, so this is the normal way to
-        get a frequency-domain residual: build `L1` from the time
+        get a frequency-domain residual: build `L1Data` from the time
         series (where `n_samples` is read off the arrays) and transform. You
         then never state `n_samples` by hand at all.
 
@@ -364,7 +365,7 @@ class L1:
         }
         return replace(self, tdi=tdi, domain="frequency")
 
-    def to_time(self) -> "L1":
+    def to_time(self) -> "L1Data":
         """Transform the dataset to a time series (``domain="time"``).
 
         Inverts :meth:`to_frequency` exactly -- ``x = irfft(X / dt, n)`` -- for
@@ -404,7 +405,7 @@ class L1:
         The grid has length ``n_samples // 2 + 1``, so in a frequency-domain
         run (`domain="frequency"`) it lines up bin-for-bin with the tdi arrays.
 
-        Normalization is the **one-sided** PSD in units of ``[observable]**2 / Hz``, 
+        Normalization is the **one-sided** PSD in units of ``[observable]**2 / Hz``,
         tied to the ``dt * rfft(x)`` frequency spectrum (see the `tdi` field) by
 
             E[ |X(f)|**2 ] = (Tobs / 2) * S(f)      (interior bins)
@@ -430,7 +431,7 @@ class L1:
             raise TypeError(
                 f"noise object {type(self.noise).__name__} does not expose "
                 f"psd(freqs[, channel]); the model a noise block puts on "
-                f"L1.noise must implement it to serve frequency-domain "
+                f"L1Data.noise must implement it to serve frequency-domain "
                 f"blocks (see block.NoiseBlock for the noise contract)"
             )
         freqs = np.fft.rfftfreq(self.n_samples, d=self.sample_interval)
@@ -441,7 +442,7 @@ class L1:
             if channel is None
             else self.noise.psd(freqs[1:], channel)
         )
-        # Check that the PSD will not produce NaN's. The Wheel only checks 
+        # Check that the PSD will not produce NaN's. The Wheel only checks
         # the tdi field.
         interior = psd[1:]
         if not np.isfinite(interior).all() or np.any(interior <= 0.0):
@@ -496,7 +497,7 @@ class L1:
         "epoch": "t0",
     }
     """Long-name -> short-name table. Both spellings are valid attributes
-    on every `L1` instance and return the same value."""
+    on every `L1Data` instance and return the same value."""
 
     @classmethod
     def aliases(cls) -> dict[str, str]:
@@ -504,7 +505,7 @@ class L1:
 
         Useful for users learning the convention:
 
-            >>> for long, short in L1.aliases().items():
+            >>> for long, short in L1Data.aliases().items():
             ...     print(f"{long:24s} = {short}")
         """
         return dict(cls.ALIASES)
@@ -538,7 +539,7 @@ class L1:
     # `-> Never` does not help: `Never` is the bottom type, assignable to
     # everything, so `x: int = residual.Tobbs` type-checks clean. With the
     # method invisible at type-check time, mypy reports
-    #   "L1" has no attribute "Tobbs"; maybe "Tobs"?
+    #   "L1Data" has no attribute "Tobbs"; maybe "Tobs"?
     # i.e. statically what the runtime does dynamically, while `hasattr` and
     # ordinary attribute access keep working at runtime.
     if not TYPE_CHECKING:  # pragma: no branch - always true at runtime

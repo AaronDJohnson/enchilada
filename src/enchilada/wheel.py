@@ -6,7 +6,7 @@ from typing import ClassVar
 import numpy as np
 
 from enchilada.block import Block
-from enchilada.residuals import L1
+from enchilada.residuals import L1Data
 
 
 class ModelWithdrawnWarning(RuntimeWarning):
@@ -33,7 +33,7 @@ class ModelWithdrawnWarning(RuntimeWarning):
 
 
 class NoiseOverwrittenWarning(RuntimeWarning):
-    """Two blocks are writing `L1.noise`, so one is losing.
+    """Two blocks are writing `L1Data.noise`, so one is losing.
 
     `noise` is a single slot: whichever block writes last owns the model every
     block sees afterwards. That is fine when one noise block owns it, and fine
@@ -82,14 +82,14 @@ class Wheel:
 
     Consistency checking. `add` validates a block fully before recording it
     (`name`, `start` and `update`; a `start` that fails leaves the Wheel
-    untouched), and every `start`/`update` return must be a `L1` that
+    untouched), and every `start`/`update` return must be an `L1Data` that
 
     * kept the fixed run settings (`_INVARIANT`) -- only `tdi` and `noise` move;
     * kept the same `orbit` object;
     * did not drop a noise model that was set;
     * contains no NaN or inf.
 
-    `L1` itself re-validates shapes and dtypes, so a mid-run drift
+    `L1Data` itself re-validates shapes and dtypes, so a mid-run drift
     raises immediately. Two failures are only warnings, because neither can be
     proven wrong from outside: a model that vanishes
     (`ModelWithdrawnWarning`) and a second block writing the single `noise`
@@ -108,7 +108,7 @@ class Wheel:
 
     Typical use:
 
-        observed = L1(tdi=..., sample_rate=...,
+        observed = L1Data(tdi=..., sample_rate=...,
                              channels=("A", "E", "T"),
                              tdi_generation="2.0",
                              observable="fractional_frequency",
@@ -137,7 +137,7 @@ class Wheel:
         "epoch",
     )
 
-    def __init__(self, observed: L1):
+    def __init__(self, observed: L1Data):
         """Start a run from the observed data.
 
         Args:
@@ -155,7 +155,7 @@ class Wheel:
                     f"observed.tdi[{ch!r}] has {n_bad} non-finite sample(s); the "
                     f"data itself is not usable as a residual. If these mark "
                     f"gaps or excised glitches, note that enchilada has no "
-                    f"data-quality mask yet (see the L1 docstring); "
+                    f"data-quality mask yet (see the L1Data docstring); "
                     f"fill or trim them before starting a run."
                 )
         self.observed = observed
@@ -251,7 +251,7 @@ class Wheel:
             if on_cycle is not None:
                 on_cycle(cycle, self)
 
-    def residual(self, exclude: str | None = None) -> L1:
+    def residual(self, exclude: str | None = None) -> L1Data:
         """A residual formed from the ledger, with the current noise on `.noise`.
 
         With no argument: the full residual, observed data minus every
@@ -291,22 +291,18 @@ class Wheel:
             )
         return {ch: arr.copy() for ch, arr in self._ledger[name].items()}
 
-    def _mutable(self, residual: L1) -> L1:
+    def _mutable(self, residual: L1Data) -> L1Data:
         """A copy the block may mutate freely, leaving `residual` pristine so
         the Wheel can diff against it even if the block returns it in place."""
         return replace(
             residual, tdi={ch: arr.copy() for ch, arr in residual.tdi.items()}
         )
 
-    def _contribution(
-        self, handed: L1, returned: L1
-    ) -> dict[str, np.ndarray]:
+    def _contribution(self, handed: L1Data, returned: L1Data) -> dict[str, np.ndarray]:
         """A block's model = what it was handed minus what it returned."""
         return {ch: handed.tdi[ch] - returned.tdi[ch] for ch in self.observed.channels}
 
-    def _adopt(
-        self, name: str, handed: L1, returned: L1, method: str
-    ) -> None:
+    def _adopt(self, name: str, handed: L1Data, returned: L1Data, method: str) -> None:
         """Record a block's new ledger entry and the noise it threaded.
 
         Warns (`ModelWithdrawnWarning`) if a model that was previously non-zero
@@ -339,7 +335,7 @@ class Wheel:
             if self._noise_owner is not None and self._noise_owner != name:
                 warnings.warn(
                     f"{name}.{method} replaced the noise model that "
-                    f"{self._noise_owner!r} owns. `L1.noise` is a single "
+                    f"{self._noise_owner!r} owns. `L1Data.noise` is a single "
                     f"slot -- the Wheel does not combine noise models, so "
                     f"{self._noise_owner!r}'s is now gone and every block sees "
                     f"only {name!r}'s. If you are modelling two components, "
@@ -366,9 +362,9 @@ class Wheel:
         so the message a block author sees names the most basic thing they
         got wrong.
         """
-        if not isinstance(returned, L1):
+        if not isinstance(returned, L1Data):
             raise TypeError(
-                f"{block_name}.{method} must return an L1 object "
+                f"{block_name}.{method} must return an L1Data object "
                 f"(the updated residual), got {type(returned).__name__}"
             )
         for field in self._INVARIANT:
@@ -386,7 +382,7 @@ class Wheel:
             )
         # Losing the noise model is never intentional, and it is silent: every
         # block updated afterwards would whiten against nothing. Guard it the
-        # same way the orbit is guarded -- a block that rebuilds a L1
+        # same way the orbit is guarded -- a block that rebuilds an L1Data
         # from scratch (rather than using `replace`) drops it by accident.
         if self._noise is not None and returned.noise is None:
             raise ValueError(

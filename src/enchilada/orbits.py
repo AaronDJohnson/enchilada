@@ -1,8 +1,8 @@
-"""LISA constellation ephemerides carried on `L1.orbit`.
+"""LISA constellation ephemerides carried on `L1Data.orbit`.
 
 The orbit is a *fixed property of the dataset* -- the spacecraft positions the
 data was produced with -- that every block must share to build its response.
-enchilada carries an orbit object opaquely on `L1.orbit` (like `noise`)
+enchilada carries an orbit object opaquely on `L1Data.orbit` (like `noise`)
 and never interprets it; this module defines the contract (`Orbit`) and the
 concrete forms a dataset can supply.
 
@@ -63,7 +63,7 @@ class Orbit(Protocol):
     retarded times slightly outside the sample span. It should raise rather
     than extrapolate outside its domain of validity, as :class:`NumericOrbit`
     does. Tabulated implementations should also expose ``t_range``; when
-    present, `L1` checks it covers the sample span at construction, so
+    present, `L1Data` checks it covers the sample span at construction, so
     an epoch mismatch fails before any sampling starts.
     """
 
@@ -76,7 +76,7 @@ class Orbit(Protocol):
         """Spacecraft positions at times `t`, in the ecliptic frame.
 
         Args:
-            t: Times in seconds on the same clock as `L1.epoch` --
+            t: Times in seconds on the same clock as `L1Data.epoch` --
                 i.e. absolute mission time, not offsets from the start of the
                 data. Any shape; implementations broadcast over it.
 

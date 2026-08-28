@@ -1,7 +1,7 @@
 [project]
 name = "enchilada"
 version = "0.1.0"
-description = "Blocked-Gibbs global-fit orchestration for LISA: the Wheel/Block/Residuals protocol"
+description = "Blocked-Gibbs global-fit orchestration for LISA: the Wheel/Block/L1Data protocol"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
