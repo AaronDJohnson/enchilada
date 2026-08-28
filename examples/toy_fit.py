@@ -27,7 +27,7 @@ from dataclasses import replace
 
 import numpy as np
 
-from enchilada import Residuals, Wheel
+from enchilada import L1, Wheel
 
 
 class FlatNoise:
@@ -39,7 +39,7 @@ class FlatNoise:
 
     def psd(self, freqs, channel=None):
         # one-sided PSD of white noise with per-sample std `sigma`
-        # (see Residuals.noise_psd for the pinned normalization)
+        # (see L1.noise_psd for the pinned normalization)
         return np.full_like(freqs, 2.0 * self.sigma**2 / self._fs)
 
 
@@ -63,7 +63,7 @@ class SineBlock:
         self._rng = np.random.default_rng(seed)
         self._basis: dict[str, np.ndarray] | None = None
 
-    def start(self, residual: Residuals) -> Residuals:
+    def start(self, residual: L1) -> L1:
         t = residual.epoch + np.arange(residual.n_samples) * residual.dt
         self._basis = {
             ch: np.sin(2.0 * np.pi * self.freq * t) for ch in residual.channels
@@ -71,7 +71,7 @@ class SineBlock:
         # initial amplitude is zero, so we subtract nothing: pass through
         return residual
 
-    def update(self, residual: Residuals) -> Residuals:
+    def update(self, residual: L1) -> L1:
         ch = residual.channels[0]
         s = self._basis[ch]
         # per-sample noise variance from the threaded noise model -- enchilada
@@ -105,10 +105,10 @@ class WhiteNoiseBlock:
         self.chain: list[float] = []
         self._rng = np.random.default_rng(seed)
 
-    def start(self, residual: Residuals) -> Residuals:
+    def start(self, residual: L1) -> L1:
         return replace(residual, noise=FlatNoise(self.sigma, residual.fs))
 
-    def update(self, residual: Residuals) -> Residuals:
+    def update(self, residual: L1) -> L1:
         # residual here is data minus every signal block's model: pure noise
         n_total = sum(arr.size for arr in residual.tdi.values())
         ssr = sum(float(arr @ arr) for arr in residual.tdi.values())
@@ -123,7 +123,7 @@ class WhiteNoiseBlock:
 TRUTH = {"slow": 3.0, "fast": 2.0, "sigma": 0.5}
 
 
-def make_observed(seed: int = 0) -> Residuals:
+def make_observed(seed: int = 0) -> L1:
     """Two sinusoids in white noise on a single channel."""
     rng = np.random.default_rng(seed)
     fs, n = 0.1, 4096
@@ -133,7 +133,7 @@ def make_observed(seed: int = 0) -> Residuals:
         + TRUTH["fast"] * np.sin(2.0 * np.pi * 0.011 * t)
         + rng.normal(0.0, TRUTH["sigma"], n)
     )
-    return Residuals(
+    return L1(
         tdi={"A": data},
         sample_rate=fs,
         channels=("A",),  # n_samples derived from the array

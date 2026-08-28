@@ -7,14 +7,14 @@ from enchilada.orbits import Orbit
 
 
 @dataclass(frozen=True, eq=False)
-class Residuals:
-    """TDI data plus the fixed settings that say how to interpret it.
+class L1:
+    """L1 data plus the fixed settings that say how to interpret it.
 
-    One `Residuals` is constructed at the top of a run to hold the observed
+    One `L1` object is constructed at the top of a run to hold the observed
     data and the campaign settings (sample rate, channels, epoch, ...). The
-    Wheel produces new `Residuals` each cycle of the wheel with the same
-    metadata fields but freshly computed `tdi` -- the data with every other
-    block's current model subtracted.
+    Wheel produces a new `L1` object each cycle of the wheel with the same
+    metadata fields but freshly computed residual `tdi` -- the data with every 
+    other block's current model subtracted.
 
     Every field below is part of the cross-group data contract, and
     `__post_init__` validates the whole object on every construction
@@ -38,48 +38,37 @@ class Residuals:
             **Omit it for time-domain data**: the arrays are exactly that
             long, so it is read off them and stating it again is duplication.
 
-            **Frequency-domain data must state it.** An rfft of a length-n
+            **Frequency-domain data must specify it.** An rfft of a length-n
             real series has `n // 2 + 1` bins, which loses the parity of n:
             513 bins are consistent with n=1024 *and* n=1025, and those imply
-            different `Tobs` and `df`. The data cannot answer the question, so
-            enchilada asks rather than guessing (guessing would silently
-            mis-scale every frequency-domain weight).
-        channels: TDI channel names in this run, e.g. ("A", "E", "T"). A
-            name implies the campaign's agreed channel definition *including
-            normalization* -- e.g. A = (Z - X)/sqrt(2), E = (X - 2Y + Z)/sqrt(6),
-            T = (X + Y + Z)/sqrt(3). Blocks building these combinations
-            differently (unnormalized variants differ by sqrt(2)/sqrt(3)
-            factors) must not join the same run.
+            different `Tobs` and `df`. 
+        channels: TDI channel names in this run, e.g. ("A", "E", "T"). 
         tdi_generation: TDI generation string, e.g. "1.5" or "2.0".
-        observable: What the samples physically are. Recommended values:
+        observable: Physical interpretation of the data. Recommended values:
             "fractional_frequency" (relative frequency deviation dnu/nu, the
             LDC / lisainstrument default), "phase" (radians), "strain".
             Campaign-specific strings are allowed; every block reads this
             one field, so agreement is by construction -- state it once,
             correctly, rather than letting each group assume its own.
         domain: "time" (default) or "frequency". Selects the tdi
-            representation described above; the residual a block returns
-            must keep it (`Residuals` validates the tdi shapes).
+            representation described above; the model a block returns
+            must keep it (`L1` validates the tdi shapes).
         epoch: GPS seconds corresponding to sample index 0. Defaults to
             ``0.0`` -- fine for synthetic data with no absolute-time
             reference. Set it for real data: it anchors the constellation
             response (spacecraft positions at `epoch + n*dt`), the orbit-span
             check, and the frequency-domain phase reference. Shadowed by `t0`.
         noise: The current noise/covariance model the residual should be
-            whitened against, or `None`. Opaque to the Wheel (like a
-            block's own state): a noise block defines its own type and
-            puts it here on the residual it returns, and the Wheel carries
-            that residual to every other block, so signal blocks can
-            weight their likelihood by the *current* noise estimate instead
-            of a hardcoded PSD. `None` when no noise model is set. See
+            whitened with, or `None`. Noise blocks update this field and
+            on the model they return, and the Wheel copies that model to 
+            every other block. `None` when no noise model is set. See
             `block.NoiseBlock`.
-        orbit: The LISA constellation ephemeris the data was produced with --
+        orbit: The LISA constellation ephemeris  --
             the spacecraft positions every block must share to build its
-            response (see `enchilada.orbits.Orbit`). A *fixed* property of the
-            dataset, like `epoch`/`tdi_generation`: set once on the observed
-            data and the Wheel threads it unchanged (it is never sampled).
-            Opaque to the Wheel, exactly like `noise`; blocks read
-            `residual.orbit` rather than constructing their own, so every piece
+            response (see `enchilada.orbits.Orbit`). Currently a *fixed* property 
+            of the dataset, like `epoch`/`tdi_generation`: set it once on the 
+            observed data and the Wheel copies it unchanged. Blocks read `data.orbit` 
+            rather than constructing their own, ensuring every piece
             uses the *same* constellation. `None` lets a block fall back to
             its own default orbit (back-compatible with orbit-less runs).
 
@@ -87,7 +76,7 @@ class Residuals:
     the short symbols LISA papers use. Both spellings return the same value
     -- pick whichever reads better in context, but prefer *one* consistently
     within a given block or script so readers are not tracking two
-    vocabularies. Call `Residuals.aliases()` for the full long-to-short table.
+    vocabularies. Call `L1.aliases()` for the full long-to-short table.
 
     Equality is identity (`eq=False`). A generated `__eq__` would compare the
     tdi arrays elementwise and raise "truth value of an array is ambiguous",
@@ -95,32 +84,6 @@ class Residuals:
     Wheel's orbit check relies on. Use `numpy.allclose` on the arrays to
     compare contents.
 
-    Deliberately *not* in the contract yet: data quality
-    ---------------------------------------------------
-    There is no gap/quality mask. Every sample is currently treated as
-    carrying information, and the ledger arithmetic is defined over whole
-    arrays. Real LISA data will not look like that -- there are scheduled gaps
-    (antenna repointing) and excised glitches -- and when several groups each
-    invent their own mask and windowing, that is exactly the silent divergence
-    the fields above exist to prevent.
-
-    It is left out for now because the datasets in play are gap-free, and a
-    field nobody exercises would be guessed at rather than designed. **TODO:
-    add it to the contract as soon as the simulated data grows gaps** -- that
-    is the trigger. Adding the *field* later is additive and costs consumers
-    nothing; what a late addition breaks is the *semantics* -- whether the
-    Wheel's arithmetic and the PSD grid must respect it -- so the bill is a
-    behaviour change, not a major version. That is why waiting for real gapped
-    data to settle the design beats guessing now.
-
-    Whoever picks this up: the decisions are (1) representation -- a boolean
-    mask per channel, a list of good-data intervals, or NaN-in-place with a
-    validity flag; (2) whether the Wheel's residual arithmetic must respect it
-    or whether masking stays entirely a block concern; (3) what
-    `noise_psd`/`noise_variance` mean over a gapped stretch, since the rfft
-    grid assumes uniform sampling; (4) whether windowing/tapering around gap
-    edges is a campaign convention that belongs here too (`to_frequency`
-    currently applies no window, which is itself an unstated convention).
     """
 
     tdi: dict[str, np.ndarray]
@@ -224,10 +187,10 @@ class Residuals:
     def _resolve_and_check_n_samples(self) -> None:
         """Fill in `n_samples` from the data where that is exact.
 
-        Time domain: read it off the arrays, which carry it exactly. Frequency
-        domain: it cannot be recovered from the data (see the `n_samples` field
-        docstring for why), so it must have been stated. Also validates an
-        explicitly supplied value, hence the name.
+        Time domain: read it off the arrays. 
+        Frequency domain: it cannot be recovered from the data (see the `n_samples` field
+        docstring for why), so it must have been stated. 
+        Also validates an explicitly supplied value.
         """
         if self.n_samples == 0:  # sentinel: not supplied
             first = self.tdi[self.channels[0]]
@@ -253,7 +216,7 @@ class Residuals:
             )
 
     def _validate_tdi_lengths(self) -> None:
-        """Every array lives on this domain's grid, and is real in the time
+        """Check that every array lives on this domain's grid, and is real in the time
         domain."""
         expected = self.n_samples if self.domain == "time" else self.n_samples // 2 + 1
         for ch in self.channels:
@@ -288,7 +251,7 @@ class Residuals:
                 )
 
     def _validate_orbit_span(self) -> None:
-        """A tabulated orbit (one exposing t_range) must cover the data span."""
+        """Check that a tabulated orbit (one exposing t_range) must cover the data span."""
         if self.orbit is None:
             return
         t_range = getattr(self.orbit, "t_range", None)
@@ -378,19 +341,17 @@ class Residuals:
         """LISA shorthand for `epoch` (GPS seconds)."""
         return self.epoch
 
-    # ---- domain transforms (the campaign's FFT convention, in code) ------
+    # ---- domain transforms (fixing the campaign's FFT convention) ------
 
-    def to_frequency(self) -> "Residuals":
-        """This same dataset as a one-sided spectrum (``domain="frequency"``).
+    def to_frequency(self) -> "L1":
+        """Transform the dataset to a one-sided dft (``domain="frequency"``).
 
         Applies the campaign's Fourier convention -- ``X(f) = dt * rfft(x)``,
-        the one :meth:`noise_psd` is normalized against -- so groups cannot
-        disagree about it: it is executed here rather than described. Everything
-        else rides along unchanged, including ``n_samples``, which is what makes
-        the transform invertible (see :meth:`to_time`).
+        consistent with the :meth:`noise_psd` normalization. ``n_samples`` is 
+        preserved to ensure the transform is invertible (see :meth:`to_time`).
 
         Data enters a campaign as a time series, so this is the normal way to
-        get a frequency-domain residual: build the `Residuals` from the time
+        get a frequency-domain residual: build `L1` from the time
         series (where `n_samples` is read off the arrays) and transform. You
         then never state `n_samples` by hand at all.
 
@@ -403,8 +364,8 @@ class Residuals:
         }
         return replace(self, tdi=tdi, domain="frequency")
 
-    def to_time(self) -> "Residuals":
-        """This same dataset as a time series (``domain="time"``).
+    def to_time(self) -> "L1":
+        """Transform the dataset to a time series (``domain="time"``).
 
         Inverts :meth:`to_frequency` exactly -- ``x = irfft(X / dt, n)`` -- for
         *either* parity of ``n``, because ``n_samples`` travelled with the data.
@@ -443,10 +404,8 @@ class Residuals:
         The grid has length ``n_samples // 2 + 1``, so in a frequency-domain
         run (`domain="frequency"`) it lines up bin-for-bin with the tdi arrays.
 
-        Normalization (the convention every group in a run must share -- pinned
-        here for the same reason `observable`/`domain` are). ``psd`` is the
-        **one-sided** PSD in units of ``[observable]**2 / Hz``, tied to the
-        ``dt * rfft(x)`` frequency spectrum (see the `tdi` field) by
+        Normalization is the **one-sided** PSD in units of ``[observable]**2 / Hz``, 
+        tied to the ``dt * rfft(x)`` frequency spectrum (see the `tdi` field) by
 
             E[ |X(f)|**2 ] = (Tobs / 2) * S(f)      (interior bins)
 
@@ -471,7 +430,7 @@ class Residuals:
             raise TypeError(
                 f"noise object {type(self.noise).__name__} does not expose "
                 f"psd(freqs[, channel]); the model a noise block puts on "
-                f"Residuals.noise must implement it to serve frequency-domain "
+                f"L1.noise must implement it to serve frequency-domain "
                 f"blocks (see block.NoiseBlock for the noise contract)"
             )
         freqs = np.fft.rfftfreq(self.n_samples, d=self.sample_interval)
@@ -482,11 +441,8 @@ class Residuals:
             if channel is None
             else self.noise.psd(freqs[1:], channel)
         )
-        # A noise block leaves tdi untouched, so the Wheel's finiteness guard
-        # cannot see it blow up -- the damage travels through this object
-        # instead. An ill-conditioned Whittle/spline fit returning NaN, or a
-        # least-squares PSD going negative in a low-power band, would otherwise
-        # silently hand every later block a NaN or imaginary sigma.
+        # Check that the PSD will not produce NaN's. The Wheel only checks 
+        # the tdi field.
         interior = psd[1:]
         if not np.isfinite(interior).all() or np.any(interior <= 0.0):
             bad = int((~np.isfinite(interior)).sum() + (interior <= 0.0).sum())
@@ -540,7 +496,7 @@ class Residuals:
         "epoch": "t0",
     }
     """Long-name -> short-name table. Both spellings are valid attributes
-    on every `Residuals` instance and return the same value."""
+    on every `L1` instance and return the same value."""
 
     @classmethod
     def aliases(cls) -> dict[str, str]:
@@ -548,7 +504,7 @@ class Residuals:
 
         Useful for users learning the convention:
 
-            >>> for long, short in Residuals.aliases().items():
+            >>> for long, short in L1.aliases().items():
             ...     print(f"{long:24s} = {short}")
         """
         return dict(cls.ALIASES)
@@ -582,7 +538,7 @@ class Residuals:
     # `-> Never` does not help: `Never` is the bottom type, assignable to
     # everything, so `x: int = residual.Tobbs` type-checks clean. With the
     # method invisible at type-check time, mypy reports
-    #   "Residuals" has no attribute "Tobbs"; maybe "Tobs"?
+    #   "L1" has no attribute "Tobbs"; maybe "Tobs"?
     # i.e. statically what the runtime does dynamically, while `hasattr` and
     # ordinary attribute access keep working at runtime.
     if not TYPE_CHECKING:  # pragma: no branch - always true at runtime

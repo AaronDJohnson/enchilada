@@ -1,7 +1,7 @@
 """The py.typed promise: consumer typos are static errors, not silent Any.
 
 enchilada ships py.typed, so its annotations are load-bearing for consumers.
-`Residuals.__getattr__` is therefore hidden from type checkers -- any
+`L1.__getattr__` is therefore hidden from type checkers -- any
 `__getattr__` would tell a checker that every attribute name exists. These
 tests pin that, because the guarantee is documented and easy to regress
 (annotating the method `-> Never` looks equivalent and is not: Never is
@@ -17,9 +17,9 @@ import pytest
 
 CONSUMER = """
 import numpy as np
-from enchilada import Residuals
+from enchilada import L1
 
-r = Residuals(tdi={"A": np.zeros(8)}, sample_rate=1.0, channels=("A",),
+r = L1(tdi={"A": np.zeros(8)}, sample_rate=1.0, channels=("A",),
               tdi_generation="2.0", observable="strain")
 print(r.Tobs)      # correct spelling: must NOT error
 print(r.Tobbs)     # typo in expression position
@@ -50,9 +50,9 @@ def test_consumer_typos_are_static_errors(tmp_path):
 def test_runtime_attribute_hints_still_work():
     import numpy as np
 
-    from enchilada import Residuals
+    from enchilada import L1
 
-    r = Residuals(
+    r = L1(
         tdi={"A": np.zeros(8)},
         sample_rate=1.0,
         channels=("A",),
@@ -98,7 +98,7 @@ def test_public_surface_is_pinned():
         "NoiseOverwrittenWarning",
         "NumericOrbit",
         "Orbit",
-        "Residuals",
+        "L1",
         "Wheel",
         "__version__",
         "replace",

@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from enchilada import Residuals
+from enchilada import L1
 
 
 @pytest.fixture
@@ -10,7 +10,7 @@ def rng():
 
 
 def make_observed(rng, *, n_samples=64, channels=("A", "E", "T"), **overrides):
-    """A small, valid time-domain Residuals to build tests on."""
+    """A small, valid time-domain L1 to build tests on."""
     fields = dict(
         tdi={ch: rng.standard_normal(n_samples) for ch in channels},
         sample_rate=0.5,
@@ -21,7 +21,7 @@ def make_observed(rng, *, n_samples=64, channels=("A", "E", "T"), **overrides):
         epoch=0.0,
     )
     fields.update(overrides)
-    return Residuals(**fields)
+    return L1(**fields)
 
 
 @pytest.fixture

@@ -1,4 +1,4 @@
-"""Residuals: the data contract validates itself and assembles noise grids."""
+"""L1: the data contract validates itself and assembles noise grids."""
 
 from dataclasses import replace
 
@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from conftest import make_observed
-from enchilada import Residuals
+from enchilada import L1
 
 
 class TestPostInitValidation:
@@ -16,7 +16,7 @@ class TestPostInitValidation:
 
     def test_observable_is_required(self, rng):
         with pytest.raises(TypeError, match="observable"):
-            Residuals(
+            L1(
                 tdi={"A": np.zeros(8)},
                 sample_rate=1.0,
                 n_samples=8,
@@ -26,7 +26,7 @@ class TestPostInitValidation:
             )
 
     def test_epoch_is_optional_defaults_to_zero(self, rng):
-        obs = Residuals(
+        obs = L1(
             tdi={"A": np.zeros(8)},
             sample_rate=1.0,
             n_samples=8,
@@ -92,7 +92,7 @@ class TestPostInitValidation:
 
 class TestAliases:
     def test_long_and_short_names_agree(self, observed):
-        for long, short in Residuals.aliases().items():
+        for long, short in L1.aliases().items():
             assert getattr(observed, long) == getattr(observed, short)
 
     def test_typo_catcher_suggests(self, observed):
@@ -274,7 +274,7 @@ class TestNSamplesDerivation:
         return base
 
     def test_time_domain_derives_from_the_arrays(self):
-        r = Residuals(tdi={ch: np.zeros(1024) for ch in ("A", "E")}, **self._kwargs())
+        r = L1(tdi={ch: np.zeros(1024) for ch in ("A", "E")}, **self._kwargs())
         assert r.n_samples == 1024
         assert r.Tobs == 1024 / 0.1
         assert r.df == 1.0 / r.Tobs
@@ -282,15 +282,15 @@ class TestNSamplesDerivation:
     def test_explicit_value_still_honoured_and_checked(self):
         kw = self._kwargs()
         tdi = {ch: np.zeros(1024) for ch in ("A", "E")}
-        assert Residuals(tdi=tdi, n_samples=1024, **kw).n_samples == 1024
+        assert L1(tdi=tdi, n_samples=1024, **kw).n_samples == 1024
         with pytest.raises(ValueError, match="expected 512"):
-            Residuals(tdi=tdi, n_samples=512, **kw)
+            L1(tdi=tdi, n_samples=512, **kw)
 
     def test_frequency_domain_requires_it_and_says_why(self):
         # 513 bins are consistent with n=1024 and n=1025 -- the parity is lost,
         # so enchilada asks instead of guessing
         with pytest.raises(ValueError, match="does not determine it") as exc:
-            Residuals(
+            L1(
                 tdi={ch: np.zeros(513, complex) for ch in ("A", "E")},
                 domain="frequency",
                 **self._kwargs(),
@@ -300,7 +300,7 @@ class TestNSamplesDerivation:
 
     @pytest.mark.parametrize("n", [1024, 1025])
     def test_frequency_domain_accepts_either_parity_when_stated(self, n):
-        r = Residuals(
+        r = L1(
             tdi={ch: np.zeros(n // 2 + 1, complex) for ch in ("A", "E")},
             domain="frequency",
             n_samples=n,
@@ -310,14 +310,14 @@ class TestNSamplesDerivation:
         assert r.Tobs == n / 0.1  # the two parities really do differ
 
     def test_derived_value_survives_replace(self):
-        r = Residuals(tdi={ch: np.zeros(64) for ch in ("A", "E")}, **self._kwargs())
+        r = L1(tdi={ch: np.zeros(64) for ch in ("A", "E")}, **self._kwargs())
         r2 = replace(r, tdi={ch: np.ones(64) for ch in ("A", "E")})
         assert r2.n_samples == 64
 
     def test_derivation_still_validates_every_channel(self):
         # derived from the first channel, but a ragged second one is caught
         with pytest.raises(ValueError, match="has length 60, expected 64"):
-            Residuals(tdi={"A": np.zeros(64), "E": np.zeros(60)}, **self._kwargs())
+            L1(tdi={"A": np.zeros(64), "E": np.zeros(60)}, **self._kwargs())
 
 
 class TestDomainTransforms:
@@ -333,7 +333,7 @@ class TestDomainTransforms:
             observable="fractional_frequency",
         )
         kw.update(over)
-        return Residuals(**kw)
+        return L1(**kw)
 
     @pytest.mark.parametrize("n", [1024, 1025])  # both parities
     def test_round_trip_is_exact(self, n):
@@ -385,7 +385,7 @@ class TestDomainTransforms:
         acc = None
         trials = 40
         for _ in range(trials):
-            t = Residuals(
+            t = L1(
                 tdi={"A": rng.normal(0.0, sigma, n)},
                 sample_rate=fs,
                 channels=("A",),
@@ -463,7 +463,7 @@ class TestNoiseVariance:
             noise=self.White(0.7, fs),
         )
         kw.update(over)
-        return Residuals(**kw)
+        return L1(**kw)
 
     def test_none_without_a_noise_model(self, observed):
         assert observed.noise_variance() is None
@@ -499,7 +499,7 @@ class TestPsdGridAndAliases:
 
     @pytest.mark.parametrize(("n", "fs"), [(64, 0.5), (65, 2.0), (1024, 0.1)])
     def test_psd_is_evaluated_on_the_rfft_grid(self, n, fs):
-        r = Residuals(
+        r = L1(
             tdi={"A": np.zeros(n)},
             sample_rate=fs,
             channels=("A",),

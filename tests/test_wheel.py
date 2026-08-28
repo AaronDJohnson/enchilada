@@ -10,7 +10,7 @@ from conftest import make_observed
 from enchilada import (
     ModelWithdrawnWarning,
     NoiseOverwrittenWarning,
-    Residuals,
+    L1,
     Wheel,
 )
 from enchilada.testing import EchoBlock
@@ -209,7 +209,7 @@ class TestAtomicRegistration:
 
         wheel = Wheel(observed)
         wheel.add(ConstBlock("ok", 1.0))
-        with pytest.raises(TypeError, match="bad.start must return a Residuals"):
+        with pytest.raises(TypeError, match="bad.start must return a L1"):
             wheel.add(BadStart("bad", 0.0))
         with pytest.raises(ValueError, match="unknown block"):
             wheel.contribution("bad")  # not registered
@@ -221,11 +221,11 @@ class TestReturnedResidualValidation:
     def test_non_residual_return_named(self, observed):
         class Bad(ConstBlock):
             def update(self, residual):
-                return {"A": np.zeros(1)}  # a dict, not a Residuals
+                return {"A": np.zeros(1)}  # a dict, not a L1
 
         wheel = Wheel(observed)
         wheel.add(Bad("bad", 0.0))
-        with pytest.raises(TypeError, match="bad.update must return a Residuals"):
+        with pytest.raises(TypeError, match="bad.update must return a L1"):
             wheel.run(1)
 
     def test_changed_run_setting_rejected(self, observed):
@@ -333,7 +333,7 @@ class TestBoundaryGuards:
         class Rebuilder(ConstBlock):
             def update(self, residual):
                 # rebuilds instead of using replace() -> loses noise silently
-                return Residuals(
+                return L1(
                     tdi=residual.tdi,
                     sample_rate=residual.sample_rate,
                     channels=residual.channels,
@@ -504,7 +504,7 @@ class TestBoundaryGuards:
             def update(self, residual):
                 kw = {field: bad}
                 if field in ("channels", "n_samples", "domain"):
-                    # keep tdi self-consistent so Residuals' own checks pass and
+                    # keep tdi self-consistent so L1' own checks pass and
                     # the Wheel's invariant check is what fires
                     if field == "channels":
                         kw["tdi"] = {"A": residual.tdi["A"]}
@@ -696,7 +696,7 @@ class TestObservedDataIsChecked:
 
 
 class TestNoiseOwnership:
-    """`Residuals.noise` is a single slot, so a second writer silently wins.
+    """`L1.noise` is a single slot, so a second writer silently wins.
     The Wheel cannot forbid that (handing ownership over may be deliberate),
     but it must not stay silent either."""
 

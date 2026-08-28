@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 
 import enchilada
-from enchilada import Residuals, Wheel
+from enchilada import L1, Wheel
 
 README = Path(__file__).resolve().parent.parent / "README.md"
 
@@ -55,7 +55,7 @@ def test_every_block_parses(index):
 
 # Public callables a README block may invoke, by the name it is called under.
 _CALLABLES = {
-    "Residuals": Residuals,
+    "L1": L1,
     "Wheel": Wheel,
     "check_block": None,  # filled below; testing imports lazily
 }
@@ -67,7 +67,7 @@ def _keyword_targets():
     targets = dict(_CALLABLES)
     targets["check_block"] = check_block
     # bound-method names are unambiguous across the two public classes
-    for cls in (Wheel, Residuals):
+    for cls in (Wheel, L1):
         for name, member in vars(cls).items():
             if not name.startswith("_") and callable(member):
                 targets.setdefault(name, member)

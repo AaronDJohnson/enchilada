@@ -3,7 +3,7 @@ from importlib.metadata import PackageNotFoundError, version
 
 from enchilada.block import Block, NoiseBlock
 from enchilada.orbits import NumericOrbit, Orbit
-from enchilada.residuals import Residuals
+from enchilada.residuals import L1
 from enchilada.wheel import (
     ModelWithdrawnWarning,
     NoiseOverwrittenWarning,
@@ -22,7 +22,7 @@ __all__ = [
     "NoiseOverwrittenWarning",
     "NumericOrbit",
     "Orbit",
-    "Residuals",
+    "L1",
     "Wheel",
     "__version__",
     "replace",
