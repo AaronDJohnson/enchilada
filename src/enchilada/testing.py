@@ -14,25 +14,25 @@ import numpy as np
 
 from enchilada.block import Block
 from enchilada.data import L1Data
+from enchilada.template import Template
 
 
 class EchoBlock:
     """No-op block that prints what the Wheel passes to it.
 
-    Subtracts nothing (its model is zero), so it returns the residual it was
-    handed unchanged and other blocks are unaffected. Keeps its own update
-    counter as internal state -- like any real block, its internals are
-    its own business. Useful for verifying that the Gibbs ring wires
-    blocks together correctly and that residual metadata survives the
-    round trip.
+    Claims nothing (its template is zero), so other blocks are unaffected.
+    Keeps its own update counter as internal state -- like any real block,
+    its internals are its own business. Useful for verifying that the Gibbs
+    ring wires blocks together correctly and that residual metadata survives
+    the round trip.
     """
 
     def __init__(self, name: str):
         self.name = name
         self.updates = 0
 
-    def start(self, residual: L1Data) -> L1Data:
-        """Print the run settings the Wheel handed over, and subtract nothing.
+    def start(self, residual: L1Data) -> Template:
+        """Print the run settings the Wheel handed over; return a zero template.
 
         Registration is where a real block would read the conventions off the
         residual and set its sampler up; this one just shows you what was
@@ -44,14 +44,14 @@ class EchoBlock:
             f"N={residual.N}, channels={residual.channels}, "
             f"observable={residual.observable!r}, domain={residual.domain!r}"
         )
-        return residual
+        return residual.zero_template()
 
-    def update(self, residual: L1Data) -> L1Data:
-        """Print the RMS of the residual handed over, and return it unchanged.
+    def update(self, residual: L1Data) -> Template:
+        """Print the RMS of the residual handed over; return a zero template.
 
-        Because the model stays zero, the ledger entry stays zero and no other
-        block is affected -- so the RMS you see is the residual as it stands
-        after every other block has subtracted its model this cycle.
+        Because the template stays zero, the ledger entry stays zero and no
+        other block is affected -- so the RMS you see is the residual as it
+        stands with every other block's current template subtracted.
         """
         ch0 = residual.channels[0]
         # abs() so the RMS is real for frequency-domain (complex) data too
@@ -60,7 +60,7 @@ class EchoBlock:
             f"[{self.name}] update {self.updates}: residual RMS on {ch0!r} = {rms:.4e}"
         )
         self.updates += 1
-        return residual
+        return residual.zero_template()
 
 
 def check_block(block: Block, observed: L1Data, n_cycles: int = 2) -> None:
@@ -69,18 +69,16 @@ def check_block(block: Block, observed: L1Data, n_cycles: int = 2) -> None:
     Drives the full Wheel protocol against `observed` on a scratch Wheel and
     verifies:
 
-    - `start` returns a valid `L1Data` that keeps every run setting
-      unchanged (only `tdi`/`noise` may move);
+    - `start` returns a `Template` on the run's grid (right channels, right
+      lengths, real or complex to match the domain);
     - each of `n_cycles` block updates does the same (mid-run drift raises);
-    - if the block sets a noise model on the residual (a noise block),
-      that model satisfies the consumption contract -- `residual.noise_psd`
-      succeeds rather than raising for want of a `psd` method.
+    - if the block publishes a noise model (a noise block), that model
+      satisfies the consumption contract -- `residual.noise_psd` succeeds
+      rather than raising for want of a `psd` method.
 
-    It also escalates the `ModelWithdrawnWarning` the Wheel merely warns about,
-    so a block that stops re-subtracting its model fails here rather than
-    quietly leaving the fit later. (If your block legitimately drops to a
-    zero model during these cycles -- a death move -- give it a starting state
-    that does not, or filter the warning around your own call.)
+    A block still written for the pre-template contract -- returning the
+    residual with its template subtracted -- fails the first check with a
+    `TypeError`, here rather than in a shared campaign.
 
     It does not check the residual bookkeeping -- the `Wheel` owns that, so
     there is no cross-block arithmetic in a block to get wrong (see the
@@ -94,19 +92,11 @@ def check_block(block: Block, observed: L1Data, n_cycles: int = 2) -> None:
         from enchilada.testing import check_block
         check_block(MyBlock(name="ucb"), toy_observed)
     """
-    import warnings
-
-    from enchilada.wheel import ModelWithdrawnWarning, Wheel
+    from enchilada.wheel import Wheel
 
     wheel = Wheel(observed)
-    # The Wheel only *warns* when a model is withdrawn, because mid-run it
-    # cannot tell a legitimate death move from a forgotten re-subtraction. A
-    # pre-campaign conformance check is exactly where that heuristic should be
-    # strict, so escalate it here.
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", ModelWithdrawnWarning)
-        wheel.add(block)  # start(): validated for a well-formed residual
-        wheel.run(n_cycles)  # update() x n_cycles: each return validated
+    wheel.add(block)  # start(): validated for a well-formed template
+    wheel.run(n_cycles)  # update() x n_cycles: each return validated
 
     # if this block threads a noise model, it must satisfy the contract signal
     # blocks consume it through: a callable psd(freqs[, channel])

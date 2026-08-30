@@ -14,12 +14,12 @@ A LISA global fit has to jointly infer many source populations (galactic
 binaries, massive black-hole binaries, ...) plus the instrument noise, with
 each block typically owned by a different group and sampler. enchilada is the
 orchestration layer — and only that. A `Wheel` keeps the pristine data and a
-**ledger** of each block's current model, and hands every registered
+**ledger** of each block's current template, and hands every registered
 `Block` the data minus *every other* block — exactly the residual that
-block should fit. The block fits it, subtracts its new model, and returns;
-the Wheel reads the block's new ledger entry off the difference. So blocked
-Gibbs falls out of the ring, and there is no "add-back" for a block to
-forget. No waveforms, no likelihoods, and no samplers live here; those belong
+block should fit. The block fits it and returns its new template; the Wheel
+records it and does every subtraction itself. So blocked Gibbs falls out of
+the ring, and there is no "add-back" for a block to forget. No waveforms, no
+likelihoods, and no samplers live here; those belong
 to the blocks (which own their sampler state and can wrap code in any
 language), while the Wheel owns only the residual bookkeeping.
 
@@ -85,7 +85,7 @@ wheel.add(ucb)
 wheel.add(mbhb)
 wheel.run(n_cycles=3)
 
-wheel.residual()   # the running residual: observed minus every block's model
+wheel.residual()   # the running residual: observed minus every block's template
 ucb.updates          # block internals live on YOUR objects, not the Wheel
 ```
 
@@ -122,30 +122,45 @@ Implement the two-method `Block` protocol — see the docstrings in
 [`src/enchilada/block.py`](https://github.com/AaronDJohnson/enchilada/blob/main/src/enchilada/block.py) for the full contract:
 
 - `name` — unique within a Wheel; identifies you in diagnostics and errors.
-- `start(residual) -> residual` — called once at registration; read the run
-  settings off the residual, set yourself up, subtract your initial model,
-  and return the updated residual (return it unchanged if you start from
-  nothing).
-- `update(residual) -> residual` — one block update per cycle. The residual you receive
-  is the data with every **other** block's model subtracted — *not* your
-  own. So it is exactly the data your source class must explain: fit it
-  directly, subtract your new model, and return the result. There is no
-  add-back; the Wheel keeps the ledger and derives your new entry from what
-  you return.
+- `start(residual) -> Template` — called once at registration; read the run
+  settings off the residual, set yourself up, and return your initial
+  template (`residual.zero_template()` if you start from nothing).
+- `update(residual) -> Template` — one block update per cycle. The residual
+  you receive is the data with every **other** block's template subtracted —
+  *not* your own. So it is exactly the data your source class must explain:
+  fit it directly and return your new template. There is no add-back and no
+  subtraction; the Wheel keeps the ledger and subtracts your template on your
+  behalf.
 
-`replace` is re-exported for convenience (`from enchilada import replace`), since
-every block needs it to return an updated residual.
+A **`Template`** is the signal you currently claim, summed over all your
+sources, on the residual's grid. Build it from the residual you were handed,
+which knows that grid:
 
-A block that models the noise instead of a signal removes nothing from the
-data; it returns the residual with an updated `noise` object —
-`replace(residual, noise=my_model)` (so its ledger entry is zero) — and signal
+```python
+def update(self, residual):
+    data = residual.tdi["A"]              # already data minus every OTHER block
+    self.amplitude = self.draw(data)      # your sampler, your state
+    return residual.template({"A": self.amplitude * self.basis})
+```
+
+It is deliberately **not** an `L1Data`. Returning the residual with your
+template subtracted — the natural habit, and what the pre-1.0 protocol asked
+for — produces a perfectly well-formed `L1Data` that no array check can tell
+from a real template, and every other block would then be fitting the wrong
+thing. As a separate type it is a `TypeError` at `Wheel.add`, before a
+campaign starts. A template also cannot carry the run settings or the orbit,
+so neither can drift in transit.
+
+A block that models the noise instead of a signal claims nothing, so its
+template is zero; it returns
+`residual.zero_template().with_noise(my_model)` — and signal
 blocks read it back through `L1Data.noise_psd` for a frequency-domain
 weight, or `L1Data.noise_variance` for the per-sample variance a time-domain
 likelihood needs (enchilada does the PSD integration, including the Nyquist
 weighting, so the answer does not depend on the parity of `n_samples`).
 
 Everything about your sampler is *yours*: parameters, RNG, posterior chains,
-checkpoints, and your own current model all live inside your block object
+checkpoints, and your own current template all live inside your block object
 (or the external process it wraps) — the Wheel never sees or restores them. It
 owns only the residual bookkeeping (the pristine data and the per-block
 ledger). To log progress or checkpoint,
@@ -167,8 +182,8 @@ check_block(MyBlock(name="ucb"), toy_observed)
 
 It drives the full protocol on a scratch Wheel and raises a pointed error at
 the first violation (a `start`/`update` that returns something other than a
-valid `L1Data`, changes a fixed run setting, or — for a noise block —
-puts a model on the residual that fails the noise contract). It needn't check
+`Template`, returns one off the run's grid, or — for a noise block —
+publishes a model that fails the noise contract). It needn't check
 the residual bookkeeping — the Wheel owns that — but whether your *sampler*
 recovers truth is still yours to verify; `examples/toy_fit.py` is the pattern.
 
@@ -183,7 +198,7 @@ makes every convention an explicit, validated part of `L1Data`:
 - `domain` — `"time"` (default, `n_samples` real samples per channel) or
   `"frequency"` (one-sided `dt * rfft(x)` spectra of length
   `n_samples // 2 + 1`). `n_samples` always counts time-domain samples, so
-  `Tobs`/`df`/`dt` and the PSD grid stay well defined in both. The residual a
+  `Tobs`/`df`/`dt` and the PSD grid stay well defined in both. The template a
   block returns must keep the observed representation.
 - `n_samples` — **you should never have to state it.** Data enters a campaign
   as a time series, where the arrays carry it exactly, so enchilada reads it
@@ -213,19 +228,19 @@ producing quietly wrong science:
   orbit must span the observation (catching GPS-vs-zero-based epoch
   mismatches at construction, not mid-run).
 - The `Wheel` validates each block fully **before** registering it (`name`,
-  `start` *and* `update`, so a failed `add` changes nothing), and re-validates the
-  residual returned by every `start`/`update`: it must be an `L1Data` that kept
-  the fixed run settings, must not have dropped the noise model, and must be
-  finite — a NaN from a blown-up sampler is refused rather than handed to every
-  block updated after it. `L1Data` itself rejects wrong tdi shapes *and
-  dtypes*, so a mid-run drift raises immediately instead of corrupting the next
-  block's residual. A noise model is checked where it is consumed
+  `start` *and* `update`, so a failed `add` changes nothing), and re-validates
+  what every `start`/`update` returns: it must be a `Template`, on the run's
+  grid (right channels, right lengths, real in the time domain and complex in
+  the frequency domain), and finite — a NaN from a blown-up sampler is refused
+  rather than handed to every block updated after it. That is the whole list,
+  because a `Template` carries no run settings and no orbit, so neither can
+  drift. A noise model is checked where it is consumed
   (`noise_psd`/`noise_variance` raise if it lacks a `psd` method).
-- Because the ledger is *derived* from what a block returns, a block that
-  hands the residual straight back withdraws its model from the fit. That is
-  almost never intended, so the Wheel warns when a previously non-zero model
-  becomes exactly zero: re-subtract your current model on every block update, even when
-  your parameters did not move.
+- A block still written for the pre-1.0 protocol — returning the residual
+  with its template subtracted — cannot be caught by inspecting arrays: its
+  return is a valid-looking `L1Data`. That is why a template is its own type:
+  the mistake is a `TypeError` naming the migration, raised at `Wheel.add`
+  before a campaign starts, rather than a fit that is quietly wrong.
 - `NumericOrbit.positions` refuses to extrapolate outside its tabulated
   ephemeris instead of returning cubic-polynomial garbage.
 
@@ -280,8 +295,8 @@ oversights:
   noise blocks (say instrument noise and galactic confusion) cannot each own a
   component and have enchilada combine them — the last block to write it
   wins. Sample them inside one noise block that publishes a combined model,
-  or treat the confusion foreground as a signal block that subtracts from
-  `tdi`, where the ledger *does* combine contributions. The Wheel no longer
+  or treat the confusion foreground as a signal block that returns it as a
+  template, where the ledger *does* combine contributions. The Wheel no longer
   loses this silently: dropping the model is an error, and a second block
   writing the slot raises `NoiseOverwrittenWarning`. It stays a warning
   because handing ownership between blocks may be deliberate.
@@ -295,10 +310,12 @@ oversights:
 
 ## Scaling
 
-The Wheel's own cost is `n_blocks` × (two full-array copies + one subtraction
-per *other* block) per cycle, so it grows a little faster than linearly in the
-number of blocks. Measured on 4.2M samples × 3 channels (101 MB per copy),
-with do-nothing blocks so this is orchestration only:
+The Wheel's own cost is `n_blocks` × (one full-array copy per channel, plus
+one subtraction per *other* block) per cycle, so it grows a little faster than
+linearly in the number of blocks. Measured on 4.2M samples × 3 channels (101
+MB per copy), with do-nothing blocks so this is orchestration only. These
+numbers predate the template contract, which removed one of the two copies
+per block, so they are now pessimistic:
 
 | blocks | ms/cycle | ms/block |
 |-------:|---------:|---------:|

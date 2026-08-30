@@ -31,6 +31,56 @@ All notable changes to enchilada are documented here. The format follows
   otherwise unchanged). The module moves with it: `enchilada.residuals` is now
   `enchilada.data` (import `L1Data` from the package root as before). The
   `residual` parameter names in `Block.start`/`Block.update` are kept.
+- **Blocks return a `Template`, not the residual.** `Block.start` and
+  `Block.update` now return the block's *template* -- the signal it currently
+  claims, summed over its sources, on the residual's grid -- instead of the
+  residual with that template subtracted. The Wheel records the template in
+  its ledger and does every subtraction itself, so a block never performs
+  cross-block arithmetic. What each block *receives* is unchanged (the data
+  minus every *other* block), and so are `wheel.residual()`,
+  `wheel.residual(exclude=...)` and `wheel.contribution(...)`.
+
+  Why the template is its own type rather than an `L1Data`: a block still
+  written for the old contract returns `residual - template`, which is a
+  perfectly well-formed `L1Data` that no array check can distinguish from a
+  real template -- every other block would then quietly fit the wrong thing.
+  As a distinct type that migration error is a `TypeError` at `Wheel.add`,
+  before a campaign starts. It also means a template cannot carry the run
+  settings, the orbit, or an unset noise slot, so none of them can drift or be
+  dropped in transit, and the Wheel's five-part return check collapses to
+  three: is it a `Template`, is it on the grid, is it finite. Storing the
+  template directly also keeps it at full precision, rather than recovering it
+  from the difference of two data-sized arrays.
+
+  **Breaking** for every block. Migration:
+
+      # signal block
+      -   return replace(residual, tdi={ch: residual.tdi[ch] - model[ch] ...})
+      +   return residual.template({ch: model[ch] for ch in residual.channels})
+
+      # nothing to subtract (no sources yet, or a death move to zero)
+      -   return residual
+      +   return residual.zero_template()
+
+      # noise block
+      -   return replace(residual, noise=model)
+      +   return residual.zero_template().with_noise(model)
+
+  Every unmigrated shape above raises `TypeError` at `add()`/`run()` naming
+  the fix, so nothing fails silently; `enchilada.testing.check_block` catches
+  it before a block reaches a shared campaign.
+
+### Removed
+- `ModelWithdrawnWarning`, and its escalation inside `check_block`. It
+  existed because a ledger derived from a difference could not tell a
+  legitimate zero model from a block that forgot to re-subtract. Under the
+  template contract a zero template is an explicit return, and the failure it
+  guessed at is now a type error.
+- The Wheel's run-setting (`_INVARIANT`), orbit-identity and
+  dropped-noise-model checks on what a block returns, along with the internal
+  defensive copy each block was handed. A `Template` carries none of those
+  fields, so there is nothing left to guard -- which also removes one
+  full-array copy per block per cycle.
 
 ## [0.1.0] — 2026-07-29
 

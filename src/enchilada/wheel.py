@@ -1,35 +1,12 @@
 import warnings
 from collections.abc import Callable
 from dataclasses import replace
-from typing import ClassVar
 
 import numpy as np
 
 from enchilada.block import Block
 from enchilada.data import L1Data
-
-
-class ModelWithdrawnWarning(RuntimeWarning):
-    """A block's model went from non-zero to exactly zero in one update.
-
-    The ledger is *derived* (what a block was handed minus what it returned),
-    so the Wheel cannot tell these two apart from the outside:
-
-    * the block's model is legitimately zero now -- a reversible-jump block
-      whose last source died, or a cadenced block with nothing to contribute
-      this cycle. Nothing is wrong.
-    * the block failed to re-subtract the model it still believes it has --
-      a wrapper whose external process errored, an all-rejected cycle returned
-      as "no change" -- and its model has silently left the fit.
-
-    It warns rather than raises because it is a heuristic about intent. If the
-    first case is yours, silence it precisely::
-
-        warnings.filterwarnings("ignore", category=enchilada.ModelWithdrawnWarning)
-
-    `enchilada.testing.check_block` escalates it to an error, on the grounds
-    that a conformance check should be strict where a running fit should not.
-    """
+from enchilada.template import Template, check_on_grid
 
 
 class NoiseOverwrittenWarning(RuntimeWarning):
@@ -44,7 +21,7 @@ class NoiseOverwrittenWarning(RuntimeWarning):
 
     Fix it by sampling both components inside a single noise block that
     publishes one combined model, or by treating the foreground as a signal
-    block that subtracts from `tdi` (where the ledger *does* combine
+    block that returns it as a template (where the ledger *does* combine
     contributions). If you really do mean to hand ownership between blocks,
     silence it precisely::
 
@@ -58,42 +35,45 @@ class Wheel:
     """Runs a blocked-Gibbs global fit by handing each block a clean residual.
 
     The Wheel keeps the pristine observed data and a **ledger** -- one entry
-    per block holding that block's current model contribution (its summed
-    waveform, as a channel -> array dict). From those it can form any residual
-    by subtraction, and it hands each block exactly the residual that block
-    should fit: the observed data minus **every other** block's current model
-    (never the block's own). The block fits against that, subtracts its new
-    model, and returns the updated residual; the Wheel reads the block's new
-    ledger entry straight off the difference between what it handed out and what
-    came back.
+    per block holding that block's current **template**: the signal it has
+    fit, summed over all its sources, as a channel -> array dict. From those
+    it forms any residual by subtraction, and it hands each block exactly the
+    residual that block should fit: the observed data minus **every other**
+    block's current template (never the block's own). The block fits against
+    that and returns its new template; the Wheel records it in the ledger and
+    subtracts it on the block's behalf whenever it forms a residual.
 
-    Why this shape. Because a block is only ever shown the data with its own
-    model already removed, there is no "add-back" to remember and no way to
-    forget one -- the classic silent failure of residual passing is structurally
-    impossible here. The ledger is a required, automatically-consistent product
-    of every return; the block never does the cross-block arithmetic.
+    Why this shape. A block is only ever shown the data with its own template
+    already removed, so there is no "add-back" for it to remember -- and it
+    does no cross-block arithmetic at all: it returns what it found, and the
+    Wheel owns every subtraction. Because the template is returned rather than
+    recovered from a difference, it is stored at full precision, and the
+    classic silent failure of residual passing -- handing the residual straight
+    back and having that read as "nothing to subtract" -- is caught exactly
+    (see `_validate_returned`) instead of guessed at.
 
     What lives where. The block owns its *sampler* state -- parameters, RNG,
     chain, checkpoints -- and the Wheel never touches it. The Wheel owns the
-    *residual* state -- the pristine data and the per-block contribution
-    ledger -- and does all the differencing. (This is the split the GLASS
-    global fit uses: blocks own their samplers, the framework owns the residual
+    *residual* state -- the pristine data and the per-block template ledger --
+    and does all the differencing. (This is the split the GLASS global fit
+    uses: blocks own their samplers, the framework owns the residual
     bookkeeping.)
 
     Consistency checking. `add` validates a block fully before recording it
     (`name`, `start` and `update`; a `start` that fails leaves the Wheel
-    untouched), and every `start`/`update` return must be an `L1Data` that
+    untouched), and every `start`/`update` must return a `Template` that lives
+    on the run's grid (the right channels, lengths and real/complex-ness) and
+    contains no NaN or inf.
 
-    * kept the fixed run settings (`_INVARIANT`) -- only `tdi` and `noise` move;
-    * kept the same `orbit` object;
-    * did not drop a noise model that was set;
-    * contains no NaN or inf.
-
-    `L1Data` itself re-validates shapes and dtypes, so a mid-run drift
-    raises immediately. Two failures are only warnings, because neither can be
-    proven wrong from outside: a model that vanishes
-    (`ModelWithdrawnWarning`) and a second block writing the single `noise`
-    slot (`NoiseOverwrittenWarning`).
+    The return type does most of this work. Because a template is not an
+    `L1Data`, it cannot carry the run settings or the orbit, so neither can
+    drift in transit and neither needs guarding; and a block still written for
+    the old contract -- returning the residual with its template subtracted --
+    is a `TypeError` at registration rather than a fit that is quietly wrong
+    (that return is a valid-looking `L1Data`, so no array check could catch
+    it). One failure remains a warning, because it cannot be proven wrong from
+    outside: a second block publishing a noise model
+    (`NoiseOverwrittenWarning`).
 
     Noise. Signal blocks whiten against `residual.noise`. Two ways to supply
     it:
@@ -101,8 +81,8 @@ class Wheel:
     * Fixed noise -- set it once on the observed data
       (`observed = replace(observed, noise=...)`); it rides every handed
       residual and never changes.
-    * Sampled noise -- register a noise block (one that returns the residual
-      with an updated `noise` and its tdi untouched, so its ledger entry is
+    * Sampled noise -- register a noise block (one that returns
+      `residual.zero_template().with_noise(model)`, so its ledger entry is
       zero; see `block.NoiseBlock`). Every block updated after it sees the
       refreshed estimate.
 
@@ -120,22 +100,12 @@ class Wheel:
         wheel.add(noise_block)  # optional; a block that edits residual.noise
         wheel.run(n_cycles=1000)
 
-    `wheel.residual()` is the full residual (data minus every block);
-    `wheel.residual(exclude=name)` is the residual that block sees. For a
+    `wheel.residual()` is the full residual (data minus every block's
+    template); `wheel.residual(exclude=name)` is the residual that block sees;
+    `wheel.contribution(name)` is that block's current template. For a
     block's internals -- its parameters, its chain -- ask the block object
     you constructed and hold.
     """
-
-    # run settings a block must not change: it may only move tdi and noise
-    _INVARIANT: ClassVar[tuple[str, ...]] = (
-        "channels",
-        "n_samples",
-        "sample_rate",
-        "tdi_generation",
-        "observable",
-        "domain",
-        "epoch",
-    )
 
     def __init__(self, observed: L1Data):
         """Start a run from the observed data.
@@ -160,7 +130,7 @@ class Wheel:
                 )
         self.observed = observed
         self._blocks: list[Block] = []
-        # the ledger: name -> that block's current contribution (summed model)
+        # the ledger: name -> that block's current template (its summed signal)
         self._ledger: dict[str, dict[str, np.ndarray]] = {}
         # the current noise model threaded onto every handed residual, and the
         # block that last wrote it (None = the model the dataset arrived with)
@@ -168,7 +138,7 @@ class Wheel:
         self._noise_owner: str | None = None
 
     def add(self, block: Block) -> None:
-        """Register a block: call its `start` and record its contribution.
+        """Register a block: call its `start` and record its template.
 
         `start` is handed the data minus every block already registered
         (carrying the current noise). All validation happens before the Wheel
@@ -192,12 +162,13 @@ class Wheel:
                     f"Block needs `name`, `start` and `update` "
                     f"(see enchilada.block.Block)"
                 )
-        handed = self.residual()  # data minus blocks registered so far
-        returned = block.start(self._mutable(handed))
+        # residual() already builds fresh arrays, so the block may mutate
+        # what it is handed; the ledger and `observed` are untouched either way
+        returned = block.start(self.residual())
         self._validate_returned(returned, name, "start")
         # every check passed -- commit atomically
         self._blocks.append(block)
-        self._adopt(name, handed, returned, "start")
+        self._adopt(name, returned, "start")
 
     def run(
         self,
@@ -207,10 +178,10 @@ class Wheel:
         """Drive the blocked-Gibbs loop for `n_cycles` cycles of the wheel.
 
         One full cycle visits every block once, handing each the data minus
-        every *other* block's current model, validating what it returns, and
-        updating that block's ledger entry from the difference. That is the
-        unit with statistical meaning: only after a complete cycle is every
-        block conditioned on the current value of all the others.
+        every *other* block's current template, validating the template it
+        returns, and recording it in the ledger. That is the unit with
+        statistical meaning: only after a complete cycle is every block
+        conditioned on the current value of all the others.
 
         Three nested scales, three words, so no name does double duty:
 
@@ -245,9 +216,9 @@ class Wheel:
         for cycle in range(n_cycles):
             for block in self._blocks:
                 handed = self.residual(exclude=block.name)  # data minus OTHERS
-                returned = block.update(self._mutable(handed))
+                returned = block.update(handed)
                 self._validate_returned(returned, block.name, "update")
-                self._adopt(block.name, handed, returned, "update")
+                self._adopt(block.name, returned, "update")
             if on_cycle is not None:
                 on_cycle(cycle, self)
 
@@ -255,8 +226,8 @@ class Wheel:
         """A residual formed from the ledger, with the current noise on `.noise`.
 
         With no argument: the full residual, observed data minus every
-        block's current model. Pass `exclude=name` for the residual that
-        block sees -- observed data minus every *other* block's model.
+        block's current template. Pass `exclude=name` for the residual that
+        block sees -- observed data minus every *other* block's template.
         Fresh arrays each call, so callers may mutate freely.
         """
         if exclude is not None and exclude not in self._ledger:
@@ -264,7 +235,7 @@ class Wheel:
                 f"unknown block {exclude!r}; registered: {sorted(self._ledger)}"
             )
         # Promote once, up front, to whatever dtype the observed data and every
-        # subtracted model share -- then the accumulation below can stay
+        # subtracted template share -- then the accumulation below can stay
         # in-place. (Subtracting out-of-place per block would also promote,
         # but allocates a fresh array per block per channel, which is the
         # hot loop: run() calls this once per block per cycle.)
@@ -284,54 +255,23 @@ class Wheel:
         return replace(self.observed, tdi=tdi, noise=self._noise)
 
     def contribution(self, name: str) -> dict[str, np.ndarray]:
-        """The named block's current ledger entry (its summed model)."""
+        """The named block's current ledger entry: its template, as a copy."""
         if name not in self._ledger:
             raise ValueError(
                 f"unknown block {name!r}; registered: {sorted(self._ledger)}"
             )
         return {ch: arr.copy() for ch, arr in self._ledger[name].items()}
 
-    def _mutable(self, residual: L1Data) -> L1Data:
-        """A copy the block may mutate freely, leaving `residual` pristine so
-        the Wheel can diff against it even if the block returns it in place."""
-        return replace(
-            residual, tdi={ch: arr.copy() for ch, arr in residual.tdi.items()}
-        )
+    def _adopt(self, name: str, returned: Template, method: str) -> None:
+        """Record a block's template in the ledger, and any noise it publishes.
 
-    def _contribution(self, handed: L1Data, returned: L1Data) -> dict[str, np.ndarray]:
-        """A block's model = what it was handed minus what it returned."""
-        return {ch: handed.tdi[ch] - returned.tdi[ch] for ch in self.observed.channels}
-
-    def _adopt(self, name: str, handed: L1Data, returned: L1Data, method: str) -> None:
-        """Record a block's new ledger entry and the noise it threaded.
-
-        Warns (`ModelWithdrawnWarning`) if a model that was previously non-zero
-        has become exactly zero -- which may be a legitimate death move or a
-        block that forgot to re-subtract itself. See that class for why the
-        Wheel cannot distinguish them and how to silence it.
+        The ledger takes a *copy*: the block may keep (and later overwrite)
+        the arrays it returned, and the ledger must not move with them.
         """
-        contribution = self._contribution(handed, returned)
-        previous = self._ledger.get(name)
-        if (
-            previous is not None
-            and self._all_zero(contribution)
-            and not self._all_zero(previous)
-        ):
-            warnings.warn(
-                f"{name}.{method}: this block's model went from non-zero to "
-                f"exactly zero, so it now contributes nothing to the fit. If that "
-                f"is intentional (a death move to zero sources, or a cycle with "
-                f"nothing to contribute) this is fine -- silence it with "
-                f"warnings.filterwarnings('ignore', "
-                f"category=enchilada.ModelWithdrawnWarning). If not, remember the "
-                f"ledger is derived from what you return, not remembered: "
-                f"re-subtract your current model on every block update.",
-                ModelWithdrawnWarning,
-                # _adopt -> run/add -> the user's call: 3 frames
-                stacklevel=3,
-            )
-        self._ledger[name] = contribution
-        if returned.noise is not self._noise:  # this block wrote the slot
+        self._ledger[name] = {
+            ch: returned.tdi[ch].copy() for ch in self.observed.channels
+        }
+        if returned.noise is not None:  # this block published a model
             if self._noise_owner is not None and self._noise_owner != name:
                 warnings.warn(
                     f"{name}.{method} replaced the noise model that "
@@ -346,62 +286,49 @@ class Wheel:
                     stacklevel=3,
                 )
             self._noise_owner = name
-        self._noise = returned.noise
-
-    @staticmethod
-    def _all_zero(contribution: dict[str, np.ndarray]) -> bool:
-        return all(not np.any(arr) for arr in contribution.values())
+            self._noise = returned.noise
 
     def _validate_returned(
         self, returned: object, block_name: str, method: str
     ) -> None:
-        """Refuse a return that would corrupt the run, in five checks.
+        """Refuse a return that would corrupt the run, in three checks.
 
-        Type, then the fixed run settings, then orbit identity, then the noise
-        model, then finiteness -- ordered cheapest-and-most-fundamental first
-        so the message a block author sees names the most basic thing they
-        got wrong.
+        Type, then the grid, then finiteness -- ordered
+        cheapest-and-most-fundamental first so the message a block author sees
+        names the most basic thing they got wrong. This is the whole list: a
+        `Template` carries no run settings and no orbit, so there is nothing
+        else left to drift.
         """
-        if not isinstance(returned, L1Data):
+        if not isinstance(returned, Template):
+            extra = (
+                " -- a block returns only its own template now, never the "
+                "residual with that template subtracted; build it with "
+                "`residual.template({...})`, or `residual.zero_template()` "
+                "when there is nothing to subtract"
+                if isinstance(returned, L1Data)
+                else ""
+            )
             raise TypeError(
-                f"{block_name}.{method} must return an L1Data object "
-                f"(the updated residual), got {type(returned).__name__}"
+                f"{block_name}.{method} must return a Template (the signal this "
+                f"block claims), got {type(returned).__name__}{extra}"
             )
-        for field in self._INVARIANT:
-            if getattr(returned, field) != getattr(self.observed, field):
-                raise ValueError(
-                    f"{block_name}.{method} changed the run setting {field!r} "
-                    f"({getattr(self.observed, field)!r} -> "
-                    f"{getattr(returned, field)!r}); a block may only update "
-                    f"tdi and noise, not the fixed run settings"
-                )
-        if returned.orbit is not self.observed.orbit:
-            raise ValueError(
-                f"{block_name}.{method} changed the orbit; it is a fixed "
-                f"property of the dataset and must be passed through unchanged"
-            )
-        # Losing the noise model is never intentional, and it is silent: every
-        # block updated afterwards would whiten against nothing. Guard it the
-        # same way the orbit is guarded -- a block that rebuilds an L1Data
-        # from scratch (rather than using `replace`) drops it by accident.
-        if self._noise is not None and returned.noise is None:
-            raise ValueError(
-                f"{block_name}.{method} dropped the noise model (a model was "
-                f"set, and the returned residual has noise=None); build the "
-                f"result with `replace(residual, ...)` so noise and orbit ride "
-                f"along, or return `replace(residual, noise=your_model)` if you "
-                f"are the noise block"
-            )
-        # The last silent cross-block failure: a blown-up sampler returning
-        # NaN/inf would otherwise be recorded as that block's model and handed
-        # to every block updated later in the cycle.
+        check_on_grid(
+            returned.tdi,
+            channels=self.observed.channels,
+            n_samples=self.observed.n_samples,
+            domain=self.observed.domain,
+            what=f"{block_name}.{method} template tdi",
+        )
+        # A blown-up sampler returning NaN/inf would otherwise be recorded as
+        # that block's template and handed to every block updated later in
+        # the cycle.
         for ch in self.observed.channels:
             arr = returned.tdi[ch]
             if not np.isfinite(arr).all():
                 n_bad = int((~np.isfinite(arr)).sum())
                 raise ValueError(
                     f"{block_name}.{method} returned {n_bad} non-finite "
-                    f"sample(s) in channel {ch!r} (NaN or inf); the residual "
-                    f"would poison every block updated after it. Check the "
+                    f"sample(s) in channel {ch!r} (NaN or inf) in its template; "
+                    f"it would poison every block updated after it. Check the "
                     f"sampler's proposal and its noise weighting."
                 )

@@ -27,3 +27,10 @@ def make_observed(rng, *, n_samples=64, channels=("A", "E", "T"), **overrides):
 @pytest.fixture
 def observed(rng):
     return make_observed(rng)
+
+
+def const_template(residual, value):
+    """A template holding `value` in every sample of every channel."""
+    return residual.template(
+        {ch: np.full_like(arr, value) for ch, arr in residual.tdi.items()}
+    )

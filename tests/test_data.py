@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from conftest import make_observed
-from enchilada import L1Data
+from enchilada import L1Data, Template
 
 
 class TestPostInitValidation:
@@ -564,3 +564,107 @@ class TestNoisePsdSanity:
         psd = make_observed(rng, noise=GoodNoise()).noise_psd()
         assert psd[0] == np.inf  # DC carries zero weight by construction
         assert np.all(psd[1:] == 3e-41)
+
+
+class TestTemplateFactories:
+    """`template()` / `zero_template()`: what a block returns, built on this grid."""
+
+    def test_template_carries_the_arrays_given(self, observed):
+        tdi = {ch: np.full_like(arr, 2.0) for ch, arr in observed.tdi.items()}
+        t = observed.template(tdi)
+        assert isinstance(t, Template)
+        for ch in observed.channels:
+            np.testing.assert_array_equal(t.tdi[ch], 2.0)
+        assert t.noise is None  # a signal block publishes nothing
+
+    def test_template_is_not_an_l1data(self, observed):
+        """The point of the type: an unmigrated block's return cannot pass."""
+        assert not isinstance(observed.template(dict(observed.tdi)), L1Data)
+
+    def test_template_arrays_are_taken_not_copied(self, observed):
+        arrs = {ch: np.zeros_like(a) for ch, a in observed.tdi.items()}
+        t = observed.template(arrs)
+        assert t.tdi["A"] is arrs["A"]  # the block may reuse its own buffer
+
+    @pytest.mark.parametrize(
+        "bad, match",
+        [
+            ({"A": np.zeros(64)}, "must match the run's channels"),
+            (
+                {ch: np.zeros(9) for ch in ("A", "E", "T")},
+                "length 9, expected 64",
+            ),
+            (
+                {ch: np.zeros(64, complex) for ch in ("A", "E", "T")},
+                "complex but domain='time'",
+            ),
+        ],
+    )
+    def test_off_grid_template_is_refused_where_it_is_built(self, observed, bad, match):
+        with pytest.raises((ValueError, TypeError), match=match):
+            observed.template(bad)
+
+    def test_zero_template_matches_shapes_and_dtypes(self, observed):
+        z = observed.zero_template()
+        assert isinstance(z, Template)
+        for ch in observed.channels:
+            assert z.tdi[ch].shape == observed.tdi[ch].shape
+            assert z.tdi[ch].dtype == observed.tdi[ch].dtype
+            np.testing.assert_array_equal(z.tdi[ch], 0.0)
+
+    def test_zero_template_publishes_no_noise(self, rng):
+        """It carries no noise even when the residual has one: publishing is
+        something a noise block does explicitly, with with_noise()."""
+        obs = make_observed(rng, noise=FlatPSD())
+        assert obs.zero_template().noise is None
+
+    def test_arrays_are_fresh_and_independent(self, observed):
+        snapshot = observed.tdi["A"].copy()
+        z1, z2 = observed.zero_template(), observed.zero_template()
+        assert z1.tdi["A"] is not observed.tdi["A"]
+        z1.tdi["A"][0] = 1.0
+        np.testing.assert_array_equal(observed.tdi["A"], snapshot)  # untouched
+        np.testing.assert_array_equal(z2.tdi["A"], 0.0)  # its own arrays
+
+    def test_frequency_domain_template_is_complex_on_the_rfft_grid(self, rng):
+        n = 64
+        obs = make_observed(
+            rng,
+            domain="frequency",
+            tdi={ch: rng.standard_normal(n // 2 + 1) + 0j for ch in ("A", "E", "T")},
+        )
+        z = obs.zero_template()
+        assert np.iscomplexobj(z.tdi["A"]) and z.tdi["A"].shape == (n // 2 + 1,)
+        # and a real array on that grid is refused, so `.real` cannot slip through
+        with pytest.raises(TypeError, match="real but domain='frequency'"):
+            obs.template({ch: np.zeros(n // 2 + 1) for ch in obs.channels})
+
+
+class TestTemplateClass:
+    """The container itself, for templates built without the factories."""
+
+    def test_with_noise_returns_a_new_template(self, observed):
+        z = observed.zero_template()
+        model = FlatPSD()
+        published = z.with_noise(model)
+        assert published.noise is model
+        assert z.noise is None  # frozen: the original is unchanged
+        assert published.tdi is z.tdi
+
+    def test_equality_is_identity_not_elementwise(self, observed):
+        a, b = observed.zero_template(), observed.zero_template()
+        assert a == a and a != b  # would raise "truth value ambiguous" otherwise
+
+    @pytest.mark.parametrize(
+        "bad, exc, match",
+        [
+            ("not a dict", TypeError, "must be a dict"),
+            ({}, ValueError, "is empty"),
+            ({"A": [0.0, 1.0]}, TypeError, "must be a 1-D numpy array"),
+            ({"A": np.zeros((2, 2))}, TypeError, "must be a 1-D numpy array"),
+            ({"A": np.zeros(4, int)}, TypeError, "must be floating or complex"),
+        ],
+    )
+    def test_malformed_containers_are_refused(self, bad, exc, match):
+        with pytest.raises(exc, match=match):
+            Template(tdi=bad)

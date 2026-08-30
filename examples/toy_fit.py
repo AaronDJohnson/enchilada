@@ -5,13 +5,14 @@ runs a real Gibbs sampler to convergence on synthetic data, demonstrating the
 parts of the protocol the demo leaves out:
 
 - a signal block (`SineBlock.update`) that fits the residual it is handed --
-  already the data minus every other block -- directly, then subtracts its
-  new model and returns; the Wheel keeps the ledger, so there is no add-back;
-- a *noise* block (`WhiteNoiseBlock`) that removes nothing from the data
-  and instead returns the residual with an updated `noise` object, which
-  signal blocks read through `residual.noise_variance` (or `noise_psd` in
-  the frequency domain);
-- state ownership: each block keeps its parameters, RNG, current model,
+  already the data minus every other block -- directly, then returns its new
+  template; the Wheel keeps the ledger and does every subtraction, so there
+  is no add-back;
+- a *noise* block (`WhiteNoiseBlock`) whose template is zero and which
+  instead returns an updated `noise` object, which signal blocks read
+  through `residual.noise_variance` (or `noise_psd` in the frequency
+  domain);
+- state ownership: each block keeps its parameters, RNG, current template,
   and posterior chain as plain instance attributes -- the Wheel never sees
   them, and you read results directly off the block objects you built;
 - progress reporting through `Wheel.run`'s `on_cycle` callback.
@@ -22,8 +23,6 @@ thing. Run it with:
 
     uv run python examples/toy_fit.py
 """
-
-from dataclasses import replace
 
 import numpy as np
 
@@ -51,8 +50,8 @@ class SineBlock:
     sample exactly -- no Metropolis machinery needed for the toy.
 
     Everything this sampler is -- current amplitude, RNG, chain, and its own
-    model basis -- is a plain instance attribute. The Wheel only ever sees
-    the residual.
+    waveform basis -- is a plain instance attribute. The Wheel only ever sees
+    the template it returns.
     """
 
     def __init__(self, name: str, freq: float, seed: int):
@@ -68,8 +67,8 @@ class SineBlock:
         self._basis = {
             ch: np.sin(2.0 * np.pi * self.freq * t) for ch in residual.channels
         }
-        # initial amplitude is zero, so we subtract nothing: pass through
-        return residual
+        # initial amplitude is zero: nothing to subtract yet
+        return residual.zero_template()
 
     def update(self, residual: L1Data) -> L1Data:
         ch = residual.channels[0]
@@ -79,24 +78,23 @@ class SineBlock:
         sigma2 = residual.noise_variance(ch)
 
         # `residual` is already the data minus every OTHER block -- fit it
-        # directly (no add-back), then subtract our new model and return.
+        # directly (no add-back), then return our new template; the Wheel
+        # subtracts it from the data on our behalf.
         data_for_me = residual.tdi[ch]
         ss = float(s @ s)
         mean = float(data_for_me @ s) / ss
         self.amplitude = self._rng.normal(mean, np.sqrt(sigma2 / ss))
         self.chain.append(self.amplitude)
 
-        new_tdi = dict(residual.tdi)
-        new_tdi[ch] = data_for_me - self.amplitude * s
-        return replace(residual, tdi=new_tdi)
+        return residual.template({ch: self.amplitude * s})
 
 
 class WhiteNoiseBlock:
     """Noise block: conjugate inverse-gamma draw for the white-noise sigma.
 
-    Removes nothing from the data; it returns the residual with an updated
-    `noise` model, which the signal blocks read via `residual.noise_variance`
-    (the time-domain view of the same model).
+    Its template is zero; what it returns is an updated `noise` model, which
+    the signal blocks read via `residual.noise_variance` (the time-domain view
+    of the same model).
     """
 
     def __init__(self, name: str, seed: int):
@@ -106,10 +104,10 @@ class WhiteNoiseBlock:
         self._rng = np.random.default_rng(seed)
 
     def start(self, residual: L1Data) -> L1Data:
-        return replace(residual, noise=FlatNoise(self.sigma, residual.fs))
+        return residual.zero_template().with_noise(FlatNoise(self.sigma, residual.fs))
 
     def update(self, residual: L1Data) -> L1Data:
-        # residual here is data minus every signal block's model: pure noise
+        # residual here is data minus every signal block's template: pure noise
         n_total = sum(arr.size for arr in residual.tdi.values())
         ssr = sum(float(arr @ arr) for arr in residual.tdi.values())
         # inverse-gamma(a, b) posterior with a weak IG(2, 1) prior
@@ -117,7 +115,7 @@ class WhiteNoiseBlock:
         b = 1.0 + 0.5 * ssr
         self.sigma = float(np.sqrt(b / self._rng.gamma(a)))
         self.chain.append(self.sigma)
-        return replace(residual, noise=FlatNoise(self.sigma, residual.fs))
+        return residual.zero_template().with_noise(FlatNoise(self.sigma, residual.fs))
 
 
 TRUTH = {"slow": 3.0, "fast": 2.0, "sigma": 0.5}

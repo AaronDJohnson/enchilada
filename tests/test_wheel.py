@@ -1,4 +1,4 @@
-"""Wheel: the ledger, data-minus-others handoff, and boundary validation."""
+"""Wheel: the template ledger, the data-minus-others handoff, and its guards."""
 
 import warnings
 from dataclasses import replace
@@ -6,21 +6,17 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from conftest import make_observed
-from enchilada import (
-    L1Data,
-    ModelWithdrawnWarning,
-    NoiseOverwrittenWarning,
-    Wheel,
-)
+from conftest import const_template, make_observed
+from enchilada import NoiseOverwrittenWarning, Template, Wheel
 from enchilada.testing import EchoBlock
 
 
 class ConstBlock:
-    """Subtracts a constant from the residual it is handed -- no add-back.
+    """Returns a constant template -- the same value in every sample.
 
-    The residual it receives is already the data minus every other block, so
-    it just subtracts its (constant) model. Its ledger entry is that constant.
+    The residual it is handed is already the data minus every other block; a
+    real block would fit it. This one ignores it and returns its (constant)
+    template, so its ledger entry is that constant.
     """
 
     def __init__(self, name, value):
@@ -29,16 +25,14 @@ class ConstBlock:
         self.updates = 0
 
     def start(self, residual):
-        return self._subtract(residual)
+        return self._template(residual)
 
     def update(self, residual):
         self.updates += 1
-        return self._subtract(residual)
+        return self._template(residual)
 
-    def _subtract(self, residual):
-        return replace(
-            residual, tdi={ch: arr - self.value for ch, arr in residual.tdi.items()}
-        )
+    def _template(self, residual):
+        return const_template(residual, self.value)
 
 
 class FlatPSD:
@@ -50,22 +44,22 @@ class FlatPSD:
 
 
 class LevelNoiseBlock:
-    """Noise block: sets residual.noise, level tracks its update count."""
+    """Noise block: a zero template plus a noise model whose level counts updates."""
 
     def __init__(self, name):
         self.name = name
         self.updates = 0
 
     def start(self, residual):
-        return replace(residual, noise=FlatPSD(0.0))
+        return residual.zero_template().with_noise(FlatPSD(0.0))
 
     def update(self, residual):
         self.updates += 1
-        return replace(residual, noise=FlatPSD(float(self.updates)))
+        return residual.zero_template().with_noise(FlatPSD(float(self.updates)))
 
 
 class TestLedger:
-    def test_full_residual_subtracts_every_model(self, rng):
+    def test_full_residual_subtracts_every_template(self, rng):
         obs = make_observed(rng)
         wheel = Wheel(obs)
         wheel.add(ConstBlock("a", 1.0))
@@ -88,7 +82,7 @@ class TestLedger:
         for ch in obs.channels:
             np.testing.assert_allclose(seen.tdi[ch], obs.tdi[ch] - 101.0)
 
-    def test_contribution_is_the_derived_model(self, rng):
+    def test_contribution_is_the_returned_template(self, rng):
         obs = make_observed(rng)
         wheel = Wheel(obs)
         wheel.add(ConstBlock("a", 7.0))
@@ -96,22 +90,22 @@ class TestLedger:
         for ch in obs.channels:
             np.testing.assert_allclose(wheel.contribution("a")[ch], 7.0)
 
-    def test_ledger_derivation_survives_in_place_return(self, rng):
-        # a block that mutates its handed arrays in place AND returns the
-        # same object still gets its contribution derived correctly, because
-        # the Wheel diffs against a pristine snapshot.
+    def test_a_template_built_in_place_is_accepted(self, rng):
+        # a block may overwrite the arrays it was handed with its template and
+        # return the same object: the Wheel handed it copies, so the pristine
+        # residual is still there to compare against, and observed is untouched
         obs = make_observed(rng)
 
         class InPlace:
             name = "ip"
 
             def start(self, residual):
-                return residual  # zero contribution
+                return residual.zero_template()
 
             def update(self, residual):
                 for ch in residual.tdi:
-                    residual.tdi[ch] -= 3.0  # mutate in place
-                return residual  # return the SAME object
+                    residual.tdi[ch][:] = 3.0  # overwrite the handed arrays
+                return residual.template(residual.tdi)  # ...and claim them
 
         wheel = Wheel(obs)
         wheel.add(InPlace())
@@ -134,8 +128,8 @@ class TestLedger:
 
         class Mutator(ConstBlock):
             def update(self, residual):
-                residual.tdi[next(iter(residual.tdi))][:] = -999.0  # mutate the copy
-                return super().update(residual)
+                residual.tdi[next(iter(residual.tdi))][:] = -999.0  # mutate what
+                return super().update(residual)  # it was handed
 
         wheel = Wheel(obs)
         wheel.add(Mutator("mut", 0.0))
@@ -205,11 +199,11 @@ class TestAtomicRegistration:
     def test_failed_start_leaves_wheel_untouched(self, observed):
         class BadStart(ConstBlock):
             def start(self, residual):
-                return "not a residual"
+                return "not a template"
 
         wheel = Wheel(observed)
         wheel.add(ConstBlock("ok", 1.0))
-        with pytest.raises(TypeError, match="bad.start must return an L1Data"):
+        with pytest.raises(TypeError, match="bad.start must return a Template"):
             wheel.add(BadStart("bad", 0.0))
         with pytest.raises(ValueError, match="unknown block"):
             wheel.contribution("bad")  # not registered
@@ -217,49 +211,35 @@ class TestAtomicRegistration:
         wheel.run(1)  # still healthy
 
 
-class TestReturnedResidualValidation:
-    def test_non_residual_return_named(self, observed):
+class TestReturnedTemplateValidation:
+    def test_non_template_return_named(self, observed):
         class Bad(ConstBlock):
             def update(self, residual):
-                return {"A": np.zeros(1)}  # a dict, not an L1Data
+                return {"A": np.zeros(1)}  # a dict, not a Template
 
         wheel = Wheel(observed)
         wheel.add(Bad("bad", 0.0))
-        with pytest.raises(TypeError, match="bad.update must return an L1Data"):
+        with pytest.raises(TypeError, match="bad.update must return a Template"):
             wheel.run(1)
 
-    def test_changed_run_setting_rejected(self, observed):
-        class Cheat(ConstBlock):
-            def update(self, residual):
-                return replace(residual, tdi_generation="9.9")
-
-        wheel = Wheel(observed)
-        wheel.add(Cheat("cheat", 0.0))
-        with pytest.raises(
-            ValueError, match="changed the run setting 'tdi_generation'"
-        ):
-            wheel.run(1)
-
-    def test_bad_tdi_shape_raises_via_residuals(self, observed):
+    def test_bad_tdi_shape_rejected(self, observed):
         class Drifter(ConstBlock):
             def update(self, residual):
-                return replace(
-                    residual, tdi={ch: np.zeros(2) for ch in residual.channels}
-                )
+                return Template(tdi={ch: np.zeros(2) for ch in residual.channels})
 
         wheel = Wheel(observed)
         wheel.add(Drifter("drift", 0.0))
         with pytest.raises(ValueError, match="length 2, expected"):
             wheel.run(1)
 
-    def test_changed_orbit_rejected(self, observed):
-        class Cheat(ConstBlock):
+    def test_missing_channel_rejected(self, observed):
+        class Partial(ConstBlock):
             def update(self, residual):
-                return replace(residual, orbit=object())
+                return Template(tdi={"A": np.zeros(residual.n_samples)})
 
         wheel = Wheel(observed)
-        wheel.add(Cheat("cheat", 0.0))
-        with pytest.raises(ValueError, match="changed the orbit"):
+        wheel.add(Partial("partial", 0.0))
+        with pytest.raises(ValueError, match="must match the run's channels"):
             wheel.run(1)
 
 
@@ -327,33 +307,21 @@ class TestOnCycle:
 class TestBoundaryGuards:
     """The Wheel refuses returns that would silently corrupt other blocks."""
 
-    def test_dropping_the_noise_model_raises(self, rng):
+    def test_a_signal_block_does_not_disturb_the_noise_model(self, rng):
+        """`Template.noise` defaults to None, which means "I publish nothing"
+        -- not "clear the model". Under the old contract a block that rebuilt
+        its return from scratch dropped the model silently; a template cannot."""
         obs = make_observed(rng, noise=FlatPSD(3.0))
-
-        class Rebuilder(ConstBlock):
-            def update(self, residual):
-                # rebuilds instead of using replace() -> loses noise silently
-                return L1Data(
-                    tdi=residual.tdi,
-                    sample_rate=residual.sample_rate,
-                    channels=residual.channels,
-                    tdi_generation=residual.tdi_generation,
-                    observable=residual.observable,
-                    n_samples=residual.n_samples,
-                    epoch=residual.epoch,
-                    domain=residual.domain,
-                )
-
         wheel = Wheel(obs)
-        wheel.add(Rebuilder("r", 0.0))
-        with pytest.raises(ValueError, match="dropped the noise model"):
-            wheel.run(1)
+        wheel.add(ConstBlock("signal", 1.0))
+        wheel.run(2)
+        assert wheel.residual().noise.level == 3.0
 
     def test_non_finite_return_raises_and_names_the_channel(self, observed):
         class Blowup(ConstBlock):
             def update(self, residual):
-                return replace(
-                    residual, tdi={ch: arr * np.nan for ch, arr in residual.tdi.items()}
+                return residual.template(
+                    {ch: arr * np.nan for ch, arr in residual.tdi.items()}
                 )
 
         wheel = Wheel(observed)
@@ -366,60 +334,73 @@ class TestBoundaryGuards:
             name = "noupdate"
 
             def start(self, residual):
-                return residual
+                return residual.zero_template()
 
         with pytest.raises(TypeError, match="does not implement update"):
             Wheel(observed).add(NoBlockUpdate())
 
-    def test_withdrawing_a_model_warns(self, observed):
-        class Fickle(ConstBlock):
-            def __init__(self, name, value):
-                super().__init__(name, value)
-                self.calls = 0
+    def test_an_unmigrated_block_is_a_type_error_not_a_wrong_fit(self, observed):
+        """The whole reason Template is its own type. A block written for the
+        pre-template contract returns `residual - template`, which is a
+        perfectly well-formed L1Data: no array check could tell it from a real
+        template, so the type must."""
 
+        class Unmigrated(ConstBlock):
             def update(self, residual):
-                self.calls += 1
-                if self.calls == 2:
-                    return residual  # "nothing changed" -- silently withdraws
-                return super().update(residual)
+                return replace(  # the OLD contract: residual minus my template
+                    residual,
+                    tdi={ch: arr - self.value for ch, arr in residual.tdi.items()},
+                )
 
         wheel = Wheel(observed)
-        wheel.add(Fickle("f", 1.0))
-        with pytest.warns(ModelWithdrawnWarning, match="contributes nothing"):
-            wheel.run(2)
+        wheel.add(ConstBlock("ok", 1.0))
+        wheel._blocks[0].__class__ = Unmigrated
+        with pytest.raises(TypeError, match="must return a Template"):
+            wheel.run(1)
 
-    def test_the_withdrawal_warning_points_at_the_caller(self, observed):
-        # the location IS the payload: it tells the user which call did it
-        class Fickle(ConstBlock):
+    def test_that_type_error_names_the_migration(self, observed):
+        class Unmigrated(ConstBlock):
+            def start(self, residual):
+                return residual  # any L1Data, however built
+
+        with pytest.raises(TypeError) as info:
+            Wheel(observed).add(Unmigrated("old", 1.0))
+        msg = str(info.value)
+        assert "never the residual" in msg
+        assert "residual.template(" in msg and "zero_template()" in msg
+
+    def test_an_unmigrated_noise_block_is_caught_at_registration(self, observed):
+        class OldNoise:
+            name = "noise"
+
+            def start(self, residual):
+                return replace(residual, noise=FlatPSD(1.0))  # the old idiom
+
             def update(self, residual):
-                return residual
+                return replace(residual, noise=FlatPSD(1.0))
 
-        wheel = Wheel(observed)
-        wheel.add(ConstBlock("f", 1.0))
-        wheel._blocks[0].__class__ = Fickle
-        with pytest.warns(ModelWithdrawnWarning) as record:
-            wheel.run(1)  # <- this line must be blamed
-        assert record[0].filename == __file__, record[0].filename
+        with pytest.raises(TypeError, match="noise.start must return a Template"):
+            Wheel(observed).add(OldNoise())
 
-    def test_a_legitimate_death_move_can_be_silenced_precisely(self, observed):
-        # a reversible-jump block whose last source dies is CORRECT; the user
-        # must be able to keep -W error while ignoring exactly this heuristic
+    def test_a_death_move_to_a_zero_template_is_silent(self, observed):
+        # a reversible-jump block whose last source dies returns a zero
+        # template explicitly; there is no heuristic left to trip
         import warnings as _w
 
         class Death(ConstBlock):
             def update(self, residual):
                 self.value = 0.0  # k -> 0 sources
-                return self._subtract(residual)
+                return super().update(residual)
 
         wheel = Wheel(observed)
         wheel.add(Death("rj", 1.0))
         with _w.catch_warnings():
             _w.simplefilter("error")
-            _w.filterwarnings("ignore", category=ModelWithdrawnWarning)
             wheel.run(1)
+        np.testing.assert_array_equal(wheel.contribution("rj")["A"], 0.0)
 
-    def test_a_genuinely_zero_model_does_not_warn(self, observed):
-        # EchoBlock contributes zero on every update; that is not a withdrawal
+    def test_a_genuinely_zero_template_does_not_warn(self, observed):
+        # EchoBlock contributes a zero template on every update
         import warnings as _w
 
         wheel = Wheel(observed)
@@ -440,20 +421,16 @@ class TestBoundaryGuards:
             )
 
     def test_wider_model_promotes_rather_than_raising(self, rng):
-        # float32 observed + float64 model must promote, not fail the way the
-        # old in-place subtraction did
+        # float32 observed + float64 template must promote, not fail the way
+        # the old in-place subtraction did
         obs = make_observed(
             rng, tdi={ch: np.zeros(64, np.float32) for ch in ("A", "E", "T")}
         )
 
         class Wider(ConstBlock):
             def update(self, residual):
-                return replace(
-                    residual,
-                    tdi={
-                        ch: arr - np.ones(64, np.float64)
-                        for ch, arr in residual.tdi.items()
-                    },
+                return residual.template(
+                    {ch: np.ones(64, np.float64) for ch in residual.tdi}
                 )
 
         wheel = Wheel(obs)
@@ -462,74 +439,14 @@ class TestBoundaryGuards:
         assert wheel.residual().tdi["A"].dtype == np.float64
         assert wheel.observed.tdi["A"].dtype == np.float32  # left alone
 
-    def test_invariant_list_is_exactly_this(self):
-        """Pinned literally: parametrizing over _INVARIANT would let a field be
-        deleted from the tuple AND from its own test in one edit."""
-        assert Wheel._INVARIANT == (
-            "channels",
-            "n_samples",
-            "sample_rate",
-            "tdi_generation",
-            "observable",
-            "domain",
-            "epoch",
-        )
-
-    @pytest.mark.parametrize(
-        "field",
-        [
-            "channels",
-            "n_samples",
-            "sample_rate",
-            "tdi_generation",
-            "observable",
-            "domain",
-            "epoch",
-        ],
-    )
-    def test_every_invariant_run_setting_is_guarded(self, rng, field):
-        """Each field must actually be enforced, not merely listed."""
-        obs = make_observed(rng, sample_rate=1.0)
-        bad = {
-            "channels": ("A",),
-            "n_samples": obs.n_samples * 2,
-            "sample_rate": 2.0,
-            "tdi_generation": "9.9",
-            "observable": "phase",
-            "domain": "frequency",
-            "epoch": 12345.0,
-        }[field]
-
-        class Cheat(ConstBlock):
-            def update(self, residual):
-                kw = {field: bad}
-                if field in ("channels", "n_samples", "domain"):
-                    # keep tdi self-consistent so L1Data's own checks pass and
-                    # the Wheel's invariant check is what fires
-                    if field == "channels":
-                        kw["tdi"] = {"A": residual.tdi["A"]}
-                    elif field == "n_samples":
-                        kw["tdi"] = {ch: np.zeros(bad) for ch in residual.channels}
-                    else:
-                        kw["tdi"] = {
-                            ch: np.zeros(residual.n_samples // 2 + 1, complex)
-                            for ch in residual.channels
-                        }
-                return replace(residual, **kw)
-
-        wheel = Wheel(obs)
-        wheel.add(Cheat("cheat", 0.0))
-        with pytest.raises(ValueError, match=f"changed the run setting {field!r}"):
-            wheel.run(1)
-
 
 class TestDocumentedContracts:
     """Guarantees the docstrings make that nothing else pins."""
 
     def test_start_is_handed_data_minus_already_registered_blocks(self, rng):
         """add()'s docstring promise. A block that *reads* what it is handed
-        is the only way to see this -- blocks that subtract a constant give
-        the same ledger entry either way."""
+        is the only way to see this -- blocks that return a constant template
+        give the same ledger entry either way."""
         obs = make_observed(rng)
         seen = {}
 
@@ -539,16 +456,10 @@ class TestDocumentedContracts:
 
             def start(self, residual):
                 seen[self.name] = residual.tdi["A"].copy()
-                return replace(
-                    residual,
-                    tdi={ch: arr - self.value for ch, arr in residual.tdi.items()},
-                )
+                return self.update(residual)
 
             def update(self, residual):
-                return replace(
-                    residual,
-                    tdi={ch: arr - self.value for ch, arr in residual.tdi.items()},
-                )
+                return const_template(residual, self.value)
 
         wheel = Wheel(obs)
         wheel.add(Reader("first", 3.0))
@@ -582,75 +493,41 @@ class TestDocumentedContracts:
 
         class Blowup(ConstBlock):
             def update(self, residual):
-                tdi = dict(residual.tdi)
-                tdi[channel] = tdi[channel].copy()
+                tdi = {ch: np.zeros_like(arr) for ch, arr in residual.tdi.items()}
                 tdi[channel][3] = bad
-                return replace(residual, tdi=tdi)
+                return residual.template(tdi)
 
         wheel = Wheel(obs)
         wheel.add(Blowup("b", 0.0))
         with pytest.raises(ValueError, match="non-finite sample"):
             wheel.run(1)
 
-    def test_withdrawal_is_judged_across_all_channels_not_any(self, rng):
-        """_all_zero must be all(), not any(): a model that is zero in one
-        channel and non-zero in others has NOT been withdrawn."""
-        import warnings as _w
-
+    def test_a_template_zero_in_one_channel_is_recorded_per_channel(self, rng):
         obs = make_observed(rng)
 
         class PartlyZero:
             name = "p"
 
-            def _model(self, residual):
+            def _template(self, residual):
                 # non-zero in A and E, zero in T
-                return replace(
-                    residual,
-                    tdi={
-                        ch: (arr - 1.0 if ch != "T" else arr)
+                return residual.template(
+                    {
+                        ch: np.full_like(arr, 0.0 if ch == "T" else 1.0)
                         for ch, arr in residual.tdi.items()
-                    },
+                    }
                 )
 
             def start(self, residual):
-                return self._model(residual)
+                return self._template(residual)
 
             def update(self, residual):
-                return self._model(residual)
+                return self._template(residual)
 
         wheel = Wheel(obs)
         wheel.add(PartlyZero())
-        with _w.catch_warnings():
-            _w.simplefilter("error")  # a spurious warning fails the test
-            wheel.run(2)
+        wheel.run(2)
         np.testing.assert_allclose(wheel.contribution("p")["T"], 0.0)
         np.testing.assert_allclose(wheel.contribution("p")["A"], 1.0)
-
-    def test_a_real_withdrawal_is_caught_even_if_one_channel_was_always_zero(self, rng):
-        obs = make_observed(rng)
-
-        class ThenStops:
-            name = "s"
-
-            def __init__(self):
-                self.calls = 0
-
-            def start(self, residual):
-                return replace(
-                    residual,
-                    tdi={
-                        ch: (arr - 1.0 if ch != "T" else arr)
-                        for ch, arr in residual.tdi.items()
-                    },
-                )
-
-            def update(self, residual):
-                return residual  # withdraws A and E
-
-        wheel = Wheel(obs)
-        wheel.add(ThenStops())
-        with pytest.warns(ModelWithdrawnWarning):
-            wheel.run(1)
 
     def test_block_name_must_be_a_string_not_just_non_empty(self, observed):
         class Numbered(ConstBlock):
@@ -664,10 +541,10 @@ class TestDocumentedContracts:
     def test_missing_name_gets_the_protocol_message(self, observed):
         class Anonymous:
             def start(self, residual):
-                return residual
+                return residual.zero_template()
 
             def update(self, residual):
-                return residual
+                return residual.zero_template()
 
         with pytest.raises((ValueError, TypeError), match="name"):
             Wheel(observed).add(Anonymous())
@@ -707,12 +584,12 @@ class TestNoiseOwnership:
                 self.name = name
 
             def start(self, residual):
-                return replace(residual, noise=FlatPSD(level))
+                return residual.zero_template().with_noise(FlatPSD(level))
 
             def update(self, residual):
-                # a real noise block re-estimates, so it returns a NEW object
+                # a real noise block re-estimates, so it publishes a NEW object
                 # every cycle -- that must not read as an overwrite
-                return replace(residual, noise=FlatPSD(level))
+                return residual.zero_template().with_noise(FlatPSD(level))
 
         return NoiseWriter()
 

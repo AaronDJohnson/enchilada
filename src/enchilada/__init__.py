@@ -4,11 +4,8 @@ from importlib.metadata import PackageNotFoundError, version
 from enchilada.block import Block, NoiseBlock
 from enchilada.data import L1Data
 from enchilada.orbits import NumericOrbit, Orbit
-from enchilada.wheel import (
-    ModelWithdrawnWarning,
-    NoiseOverwrittenWarning,
-    Wheel,
-)
+from enchilada.template import Template
+from enchilada.wheel import NoiseOverwrittenWarning, Wheel
 
 try:
     __version__ = version("enchilada")
@@ -17,12 +14,12 @@ except PackageNotFoundError:  # pragma: no cover - source tree without install
 
 __all__ = [
     "Block",
-    "ModelWithdrawnWarning",
     "NoiseBlock",
     "NoiseOverwrittenWarning",
     "NumericOrbit",
     "Orbit",
     "L1Data",
+    "Template",
     "Wheel",
     "__version__",
     "replace",

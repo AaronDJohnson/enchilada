@@ -22,8 +22,6 @@ Requires the LISA stack: ``gbgpu`` (master), ``eryn`` (dev),
 ``matplotlib`` and ``corner``.
 """
 
-from dataclasses import replace
-
 import numpy as np
 from eryn.ensemble import EnsembleSampler
 from eryn.prior import ProbDistContainer, UniformDistribution
@@ -121,9 +119,9 @@ class GBBlock:
     Implements ``name`` / ``start`` / ``update``. Reads channels, the frequency
     grid, and the noise PSD off the ``residual`` it is handed (never from module
     scope). The residual is already the data minus every other block, so it
-    advances Eryn against it directly (no add-back), then returns the residual
-    with its new point-estimate model subtracted. The posterior chain lives on
-    the object (``self.chain``).
+    advances Eryn against it directly (no add-back), then returns its new
+    point-estimate template; the Wheel subtracts it. The posterior chain lives
+    on the object (``self.chain``).
 
     Samples ``amp, f0, fdot, phi0``; the four sky/orientation ``angles`` are held
     fixed (enlarge ``init``/``bounds``/``angles`` to sample them too).
@@ -226,21 +224,17 @@ class GBBlock:
             self.hi - 1e-9 * (self.hi - self.lo),
         )
         self._state = State(p0)
-        return replace(
-            residual, tdi={ch: residual.tdi[ch] - self._model[ch] for ch in self.chans}
-        )
+        return residual.template(dict(self._model))  # our template
 
     def update(self, residual):
         self.S = {
             ch: residual.noise_psd(ch) for ch in self.chans
         }  # current noise, off the residual
         # `residual` is already the data minus every OTHER block -- fit it
-        # directly (no add-back); the Wheel keeps the ledger.
+        # directly (no add-back); the Wheel keeps the ledger and subtracts.
         self._data = {ch: residual.tdi[ch] for ch in self.chans}
         self._state = self._sampler.run_mcmc(self._state, self.k, progress=False)
         self.chain = self._sampler.get_chain()["model_0"].reshape(-1, self.ndim)
         self.params = self.chain[-self.nw :].mean(0)  # point estimate
         self._model = self._render(self.params)
-        return replace(
-            residual, tdi={ch: residual.tdi[ch] - self._model[ch] for ch in self.chans}
-        )
+        return residual.template(dict(self._model))  # our template

@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from conftest import make_observed
+from enchilada import Template
 from enchilada.testing import EchoBlock, check_block
 
 
@@ -22,21 +23,21 @@ class TestCheckBlock:
         )
         check_block(EchoBlock(name="echo"), obs)
 
-    def test_non_residual_return_caught(self, observed):
+    def test_non_template_return_caught(self, observed):
         class Bad(EchoBlock):
             def update(self, residual):
-                return {"A": np.zeros(1)}  # not an L1Data
+                return {"A": np.zeros(1)}  # not a Template
 
-        with pytest.raises(TypeError, match="must return an L1Data"):
+        with pytest.raises(TypeError, match="must return a Template"):
             check_block(Bad(name="bad"), observed)
 
-    def test_changed_run_setting_caught(self, observed):
-        class Cheat(EchoBlock):
+    def test_off_grid_template_caught(self, observed):
+        class Drifter(EchoBlock):
             def update(self, residual):
-                return replace(residual, observable="strain")
+                return Template(tdi={ch: np.zeros(3) for ch in residual.channels})
 
-        with pytest.raises(ValueError, match="changed the run setting"):
-            check_block(Cheat(name="cheat"), observed)
+        with pytest.raises(ValueError, match="length 3, expected"):
+            check_block(Drifter(name="drift"), observed)
 
     def test_conforming_noise_block_passes(self, observed):
         class FlatPSD:
@@ -45,14 +46,14 @@ class TestCheckBlock:
 
         class FlatNoiseBlock(EchoBlock):
             def update(self, residual):
-                return replace(residual, noise=FlatPSD())
+                return residual.zero_template().with_noise(FlatPSD())
 
         check_block(FlatNoiseBlock(name="noise"), observed)
 
     def test_noise_model_violating_contract_caught(self, observed):
         class BadNoise(EchoBlock):
             def update(self, residual):
-                return replace(residual, noise=object())
+                return residual.zero_template().with_noise(object())
 
         with pytest.raises(TypeError, match="does not expose"):
             check_block(BadNoise(name="bad"), observed)
@@ -68,7 +69,7 @@ class TestEchoBlock:
         wheel.run(3)
         assert echo.updates == 3
 
-    def test_passes_residual_through_unchanged(self, observed):
+    def test_contributes_a_zero_template(self, observed):
         from enchilada import Wheel
 
         wheel = Wheel(observed)
@@ -79,23 +80,16 @@ class TestEchoBlock:
 
 
 class TestCheckBlockStrictness:
-    def test_a_withdrawing_block_fails_the_conformance_check(self, observed):
-        """The Wheel warns mid-run; the pre-campaign gate must refuse."""
-        from enchilada import ModelWithdrawnWarning, replace
+    def test_an_unmigrated_block_fails_the_conformance_check(self, observed):
+        """A block written for the pre-template contract must fail here,
+        before it reaches a shared campaign."""
 
-        class Forgetful(EchoBlock):
-            def __init__(self, name):
-                super().__init__(name)
-                self.calls = 0
-
-            def start(self, residual):
-                return replace(
+        class Unmigrated(EchoBlock):
+            def update(self, residual):
+                return replace(  # residual minus my template: the old contract
                     residual,
                     tdi={ch: arr - 1.0 for ch, arr in residual.tdi.items()},
                 )
 
-            def update(self, residual):
-                return residual  # forgot to re-subtract: model leaves the fit
-
-        with pytest.raises(ModelWithdrawnWarning):
-            check_block(Forgetful(name="forgetful"), observed)
+        with pytest.raises(TypeError, match="must return a Template"):
+            check_block(Unmigrated(name="old"), observed)

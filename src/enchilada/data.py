@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Never
 import numpy as np
 
 from enchilada.orbits import Orbit
+from enchilada.template import Template, check_on_grid
 
 
 @dataclass(frozen=True, eq=False)
@@ -12,9 +13,10 @@ class L1Data:
 
     One `L1Data` object is constructed at the top of a run to hold the observed
     data and the campaign settings (sample rate, channels, epoch, ...). The
-    Wheel produces a new `L1Data` object each cycle of the wheel with the same
-    metadata fields but freshly computed residual `tdi` -- the data with every
-    other block's current model subtracted.
+    same type carries the observed data and every residual: the Wheel hands
+    each block an `L1Data` with the same metadata but `tdi` recomputed as the
+    data minus every other block's current template. What a block *returns* is
+    a `Template` (see `template` and `zero_template`), not an `L1Data`.
 
     Every field below is part of the cross-group data contract, and
     `__post_init__` validates the whole object on every construction
@@ -51,18 +53,18 @@ class L1Data:
             one field, so agreement is by construction -- state it once,
             correctly, rather than letting each group assume its own.
         domain: "time" (default) or "frequency". Selects the tdi
-            representation described above; the model a block returns
+            representation described above; the template a block returns
             must keep it (`L1Data` validates the tdi shapes).
         epoch: GPS seconds corresponding to sample index 0. Defaults to
             ``0.0`` -- fine for synthetic data with no absolute-time
             reference. Set it for real data: it anchors the constellation
             response (spacecraft positions at `epoch + n*dt`), the orbit-span
             check, and the frequency-domain phase reference. Shadowed by `t0`.
-        noise: The current noise/covariance model the residual should be
-            whitened with, or `None`. Noise blocks update this field and
-            on the model they return, and the Wheel copies that model to
-            every other block. `None` when no noise model is set. See
-            `block.NoiseBlock`.
+                noise: The current noise/covariance model the residual should be
+            whitened with, or `None`. A noise block sets this field on the
+            template it returns, and the Wheel threads that model onto every
+            residual it hands out afterwards. `None` when no noise model is
+            set. See `block.NoiseBlock`.
         orbit: The LISA constellation ephemeris  --
             the spacecraft positions every block must share to build its
             response (see `enchilada.orbits.Orbit`). Currently a *fixed* property
@@ -383,6 +385,49 @@ class L1Data:
             for ch, arr in self.tdi.items()
         }
         return replace(self, tdi=tdi, domain="time")
+
+    # ---- templates ------------------------------------------------------
+
+    def template(self, tdi: dict[str, np.ndarray]) -> Template:
+        """Build the `Template` a block returns, checked against this grid.
+
+        `tdi` is the signal the block currently claims -- summed over all its
+        sources -- as channel -> array, with this residual's channels, lengths
+        and real/complex-ness. The Wheel subtracts it from the data on the
+        block's behalf; the block never subtracts anything itself.
+
+            def update(self, residual):
+                ...fit against residual.tdi...
+                return residual.template({ch: amp * basis[ch] for ch in ...})
+
+        Validated here, where a wrong length or dtype is the block author's
+        mistake to see, rather than on return. The arrays are taken as given
+        (not copied): the Wheel copies what it records, so reusing your own
+        buffer between cycles is safe.
+        """
+        check_on_grid(
+            tdi,
+            channels=self.channels,
+            n_samples=self.n_samples,
+            domain=self.domain,
+            what="template tdi",
+        )
+        return Template(tdi=tdi)
+
+    def zero_template(self) -> Template:
+        """A `Template` of zeros on this grid: nothing to subtract.
+
+        The return for a block with no sources yet, a reversible-jump block
+        whose last source died, and a noise block -- which claims no signal and
+        publishes a model instead:
+
+            return residual.zero_template()                       # nothing yet
+            return residual.zero_template().with_noise(my_model)  # noise block
+
+        Fresh zero arrays with each channel's shape and dtype, so a
+        frequency-domain template is complex as the contract requires.
+        """
+        return Template(tdi={ch: np.zeros_like(arr) for ch, arr in self.tdi.items()})
 
     # ---- noise variance (assembled on this run's grid) ------------------
 

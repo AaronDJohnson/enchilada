@@ -93,12 +93,12 @@ def test_public_surface_is_pinned():
 
     assert enchilada.__all__ == [
         "Block",
-        "ModelWithdrawnWarning",
         "NoiseBlock",
         "NoiseOverwrittenWarning",
         "NumericOrbit",
         "Orbit",
         "L1Data",
+        "Template",
         "Wheel",
         "__version__",
         "replace",

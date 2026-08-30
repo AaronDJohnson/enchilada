@@ -31,8 +31,8 @@ observed = L1Data(
 
 print(f"observed: N={observed.N}, fs={observed.fs} Hz, Tobs={observed.Tobs:.0f} s\n")
 
-# Each EchoBlock prints what the Wheel hands it and contributes zeros, so
-# the residuals every block sees are just the observed data. Blocks keep
+# Each EchoBlock prints what the Wheel hands it and returns a zero template,
+# so the residuals every block sees are just the observed data. Blocks keep
 # their own state -- hold on to the objects to read it back afterwards.
 ucb = EchoBlock(name="ucb")
 mbhb = EchoBlock(name="mbhb")
