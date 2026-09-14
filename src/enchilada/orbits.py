@@ -1,8 +1,8 @@
-"""LISA constellation ephemerides carried on `L1Data.orbit`.
+"""LISA constellation ephemerides carried on `L1Data.orbit_ephemeris`.
 
 The orbit is a *fixed property of the dataset* -- the spacecraft positions the
 data was produced with -- that every block must share to build its response.
-enchilada carries an orbit object opaquely on `L1Data.orbit` (like `noise`)
+enchilada carries an orbit object opaquely on `L1Data.orbit_ephemeris`
 and never interprets it; this module defines the contract (`Orbit`) and the
 concrete forms a dataset can supply.
 
@@ -24,7 +24,7 @@ so a single tabulated type covers every dataset.
 
 Frame: the response works in **ecliptic** Cartesian metres. Ephemerides given in
 equatorial / ICRS (e.g. Mojito spacecraft positions) are rotated on load
-(``frame="equatorial"``).
+(``coordinate_frame="equatorial"``).
 
 The heavy dependencies (`scipy`, `h5py`, `lisaorbits`) are imported lazily so
 enchilada's core stays dependency-free.
@@ -37,10 +37,10 @@ from typing import Protocol, runtime_checkable
 import numpy as np
 from numpy.typing import NDArray
 
-CLIGHT = 299792458.0  # m/s
-# J2000 mean obliquity of the ecliptic [rad]; equatorial -> ecliptic is R_x(+eps).
-_OBLIQUITY = 0.40909280422232897
-_NOMINAL_ARMLENGTH = 2.5e9  # m, fallback if a table is degenerate
+SPEED_OF_LIGHT_M_PER_S = 299792458.0  # m/s
+# J2000 mean obliquity of the ecliptic, used for the equatorial-to-ecliptic rotation.
+_J2000_OBLIQUITY_RAD = 0.40909280422232897
+_DEFAULT_NOMINAL_ARM_LENGTH_M = 2.5e9  # m, fallback if a table is degenerate
 
 
 @runtime_checkable
@@ -48,44 +48,46 @@ class Orbit(Protocol):
     """What a block relies on from a constellation ephemeris.
 
     Attributes:
-        L: Nominal armlength [m] (a scalar; the TDI delay length).
-        fstar: Transfer frequency ``c / (2 pi L)`` [Hz].
+        nominal_arm_length_m: Nominal arm length in metres, used for TDI delays.
+        transfer_frequency_hz: Transfer frequency in Hz, conventionally
+            ``c / (2 pi nominal_arm_length_m)``.
 
     Method:
-        positions(t): spacecraft positions at time(s) ``t`` [s, absolute, same
-            epoch convention as the data]. Returns ``(x, y, z)``, each of shape
-            ``(3, len(t))`` (spacecraft, time), in **ecliptic** metres.
+        positions(times_gps): spacecraft positions at absolute GPS times on the
+            same clock as the data. Returns ``(x, y, z)`` in ecliptic metres,
+            each shaped ``(3, num_query_times)`` (spacecraft, time).
 
-    An implementation must cover every sample time, ``epoch + n*dt`` for n in
-    ``[0, n_samples-1]`` -- i.e. up to ``epoch + (n_samples-1)*dt``, one sample
-    interval short of ``epoch + Tobs`` -- and in practice should carry margin
-    beyond that, since a block applying TDI light-travel delays evaluates
-    retarded times slightly outside the sample span. It should raise rather
-    than extrapolate outside its domain of validity, as :class:`NumericOrbit`
-    does. Tabulated implementations should also expose ``t_range``; when
-    present, `L1Data` checks it covers the sample span at construction, so
+    An implementation must cover every sample time, ``start_time_gps + n*dt`` for n in
+    ``[0, num_time_samples-1]`` -- up to ``start_time_gps + (num_time_samples-1)*dt``,
+    one sample interval short of ``start_time_gps + Tobs`` -- and in practice
+    should carry margin beyond that, since a block applying TDI light-travel
+    delays evaluates retarded times slightly outside the sample span. It should
+    raise rather than extrapolate outside its domain of validity, as
+    :class:`NumericOrbit` does. Tabulated implementations should also expose
+    ``time_range_gps``. When present, `L1Data` checks it covers the sample span, so
     an epoch mismatch fails before any sampling starts.
     """
 
-    L: float
-    fstar: float
+    nominal_arm_length_m: float
+    transfer_frequency_hz: float
 
     def positions(
-        self, t: NDArray[np.float64]
+        self, times_gps: NDArray[np.float64]
     ) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
-        """Spacecraft positions at times `t`, in the ecliptic frame.
+        """Spacecraft positions at `times_gps`, in the ecliptic frame.
 
         Args:
-            t: Times in seconds on the same clock as `L1Data.epoch` --
-                i.e. absolute mission time, not offsets from the start of the
-                data. Any shape; implementations broadcast over it.
+            times_gps: GPS times in seconds on the same clock as
+                `L1Data.start_time_gps`. These are absolute mission times,
+                not offsets from the data's start. Any shape; implementations
+                broadcast over it.
 
         Returns:
             `(x, y, z)` -- one array per *coordinate*, not per spacecraft --
-            each of shape `(3, len(t))` in metres, indexed
+            each of shape `(3, num_query_times)` in metres, indexed
             `[spacecraft, time]`. Ecliptic frame, so an implementation
             holding equatorial/ICRS tables must rotate before returning
-            (see `NumericOrbit.from_arrays(frame="equatorial")`).
+            (see `NumericOrbit.from_arrays(coordinate_frame="equatorial")`).
 
         Implementations must raise rather than extrapolate outside their
         domain of validity: a silently wrong constellation shifts every
@@ -94,17 +96,19 @@ class Orbit(Protocol):
         ...
 
 
-def _equatorial_to_ecliptic(pos: NDArray[np.float64]) -> NDArray[np.float64]:
+def _equatorial_to_ecliptic(
+    spacecraft_positions_m: NDArray[np.float64],
+) -> NDArray[np.float64]:
     """Rotate position vectors (..., 3) from equatorial/ICRS to ecliptic."""
-    eps = _OBLIQUITY
-    rx = np.array(
+    obliquity_rad = _J2000_OBLIQUITY_RAD
+    rotation_matrix = np.array(
         [
             [1.0, 0.0, 0.0],
-            [0.0, np.cos(eps), np.sin(eps)],
-            [0.0, -np.sin(eps), np.cos(eps)],
+            [0.0, np.cos(obliquity_rad), np.sin(obliquity_rad)],
+            [0.0, -np.sin(obliquity_rad), np.cos(obliquity_rad)],
         ]
     )
-    return pos @ rx.T
+    return spacecraft_positions_m @ rotation_matrix.T
 
 
 class NumericOrbit:
@@ -113,181 +117,287 @@ class NumericOrbit:
     The numerical-orbit analogue of GLASS's ``interpolate_orbits``: store
     spacecraft positions on a (typically coarse) time grid and interpolate them
     to whatever times a waveform needs. Satisfies :class:`Orbit`.
+    Tabulated arrays are copied into read-only storage, so callers may reuse
+    their input buffers without changing the ephemeris.
 
     Args:
-        times: ``(n,)`` sample times [s], ascending, in the data's epoch.
-        positions: ``(3, n, 3)`` spacecraft positions [m] -- (spacecraft, time,
-            xyz). Already in ecliptic coordinates (use the loaders for other
-            frames).
-        L: nominal armlength [m]; defaults to the time-mean of the three arms.
-        fstar: transfer frequency [Hz]; defaults to ``c / (2 pi L)``.
+        sample_times_gps: Ascending sample times in GPS seconds, shaped
+            ``(num_time_samples,)`` and on the same clock as the data.
+        spacecraft_positions_m: Positions in ecliptic metres, shaped
+            ``(3, num_time_samples, 3)`` (spacecraft, time, xyz). Use the loaders
+            for other coordinate frames.
+        nominal_arm_length_m: Nominal arm length in metres; defaults to the
+            mean of the three arms over the tabulated times.
+        transfer_frequency_hz: Transfer frequency in Hz; defaults to
+            ``c / (2 pi nominal_arm_length_m)``.
     """
 
     def __init__(
         self,
-        times: NDArray[np.float64],
-        positions: NDArray[np.float64],
+        sample_times_gps: NDArray[np.float64],
+        spacecraft_positions_m: NDArray[np.float64],
         *,
-        L: float | None = None,
-        fstar: float | None = None,
+        nominal_arm_length_m: float | None = None,
+        transfer_frequency_hz: float | None = None,
     ) -> None:
         from scipy.interpolate import CubicSpline  # lazy: keep enchilada dep-free
 
-        self._t = np.ascontiguousarray(times, dtype=float)
-        pos = np.ascontiguousarray(positions, dtype=float)
-        if pos.shape[0] != 3 or pos.shape[1] != self._t.size or pos.shape[2] != 3:
+        self._sample_times_gps = np.array(
+            sample_times_gps, dtype=float, order="C", copy=True
+        )
+        if (
+            self._sample_times_gps.ndim != 1
+            or self._sample_times_gps.size < 2
+            or not np.isfinite(self._sample_times_gps).all()
+            or np.any(np.diff(self._sample_times_gps) <= 0)
+        ):
             raise ValueError(
-                f"positions must be (3, {self._t.size}, 3), got {pos.shape}"
+                "sample_times_gps must be a finite, strictly increasing 1-D array "
+                "with at least two times"
             )
-        self._pos = pos
+        spacecraft_positions_m = np.array(
+            spacecraft_positions_m, dtype=float, order="C", copy=True
+        )
+        if spacecraft_positions_m.shape != (
+            3,
+            self._sample_times_gps.size,
+            3,
+        ):
+            raise ValueError(
+                f"spacecraft_positions_m must be "
+                f"(3, {self._sample_times_gps.size}, 3), "
+                f"got {spacecraft_positions_m.shape}"
+            )
+        if not np.isfinite(spacecraft_positions_m).all():
+            raise ValueError("spacecraft_positions_m must contain finite positions")
+        self._spacecraft_positions_m = spacecraft_positions_m
         # one spline per (spacecraft, coordinate); evaluated together per call
-        self._spline = CubicSpline(self._t, pos, axis=1)
-        if L is None:
-            arms = [
-                np.linalg.norm(pos[a] - pos[b], axis=-1)
-                for a, b in ((0, 1), (0, 2), (1, 2))
+        self._position_spline = CubicSpline(
+            self._sample_times_gps, spacecraft_positions_m, axis=1
+        )
+        if nominal_arm_length_m is None:
+            arm_lengths_m = [
+                np.linalg.norm(
+                    spacecraft_positions_m[first_spacecraft]
+                    - spacecraft_positions_m[second_spacecraft],
+                    axis=-1,
+                )
+                for first_spacecraft, second_spacecraft in ((0, 1), (0, 2), (1, 2))
             ]
-            mean_arm = float(np.mean(arms))
+            mean_arm_length_m = float(np.mean(arm_lengths_m))
             # A degenerate table (zero/coincident positions) yields a finite
             # zero mean arm, which is just as unusable as a NaN one.
-            L = (
-                mean_arm
-                if np.isfinite(mean_arm) and mean_arm > 0.0
-                else _NOMINAL_ARMLENGTH
+            nominal_arm_length_m = (
+                mean_arm_length_m
+                if np.isfinite(mean_arm_length_m) and mean_arm_length_m > 0.0
+                else _DEFAULT_NOMINAL_ARM_LENGTH_M
             )
-        self.L = float(L)
-        self.fstar = (
-            float(fstar) if fstar is not None else CLIGHT / (2.0 * np.pi * self.L)
+        self.nominal_arm_length_m = float(nominal_arm_length_m)
+        if not np.isfinite(self.nominal_arm_length_m) or self.nominal_arm_length_m <= 0:
+            raise ValueError("nominal_arm_length_m must be positive and finite")
+        self.transfer_frequency_hz = (
+            float(transfer_frequency_hz)
+            if transfer_frequency_hz is not None
+            else SPEED_OF_LIGHT_M_PER_S / (2.0 * np.pi * self.nominal_arm_length_m)
         )
+        if (
+            not np.isfinite(self.transfer_frequency_hz)
+            or self.transfer_frequency_hz <= 0
+        ):
+            raise ValueError("transfer_frequency_hz must be positive and finite")
+        self._sample_times_gps.setflags(write=False)
+        self._spacecraft_positions_m.setflags(write=False)
 
     @property
-    def t_range(self) -> tuple[float, float]:
-        """``(t_min, t_max)`` of the tabulated grid [s]."""
-        return (float(self._t[0]), float(self._t[-1]))
+    def time_range_gps(self) -> tuple[float, float]:
+        """Inclusive start and end of the tabulated grid in GPS seconds."""
+        return (float(self._sample_times_gps[0]), float(self._sample_times_gps[-1]))
 
     def positions(
-        self, t: NDArray[np.float64]
+        self, times_gps: NDArray[np.float64]
     ) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
-        """Interpolated positions at ``t``; ``(x, y, z)`` each ``(3, len(t))``.
+        """Interpolate at ``times_gps``, returning ``(x, y, z)`` in metres.
 
-        Raises ValueError for times outside the tabulated grid (`t_range`):
+        Each coordinate array has shape ``(3, num_query_times)``.
+
+        Raises ValueError for nonfinite times or times outside the tabulated
+        grid (`time_range_gps`):
         cubic splines extrapolate polynomially and silently drift off the
         real orbit, so out-of-span queries -- typically an epoch mismatch
         between data and ephemeris -- fail loudly instead.
         """
-        t = np.atleast_1d(np.asarray(t, dtype=float))
-        t_lo, t_hi = self.t_range
-        if t.size and (t.min() < t_lo or t.max() > t_hi):
+        times_gps = np.atleast_1d(np.asarray(times_gps, dtype=float))
+        if not np.isfinite(times_gps).all():
+            raise ValueError("times_gps must contain only finite query times")
+        min_time_gps, max_time_gps = self.time_range_gps
+        if times_gps.size and (
+            times_gps.min() < min_time_gps or times_gps.max() > max_time_gps
+        ):
             raise ValueError(
-                f"requested times span [{t.min()}, {t.max()}] s but the tabulated "
-                f"ephemeris covers [{t_lo}, {t_hi}] s; refusing to extrapolate "
+                f"requested times span [{times_gps.min()}, {times_gps.max()}] s "
+                f"but the tabulated ephemeris covers "
+                f"[{min_time_gps}, {max_time_gps}] s; "
+                f"refusing to extrapolate "
                 f"(mismatched epoch conventions? GPS vs zero-based times?)"
             )
-        p = self._spline(t)  # (3 sc, len(t), 3 xyz)
-        return p[..., 0], p[..., 1], p[..., 2]
+        # Shape: (spacecraft, query time, xyz coordinate).
+        interpolated_positions_m = self._position_spline(times_gps)
+        return (
+            interpolated_positions_m[..., 0],
+            interpolated_positions_m[..., 1],
+            interpolated_positions_m[..., 2],
+        )
 
     # ---- loaders --------------------------------------------------------
 
     @classmethod
     def from_arrays(
         cls,
-        times: NDArray[np.float64],
-        sc_positions: NDArray[np.float64],
+        sample_times_gps: NDArray[np.float64],
+        spacecraft_positions_m: NDArray[np.float64],
         *,
-        frame: str = "ecliptic",
-        L: float | None = None,
-        fstar: float | None = None,
+        coordinate_frame: str = "ecliptic",
+        nominal_arm_length_m: float | None = None,
+        transfer_frequency_hz: float | None = None,
     ) -> NumericOrbit:
         """Build from in-memory arrays.
 
         Args:
-            times: ``(n,)`` times [s].
-            sc_positions: ``(3, n, 3)`` positions [m] (spacecraft, time, xyz).
-            frame: ``"ecliptic"`` (default) or ``"equatorial"`` (rotated on load).
+            sample_times_gps: Ascending GPS times, shaped ``(num_time_samples,)``.
+            spacecraft_positions_m: Positions in metres, shaped
+                ``(3, num_time_samples, 3)`` (spacecraft, time, xyz).
+            coordinate_frame: "ecliptic" (default) or "equatorial";
+                equatorial positions are rotated to ecliptic on load.
+            nominal_arm_length_m: Optional override for the mean arm length.
+            transfer_frequency_hz: Optional override for the transfer frequency.
         """
-        pos = np.asarray(sc_positions, dtype=float)
-        if frame == "equatorial":
-            pos = _equatorial_to_ecliptic(pos)
-        elif frame != "ecliptic":
-            raise ValueError(f"frame must be 'ecliptic' or 'equatorial', got {frame!r}")
-        return cls(np.asarray(times, float), pos, L=L, fstar=fstar)
+        spacecraft_positions_m = np.asarray(spacecraft_positions_m, dtype=float)
+        if coordinate_frame == "equatorial":
+            spacecraft_positions_m = _equatorial_to_ecliptic(spacecraft_positions_m)
+        elif coordinate_frame != "ecliptic":
+            raise ValueError(
+                f"coordinate_frame must be 'ecliptic' or 'equatorial', "
+                f"got {coordinate_frame!r}"
+            )
+        return cls(
+            np.asarray(sample_times_gps, float),
+            spacecraft_positions_m,
+            nominal_arm_length_m=nominal_arm_length_m,
+            transfer_frequency_hz=transfer_frequency_hz,
+        )
 
     @classmethod
     def from_hdf5(
         cls,
-        path: str,
+        file_path: str,
         *,
-        group: str = "orbits",
-        position_datasets: tuple[str, str, str] = (
+        group_path: str = "orbits",
+        position_dataset_names: tuple[str, str, str] = (
             "sc_position_1",
             "sc_position_2",
             "sc_position_3",
         ),
-        frame: str = "equatorial",
-        L: float | None = None,
+        coordinate_frame: str = "equatorial",
+        nominal_arm_length_m: float | None = None,
     ) -> NumericOrbit:
         """Load a tabulated ephemeris from an HDF5 file.
 
-        Defaults match the LDC/Mojito L1 layout: a ``group`` holding a
+        Defaults match the LDC/Mojito L1 layout: the group at ``group_path`` holds a
         ``sampling`` sub-object with ``t0``/``dt``/``size`` attributes and three
         ``sc_position_i`` datasets of shape ``(n, 3)`` in equatorial/ICRS metres.
+
+        Args:
+            file_path: Path to the HDF5 ephemeris file.
+            group_path: Group containing sampling metadata and positions.
+            position_dataset_names: Dataset names for spacecraft 1, 2, and 3,
+                relative to group_path, in that order.
+            coordinate_frame: Frame of the stored coordinates; "equatorial"
+                by default, or "ecliptic" to skip rotation.
+            nominal_arm_length_m: Optional override for the mean arm length.
         """
         import h5py  # lazy
 
-        with h5py.File(path, "r") as f:
-            g = f[group]
-            s = g["sampling"]
-            t0 = float(s.attrs["t0"])
-            dt = float(s.attrs["dt"])
-            n = int(s.attrs["size"])
-            pos = np.stack([np.asarray(g[d]) for d in position_datasets], axis=0)
-        times = np.asarray(t0 + np.arange(n) * dt, dtype=np.float64)
-        return cls.from_arrays(times, pos, frame=frame, L=L)
+        with h5py.File(file_path, "r") as orbit_file:
+            orbit_group = orbit_file[group_path]
+            sampling_metadata = orbit_group["sampling"]
+            start_time_gps = float(sampling_metadata.attrs["t0"])
+            sample_interval_s = float(sampling_metadata.attrs["dt"])
+            num_time_samples = int(sampling_metadata.attrs["size"])
+            spacecraft_positions_m = np.stack(
+                [
+                    np.asarray(orbit_group[dataset_name])
+                    for dataset_name in position_dataset_names
+                ],
+                axis=0,
+            )
+        sample_times_gps = np.asarray(
+            start_time_gps + np.arange(num_time_samples) * sample_interval_s,
+            dtype=np.float64,
+        )
+        return cls.from_arrays(
+            sample_times_gps,
+            spacecraft_positions_m,
+            coordinate_frame=coordinate_frame,
+            nominal_arm_length_m=nominal_arm_length_m,
+        )
 
     @classmethod
     def from_lisaorbits(
         cls,
-        orbits: object,
-        times: NDArray[np.float64],
+        lisaorbits_model: object,
+        sample_times_gps: NDArray[np.float64],
         *,
-        frame: str = "equatorial",
+        coordinate_frame: str = "equatorial",
     ) -> NumericOrbit:
-        """Sample a **lisaorbits** orbit object onto ``times`` and tabulate it.
+        """Tabulate a **lisaorbits** model at ``sample_times_gps``.
 
         Works for both analytic (e.g. ``KeplerianOrbits``) and numerical
         (``OEMOrbits``/``InterpolatedOrbits``) lisaorbits orbits -- both expose
-        ``compute_position(t)`` -- evaluated on ``times`` and wrapped as a
+        ``compute_position(t)`` -- evaluated on ``sample_times_gps`` and wrapped as a
         :class:`NumericOrbit`. For a lisaorbits *file* on disk, prefer
         :meth:`from_hdf5` with the file's dataset names.
 
         lisaorbits positions are in the BCRS/equatorial frame (validated against
         lisaorbits 3.0.3: the guiding-centre z swings by ``AU sin eps`` over a
-        year), so ``frame`` defaults to ``"equatorial"`` and they are rotated to
-        ecliptic on load.
+        year), so ``coordinate_frame`` defaults to ``"equatorial"`` and positions
+        are rotated to ecliptic on load.
+
+        Args:
+            lisaorbits_model: Orbit object exposing compute_position(t).
+            sample_times_gps: GPS times to pass to the model, shaped
+                ``(num_time_samples,)``. The model must use the same clock.
+            coordinate_frame: Frame returned by the model, either "equatorial"
+                (default) or "ecliptic".
         """
-        times = np.asarray(times, dtype=float)
-        fn = getattr(orbits, "compute_position", None)
-        if not callable(fn):
+        sample_times_gps = np.asarray(sample_times_gps, dtype=float)
+        compute_position = getattr(lisaorbits_model, "compute_position", None)
+        if not callable(compute_position):
             raise TypeError(
                 "expected a lisaorbits orbit with compute_position(t); pass a "
                 "(3, n, 3) array to NumericOrbit.from_arrays, or use from_hdf5 for "
                 "a lisaorbits file."
             )
-        raw = np.asarray(fn(times))  # expected (len(t), 3 sc, 3 xyz)
-        n = times.size
-        if raw.shape == (n, 3, 3):
-            pos = np.moveaxis(raw, 0, 1)  # -> (3 sc, n, 3 xyz)
-        elif raw.shape == (n, 9):
+        # The external API orders its axes as (time, spacecraft, xyz).
+        sampled_positions_m = np.asarray(compute_position(sample_times_gps))
+        num_time_samples = sample_times_gps.size
+        if sampled_positions_m.shape == (num_time_samples, 3, 3):
+            spacecraft_positions_m = np.moveaxis(sampled_positions_m, 0, 1)
+        elif sampled_positions_m.shape == (num_time_samples, 9):
             # some versions flatten the (spacecraft, xyz) pair
-            pos = np.moveaxis(raw.reshape(n, 3, 3), 0, 1)
+            spacecraft_positions_m = np.moveaxis(
+                sampled_positions_m.reshape(num_time_samples, 3, 3), 0, 1
+            )
         else:
             # never reshape blindly: a wrong shape would silently scramble the
             # spacecraft/time/coordinate axes and produce a plausible-looking
             # but meaningless constellation.
             raise ValueError(
-                f"compute_position(times) returned shape {raw.shape}; expected "
-                f"({n}, 3, 3) -- (time, spacecraft, xyz) -- or a flattened "
-                f"({n}, 9). Pass a (3, {n}, 3) array to NumericOrbit.from_arrays "
+                f"compute_position(times) returned shape {sampled_positions_m.shape}; "
+                f"expected ({num_time_samples}, 3, 3) -- (time, spacecraft, xyz) -- "
+                f"or a flattened ({num_time_samples}, 9). "
+                f"Pass a (3, {num_time_samples}, 3) array to NumericOrbit.from_arrays "
                 f"instead if your source uses another layout."
             )
-        return cls.from_arrays(times, pos, frame=frame)
+        return cls.from_arrays(
+            sample_times_gps, spacecraft_positions_m, coordinate_frame=coordinate_frame
+        )

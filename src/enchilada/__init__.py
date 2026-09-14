@@ -1,10 +1,15 @@
-from dataclasses import replace  # re-exported: every block needs it
+from dataclasses import replace  # convenience for frozen data/result snapshots
 from importlib.metadata import PackageNotFoundError, version
 
-from enchilada.block import Block, NoiseBlock
+from enchilada.block import Block
+from enchilada.block_result import BlockResult
+from enchilada.covariance import DataCovariance
 from enchilada.data import L1Data
+from enchilada.domains import WDMGrid
+from enchilada.ledger import Ledger
 from enchilada.orbits import NumericOrbit, Orbit
-from enchilada.template import Template
+from enchilada.translated_covariance import TranslatedCovariance
+from enchilada.translation import transform
 from enchilada.wheel import NoiseOverwrittenWarning, Wheel
 
 try:
@@ -14,13 +19,17 @@ except PackageNotFoundError:  # pragma: no cover - source tree without install
 
 __all__ = [
     "Block",
-    "NoiseBlock",
+    "DataCovariance",
+    "Ledger",
     "NoiseOverwrittenWarning",
     "NumericOrbit",
     "Orbit",
     "L1Data",
-    "Template",
+    "BlockResult",
     "Wheel",
+    "WDMGrid",
+    "TranslatedCovariance",
     "__version__",
     "replace",
+    "transform",
 ]

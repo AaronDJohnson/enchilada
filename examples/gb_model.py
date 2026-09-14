@@ -8,26 +8,23 @@ example — the parts a source-class group brings to a global fit:
   inner-product helpers (pure functions, no global state; ``waveform`` is the
   one-off convenience wrapper used for diagnostics and plots);
 - ``inject_gb`` — builds a synthetic frequency-domain dataset (signal + noise);
+- ``draw_gb_prior`` — prepares a complete initial result using the caller's RNG;
 - ``GBBlock`` — the enchilada ``Block`` implementation. It reads everything
-  it needs (channels, grid, noise PSD) off the ``residual`` the Wheel hands it,
-  so it never reaches back into this module's or the notebook's scope for run
-  settings.
+  it needs from the conditional residual, covariance and BlockResult state. The block
+  retains fixed configuration; each call recreates its GBGPU/Eryn resources.
 
 The notebook imports these and drives them through enchilada's ``L1Data`` and
 ``Wheel``; keeping them here makes it obvious which code is enchilada and which
 is the model plugged into it.
 
-Requires the LISA stack: ``gbgpu`` (master), ``eryn`` (dev),
+Requires the LISA stack in ``requirements-gb.txt``: ``gbgpu``, ``eryn``,
 ``lisaanalysistools``. The companion notebook additionally plots with
 ``matplotlib`` and ``corner``.
 """
 
 import numpy as np
-from eryn.ensemble import EnsembleSampler
-from eryn.prior import ProbDistContainer, UniformDistribution
-from eryn.state import State
-from gbgpu.gbgpu import GBGPU
-from lisatools.sensitivity import A1TDISens, get_sensitivity
+
+from enchilada import BlockResult, DataCovariance, L1Data, TranslatedCovariance
 
 
 # ---------------------------------------------------------------- noise model
@@ -38,10 +35,18 @@ class FixedLISANoise:
     """
 
     def psd(self, f, channel=None):
+        from lisatools.sensitivity import A1TDISens, get_sensitivity
+
         return get_sensitivity(np.asarray(f), sens_fn=A1TDISens)
 
 
 # ---------------------------------------------------------------- waveform helpers
+def _new_gb():
+    from gbgpu.gbgpu import GBGPU
+
+    return GBGPU()
+
+
 def gb_template(gb, params, angles, Tobs, dt, NB):
     """GB (amp, f0, fdot, phi0) + fixed angles -> (start_ind, hA, hE)."""
     amp, f0, fdot, phi0 = params
@@ -56,7 +61,7 @@ def waveform(params, angles, Tobs, dt, NB=128):
     For hot loops (a likelihood) pass a reused ``gb`` to :func:`gb_template`
     instead; this is for diagnostics/plots.
     """
-    return gb_template(GBGPU(), params, angles, Tobs, dt, NB)
+    return gb_template(_new_gb(), params, angles, Tobs, dt, NB)
 
 
 def scatter(start_ind, cols, n_rfft, chans):
@@ -79,7 +84,7 @@ def inject_gb(truth, angles, Tobs, dt, n_samples, channels, noise, NB=128, seed=
 
     Note this dataset never exists as a time series -- GBGPU emits narrowband
     frequency-domain templates directly -- which is why the caller must state
-    ``n_samples`` when wrapping it in an ``L1Data``. Data loaded as a time
+    ``num_time_samples`` when wrapping it in an ``L1Data``. Data loaded as a time
     series instead gets it derived, and ``L1Data.to_frequency()`` carries it.
 
     Returns ``(tdi, info)``: ``tdi`` is the channel->array dict to wrap in a
@@ -90,7 +95,7 @@ def inject_gb(truth, angles, Tobs, dt, n_samples, channels, noise, NB=128, seed=
     freqs = np.fft.rfftfreq(n_samples, dt)
     n_rfft = freqs.size
 
-    gb = GBGPU()
+    gb = _new_gb()
     si, hA, hE = gb_template(gb, truth, angles, Tobs, dt, NB)
     signal = scatter(si, {"A": hA, "E": hE}, n_rfft, channels)
 
@@ -105,6 +110,9 @@ def inject_gb(truth, angles, Tobs, dt, n_samples, channels, noise, NB=128, seed=
             rng.standard_normal(n_rfft) + 1j * rng.standard_normal(n_rfft)
         )
         draw[0] = 0.0
+        if n_samples % 2 == 0:
+            # The real Nyquist coefficient carries the full S/(2 df) variance.
+            draw[-1] = np.sqrt(2.0) * draw[-1].real
         tdi[ch] = signal[ch] + draw
 
     band = slice(si, si + NB)
@@ -114,127 +122,229 @@ def inject_gb(truth, angles, Tobs, dt, n_samples, channels, noise, NB=128, seed=
 
 # ---------------------------------------------------------------- the block
 class GBBlock:
-    """enchilada ``Block``: one galactic binary, sampled with Eryn.
+    """One galactic binary with a uniform-box prior and Eryn stretch sampling.
 
-    Implements ``name`` / ``start`` / ``update``. Reads channels, the frequency
-    grid, and the noise PSD off the ``residual`` it is handed (never from module
-    scope). The residual is already the data minus every other block, so it
-    advances Eryn against it directly (no add-back), then returns its new
-    point-estimate template; the Wheel subtracts it. The posterior chain lives
-    on the object (``self.chain``).
+    The block retains fixed configuration only. The caller-side ``draw_gb_prior``
+    helper initializes all walkers before registration. Each ``sample`` call
+    rebuilds GBGPU and Eryn,
+    restores numerical walker/RNG state, and evaluates the conditional residual.
+    ``BlockResult.model_parameters`` and its signal describe the first current walker,
+    a posterior draw after mixing. ``sampler_state["samples"]`` holds only this cycle's
+    samples; collect a chain with the Wheel callback. ``sampler_state["updates"]``
+    counts calls to ``sample``, each of which runs ``steps_per_cycle`` steps.
 
-    Samples ``amp, f0, fdot, phi0``; the four sky/orientation ``angles`` are held
-    fixed (enlarge ``init``/``bounds``/``angles`` to sample them too).
+    This CPU example uses one temperature and fixed ensemble splits. Eryn's
+    default split randomization uses NumPy's global RNG; fixed splits keep all
+    stochastic moves in the explicit Eryn random state without changing the
+    affine-invariant stretch proposal. Adaptive moves/tempering would require
+    carrying their additional evolving state as well.
 
-    ``name`` is a constructor argument so several of these can share one Wheel
-    (each with its own band and sampler) -- Wheel rejects duplicate names.
-    ``params`` is the current point estimate; ``chain`` the posterior samples.
+    Register with ``wheel.add(block, initial_block_result=initial,
+    data_domain="frequency")``. This narrowband likelihood requires native
+    frequency covariance with independent channels;
+    generic translated covariance operators need a different likelihood. Wheel
+    can restore a native frequency covariance that was stored in time or WDM.
     """
 
-    #: channels this model can produce; GBGPU gives the A and E TDI variables
     SUPPORTED_CHANNELS = ("A", "E")
+    PARAMETER_NAMES = ("amp", "f0", "fdot", "phi0")
 
     def __init__(
         self,
-        init,
         bounds,
         angles,
         name="gb",
         n_walkers=24,
         steps_per_cycle=40,
         band=128,
-        seed=0,
     ):
-        self.name = name
-        self.init = np.asarray(init, float)
         b = np.asarray(bounds, float)
-        self.lo, self.hi = b[:, 0], b[:, 1]
-        self.angles, self.NB = angles, band
-        self.nw, self.k = n_walkers, steps_per_cycle
-        self.ndim = self.init.size
-        self.rng = np.random.default_rng(seed)
-        self.chain = None
-        self.params = self.init.copy()
-        self._data = self._model = self._sampler = self._state = None
+        if b.shape != (4, 2) or not np.isfinite(b).all() or np.any(b[:, 0] >= b[:, 1]):
+            raise ValueError("bounds must contain four finite increasing intervals")
+        if len(angles) != 4 or not np.isfinite(angles).all():
+            raise ValueError("angles must contain four finite fixed angles")
+        if n_walkers < 8 or steps_per_cycle < 1 or band < 1:
+            raise ValueError(
+                "need at least 8 walkers, 1 step per cycle, and 1 band bin"
+            )
+        self.name = name
+        self.bounds = tuple(tuple(row) for row in b)
+        self.angles = tuple(angles)
+        self.nw, self.k, self.NB = n_walkers, steps_per_cycle, band
 
-    def _read_context(self, residual):
-        # ---- everything the physics needs comes from the residual ----
-        # Check the conventions we cannot honour rather than assuming them:
-        # this model emits a frequency-domain A/E fractional-frequency signal.
-        if residual.domain != "frequency":
-            raise ValueError(
-                f"{self.name}: this GB model produces frequency-domain templates, "
-                f"but the run is domain={residual.domain!r}"
-            )
-        if residual.observable != "fractional_frequency":
-            raise ValueError(
-                f"{self.name}: GBGPU emits fractional-frequency TDI, but the run "
-                f"declares observable={residual.observable!r}"
-            )
-        unsupported = set(residual.channels) - set(self.SUPPORTED_CHANNELS)
+    def _context(
+        self,
+        conditional_residual: L1Data,
+        noise_covariance: DataCovariance | TranslatedCovariance | None,
+    ):
+        if conditional_residual.data_domain != "frequency":
+            raise ValueError(f"{self.name}: GBBlock requires frequency-domain data")
+        if conditional_residual.physical_observable != "fractional_frequency":
+            raise ValueError(f"{self.name}: GBGPU emits fractional-frequency TDI")
+        unsupported = set(conditional_residual.channel_names) - set(
+            self.SUPPORTED_CHANNELS
+        )
         if unsupported:
+            raise ValueError(f"{self.name}: unsupported channels {sorted(unsupported)}")
+        if noise_covariance is None:
+            raise ValueError(f"{self.name}: GBBlock requires a noise covariance")
+        if (
+            not isinstance(noise_covariance, DataCovariance)
+            or noise_covariance.data_domain != "frequency"
+        ):
             raise ValueError(
-                f"{self.name}: this model only produces "
-                f"{list(self.SUPPORTED_CHANNELS)}, but the run has channels "
-                f"{list(residual.channels)} (unsupported: {sorted(unsupported)})"
+                f"{self.name}: this narrowband likelihood requires a native "
+                "frequency-domain covariance"
             )
-        self.chans = residual.channels
-        self.Tobs, self.dt, self.df = residual.Tobs, residual.dt, residual.df
-        self.n_rfft = residual.tdi[self.chans[0]].shape[0]
-        self.gb = GBGPU()
-        self.S = {
-            ch: residual.noise_psd(ch) for ch in self.chans
-        }  # noise via enchilada
+        noise_covariance.check_compatible(conditional_residual)
+        if np.any(
+            noise_covariance.covariance_matrix[
+                :, ~np.eye(len(conditional_residual.channel_names), dtype=bool)
+            ]
+        ):
+            raise ValueError(
+                f"{self.name}: this likelihood requires uncorrelated channels"
+            )
+        return _new_gb(), {
+            ch: noise_covariance.noise_psd(channel_name=ch)
+            for ch in conditional_residual.channel_names
+        }
 
-    def _template(self, params):
-        return gb_template(self.gb, params, self.angles, self.Tobs, self.dt, self.NB)
+    def _waveform(self, gb, params, conditional_residual):
+        si, hA, hE = gb_template(
+            gb,
+            params,
+            self.angles,
+            conditional_residual.Tobs,
+            conditional_residual.dt,
+            self.NB,
+        )
+        # The narrowband likelihood below uses the interior-bin weight. Reject
+        # a signal overlapping DC or an even-length time series' Nyquist bin.
+        end = conditional_residual.num_time_samples // 2 + (
+            conditional_residual.num_time_samples % 2
+        )
+        if si < 1 or si + self.NB > end:
+            raise ValueError(
+                f"{self.name}: GB band must lie strictly inside the rfft grid"
+            )
+        return si, {"A": hA, "E": hE}
 
-    def _render(self, params):
-        si, hA, hE = self._template(params)
-        return scatter(si, {"A": hA, "E": hE}, self.n_rfft, self.chans)
-
-    def _logl(self, x):  # Eryn maps this over walkers
-        si, hA, hE = self._template(np.asarray(x).ravel())
-        b = slice(si, si + self.NB)
-        cols = {"A": hA, "E": hE}
-        return -0.5 * sum(
-            inner(self._data[ch], cols[ch], self.S[ch], b, self.df) for ch in self.chans
+    def _render(self, gb, params, conditional_residual, state):
+        si, cols = self._waveform(gb, params, conditional_residual)
+        return conditional_residual.block_result(
+            scatter(
+                si,
+                cols,
+                conditional_residual.num_time_samples // 2 + 1,
+                conditional_residual.channel_names,
+            ),
+            model_parameters=dict(
+                zip(self.PARAMETER_NAMES, map(float, params), strict=True)
+            ),
+            sampler_state=state,
+            metadata={"sampler": "Eryn", "representative": "first walker"},
         )
 
-    def start(self, residual):
-        self._read_context(residual)
-        self._model = self._render(self.params)
-        self._sampler = EnsembleSampler(
+    def sample(
+        self,
+        conditional_residual: L1Data,
+        noise_covariance: DataCovariance | TranslatedCovariance | None,
+        current_block_result: BlockResult,
+        *,
+        rng: np.random.Generator,
+    ) -> BlockResult:
+        from eryn.ensemble import EnsembleSampler
+        from eryn.moves import StretchMove
+        from eryn.prior import ProbDistContainer, UniformDistribution
+        from eryn.state import State
+
+        gb, psds = self._context(conditional_residual, noise_covariance)
+
+        def loglike(x):
+            si, cols = self._waveform(gb, np.asarray(x).ravel(), conditional_residual)
+            band = slice(si, si + self.NB)
+            # Drop the parameter-independent full-data norm. Subtracting only
+            # a moving band's data norm would change the target as f0 moves.
+            return sum(
+                4.0
+                * conditional_residual.df
+                * np.sum(
+                    (
+                        np.real(
+                            conditional_residual.channel_data[ch][band].conj()
+                            * cols[ch]
+                        )
+                        - 0.5 * np.abs(cols[ch]) ** 2
+                    )
+                    / psds[ch][band]
+                )
+                for ch in conditional_residual.channel_names
+            )
+
+        sampler = EnsembleSampler(
             self.nw,
-            self.ndim,
-            self._logl,
+            4,
+            loglike,
             priors={
                 "model_0": ProbDistContainer(
                     {
-                        i: UniformDistribution(self.lo[i], self.hi[i])
-                        for i in range(self.ndim)
+                        i: UniformDistribution(lo, hi)
+                        for i, (lo, hi) in enumerate(self.bounds)
                     }
                 )
             },
+            moves=StretchMove(randomize_split=False, use_gpu=False),
         )
-        r = self.rng.standard_normal((1, self.nw, 1, self.ndim))
-        p0 = np.clip(
-            self.init + 0.01 * (self.hi - self.lo) * r,
-            self.lo + 1e-9 * (self.hi - self.lo),
-            self.hi - 1e-9 * (self.hi - self.lo),
+        current_state = current_block_result.sampler_state
+        sampler.random_state = current_state["random_state"]
+        # Deliberately omit cached log_like/log_prior: another block may have
+        # changed the residual or covariance since these walkers were last used.
+        initial = State(
+            current_state["coords"],
+            inds=current_state["inds"],
+            betas=current_state["betas"],
+            random_state=current_state["random_state"],
+            copy=True,
         )
-        self._state = State(p0)
-        return residual.template(dict(self._model))  # our template
+        final = sampler.run_mcmc(initial, self.k, progress=False)
+        state = {
+            "coords": final.branches_coords,
+            "inds": final.branches_inds,
+            "betas": final.betas,
+            "random_state": sampler.random_state,
+            "samples": sampler.get_chain()["model_0"].reshape(-1, 4),
+            "updates": current_state["updates"] + 1,
+        }
+        return self._render(
+            gb, final.branches_coords["model_0"][0, 0, 0], conditional_residual, state
+        )
 
-    def update(self, residual):
-        self.S = {
-            ch: residual.noise_psd(ch) for ch in self.chans
-        }  # current noise, off the residual
-        # `residual` is already the data minus every OTHER block -- fit it
-        # directly (no add-back); the Wheel keeps the ledger and subtracts.
-        self._data = {ch: residual.tdi[ch] for ch in self.chans}
-        self._state = self._sampler.run_mcmc(self._state, self.k, progress=False)
-        self.chain = self._sampler.get_chain()["model_0"].reshape(-1, self.ndim)
-        self.params = self.chain[-self.nw :].mean(0)  # point estimate
-        self._model = self._render(self.params)
-        return residual.template(dict(self._model))  # our template
+
+def draw_gb_prior(
+    block: GBBlock,
+    reference_data: L1Data,
+    noise_covariance: DataCovariance | TranslatedCovariance | None,
+    *,
+    rng: np.random.Generator,
+) -> BlockResult:
+    """Prepare all GB walker, signal, and continuation state before registration.
+
+    Call this example helper with frequency-domain data and native frequency
+    covariance, using an initialization RNG separate from Wheel's sampling RNG.
+    Wheel never calls the helper or draws initial parameters itself.
+    """
+    gb, _ = block._context(reference_data, noise_covariance)
+    bounds = np.asarray(block.bounds)
+    coords = rng.uniform(bounds[:, 0], bounds[:, 1], size=(1, block.nw, 1, 4))
+    # Eryn consumes RandomState tuples, not Generator.bit_generator.state.
+    random_state = np.random.RandomState(int(rng.integers(2**32))).get_state()
+    state = {
+        "coords": {"model_0": coords},
+        "inds": {"model_0": np.ones((1, block.nw, 1), dtype=bool)},
+        "betas": None,
+        "random_state": random_state,
+        "samples": np.empty((0, 4)),
+        "updates": 0,
+    }
+    return block._render(gb, coords[0, 0, 0], reference_data, state)

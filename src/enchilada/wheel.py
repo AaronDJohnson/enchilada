@@ -1,334 +1,484 @@
+"""Orchestrator-owned data, covariance, sampler state, and signal accounting."""
+
 import warnings
 from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import replace
 
 import numpy as np
 
+from enchilada._signal_sum import Signal, SignalSum
 from enchilada.block import Block
+from enchilada.block_result import BlockResult, check_on_grid
+from enchilada.covariance import DataCovariance
 from enchilada.data import L1Data
-from enchilada.template import Template, check_on_grid
+from enchilada.domains import WDMGrid
+from enchilada.ledger import Ledger
+from enchilada.translated_covariance import TranslatedCovariance, copy_covariance
+from enchilada.translation import _target_grid, transform
+
+DomainSelection = tuple[str, WDMGrid | None] | None
 
 
 class NoiseOverwrittenWarning(RuntimeWarning):
-    """Two blocks are writing `L1Data.noise`, so one is losing.
+    """A second block replaces the current noise owner's covariance.
 
-    `noise` is a single slot: whichever block writes last owns the model every
-    block sees afterwards. That is fine when one noise block owns it, and fine
-    when a noise block takes over the model the dataset arrived with. It is
-    almost never what you want when two blocks each maintain a component --
-    instrument noise and the galactic confusion foreground, say -- because the
-    Wheel does not combine them, it just keeps the last one.
-
-    Fix it by sampling both components inside a single noise block that
-    publishes one combined model, or by treating the foreground as a signal
-    block that returns it as a template (where the ledger *does* combine
-    contributions). If you really do mean to hand ownership between blocks,
-    silence it precisely::
-
-        warnings.filterwarnings(
-            "ignore", category=enchilada.NoiseOverwrittenWarning
-        )
+    Wheel keeps one covariance, not a sum of separate noise publications.
+    Publish a combined covariance from a single noise block when modelling
+    several components.
     """
 
 
 class Wheel:
-    """Runs a blocked-Gibbs global fit by handing each block a clean residual.
+    """Run stateless blocks with an explicit, complete state owned by the Wheel.
 
-    The Wheel keeps the pristine observed data and a **ledger** -- one entry
-    per block holding that block's current **template**: the signal it has
-    fit, summed over all its sources, as a channel -> array dict. From those
-    it forms any residual by subtraction, and it hands each block exactly the
-    residual that block should fit: the observed data minus **every other**
-    block's current template (never the block's own). The block fits against
-    that and returns its new template; the Wheel records it in the ledger and
-    subtracts it on the block's behalf whenever it forms a residual.
+    The pristine observation is copied at construction. A second L1Data stores
+    the full working residual, rebuilt after every accepted update. For block i,
+    the input is d - sum(j != i, T_j); the block's own signal remains in its input.
+    An absent TDI signal contributes zero, including when a block previously
+    returned a signal. Ledger holds complete BlockResults. Public data, covariance,
+    and ledger access returns copies. Orbit resources must be treated as immutable.
 
-    Why this shape. A block is only ever shown the data with its own template
-    already removed, so there is no "add-back" for it to remember -- and it
-    does no cross-block arithmetic at all: it returns what it found, and the
-    Wheel owns every subtraction. Because the template is returned rather than
-    recovered from a difference, it is stored at full precision, and the
-    classic silent failure of residual passing -- handing the residual straight
-    back and having that read as "nothing to subtract" -- is caught exactly
-    (see `_validate_returned`) instead of guessed at.
+    Registration requires and adopts an explicit initial_block_result. It never
+    calls model initialization or consumes random draws.
+    Each cycle calls sample with those inputs and the current_block_result from
+    the ledger. Sampling receives the supplied RNG and independent input snapshots.
+    Failed calls/validation/copying leave that block's state and the RNG unchanged.
+    Earlier successful updates in a failed cycle remain committed. Exceptions in
+    on_cycle_complete occur after that entire cycle has committed.
 
-    What lives where. The block owns its *sampler* state -- parameters, RNG,
-    chain, checkpoints -- and the Wheel never touches it. The Wheel owns the
-    *residual* state -- the pristine data and the per-block template ledger --
-    and does all the differencing. (This is the split the GLASS global fit
-    uses: blocks own their samplers, the framework owns the residual
-    bookkeeping.)
-
-    Consistency checking. `add` validates a block fully before recording it
-    (`name`, `start` and `update`; a `start` that fails leaves the Wheel
-    untouched), and every `start`/`update` must return a `Template` that lives
-    on the run's grid (the right channels, lengths and real/complex-ness) and
-    contains no NaN or inf.
-
-    The return type does most of this work. Because a template is not an
-    `L1Data`, it cannot carry the run settings or the orbit, so neither can
-    drift in transit and neither needs guarding; and a block still written for
-    the old contract -- returning the residual with its template subtracted --
-    is a `TypeError` at registration rather than a fit that is quietly wrong
-    (that return is a valid-looking `L1Data`, so no array check could catch
-    it). One failure remains a warning, because it cannot be proven wrong from
-    outside: a second block publishing a noise model
-    (`NoiseOverwrittenWarning`).
-
-    Noise. Signal blocks whiten against `residual.noise`. Two ways to supply
-    it:
-
-    * Fixed noise -- set it once on the observed data
-      (`observed = replace(observed, noise=...)`); it rides every handed
-      residual and never changes.
-    * Sampled noise -- register a noise block (one that returns
-      `residual.zero_template().with_noise(model)`, so its ledger entry is
-      zero; see `block.NoiseBlock`). Every block updated after it sees the
-      refreshed estimate.
-
-    Typical use:
-
-        observed = L1Data(tdi=..., sample_rate=...,
-                             channels=("A", "E", "T"),
-                             tdi_generation="2.0",
-                             observable="fractional_frequency",
-                             noise=fixed_noise_model)  # optional fixed noise
-        # (n_samples is read off the arrays for time-domain data)
-        wheel = Wheel(observed)
-        wheel.add(ucb_block)
-        wheel.add(mbhb_block)
-        wheel.add(noise_block)  # optional; a block that edits residual.noise
-        wheel.run(n_cycles=1000)
-
-    `wheel.residual()` is the full residual (data minus every block's
-    template); `wheel.residual(exclude=name)` is the residual that block sees;
-    `wheel.contribution(name)` is that block's current template. For a
-    block's internals -- its parameters, its chain -- ask the block object
-    you constructed and hold.
+    `initial_noise_covariance` supplies the starting DataCovariance. If omitted,
+    covariance stays unset until a block supplies it. Blocks receive covariance
+    separately from L1Data. The original data domain stays canonical. Register
+    a block with data_domain to translate its inputs and returned estimates.
+    The block that owns the current covariance must return it on every call;
+    other blocks can omit covariance without changing it.
     """
 
-    def __init__(self, observed: L1Data):
-        """Start a run from the observed data.
+    def __init__(
+        self,
+        observed_data: L1Data,
+        initial_noise_covariance: DataCovariance | TranslatedCovariance | None = None,
+        *,
+        random_seed: int | None = None,
+    ) -> None:
+        """Initialize a campaign from observations and an optional covariance.
 
         Args:
-            observed: TDI data with the run settings attached. Kept pristine;
-                every residual the Wheel forms starts from it.
+            observed_data: L1 observations and shared run settings. The Wheel
+                makes independent pristine and working copies.
+            initial_noise_covariance: Starting covariance. None leaves covariance
+                unset until a block supplies it.
+            random_seed: Seed for the campaign's NumPy generator. None requests
+                nondeterministic initialization.
         """
-        for ch in observed.channels:
-            # Otherwise the first block to touch it gets blamed by the
-            # finiteness guard below for data that was already broken. NaN is
-            # also the natural way a user marks gaps today, and gap support is
-            # not in the contract yet -- so say that plainly here.
-            if not np.isfinite(observed.tdi[ch]).all():
-                n_bad = int((~np.isfinite(observed.tdi[ch])).sum())
+        if not isinstance(observed_data, L1Data):
+            raise TypeError("observed_data must be L1Data")
+        for ch in observed_data.channel_names:
+            if not np.isfinite(observed_data.channel_data[ch]).all():
                 raise ValueError(
-                    f"observed.tdi[{ch!r}] has {n_bad} non-finite sample(s); the "
-                    f"data itself is not usable as a residual. If these mark "
-                    f"gaps or excised glitches, note that enchilada has no "
-                    f"data-quality mask yet (see the L1Data docstring); "
-                    f"fill or trim them before starting a run."
+                    f"observed_data.channel_data[{ch!r}] has non-finite samples; "
+                    "enchilada has no data-quality mask for gaps; "
+                    "fill or trim them first"
                 )
-        self.observed = observed
-        self._blocks: list[Block] = []
-        # the ledger: name -> that block's current template (its summed signal)
-        self._ledger: dict[str, dict[str, np.ndarray]] = {}
-        # the current noise model threaded onto every handed residual, and the
-        # block that last wrote it (None = the model the dataset arrived with)
-        self._noise = observed.noise
-        self._noise_owner: str | None = None
-
-    def add(self, block: Block) -> None:
-        """Register a block: call its `start` and record its template.
-
-        `start` is handed the data minus every block already registered
-        (carrying the current noise). All validation happens before the Wheel
-        records anything, so a failed `add` leaves the Wheel exactly as it was.
-        """
-        name = getattr(block, "name", None)
-        if not isinstance(name, str) or not name:
-            raise ValueError(
-                f"block name must be a non-empty string, got {name!r}; every "
-                f"Block needs a `name` unique within the Wheel "
-                f"(see enchilada.block.Block)"
+        if initial_noise_covariance is not None and not isinstance(
+            initial_noise_covariance, (DataCovariance, TranslatedCovariance)
+        ):
+            raise TypeError(
+                "initial_noise_covariance must be a DataCovariance, "
+                "TranslatedCovariance or None"
             )
-        if name in self._ledger:
-            raise ValueError(f"block name {name!r} already registered")
-        for method in ("start", "update"):
-            # check both up front: a missing `update` would otherwise register
-            # cleanly and die mid-cycle, after other ledger entries had moved
-            if not callable(getattr(block, method, None)):
-                raise TypeError(
-                    f"block {name!r} does not implement {method}(residual); a "
-                    f"Block needs `name`, `start` and `update` "
-                    f"(see enchilada.block.Block)"
+        if initial_noise_covariance is not None:
+            initial_noise_covariance = copy_covariance(initial_noise_covariance)
+            initial_noise_covariance.check_compatible(observed_data)
+        self._observed_data = self._copy_data(observed_data)
+        self._working_residual = self._copy_data(observed_data)
+        self._noise_covariance = initial_noise_covariance
+        self._noise_owner_block_name: str | None = None
+        self._ledger = Ledger()
+        self._blocks: list[tuple[str, Block]] = []
+        self._block_indices: dict[str, int] = {}
+        self._block_domains: dict[str, DomainSelection] = {}
+        self._signal_sum = SignalSum()
+        self._rng = np.random.default_rng(random_seed)
+
+    @staticmethod
+    def _copy_data(data_to_copy: L1Data) -> L1Data:
+        """Copy channel arrays, preserving immutable orbit data."""
+        return replace(
+            data_to_copy,
+            channel_data={
+                ch: arr.copy() for ch, arr in data_to_copy.channel_data.items()
+            },
+        )
+
+    @property
+    def observed_data(self) -> L1Data:
+        """A defensive copy of the pristine observation."""
+        return self._copy_data(self._observed_data)
+
+    @property
+    def working_residual(self) -> L1Data:
+        """A defensive copy of the current full residual."""
+        return self._copy_data(self._working_residual)
+
+    @property
+    def noise_covariance(self) -> DataCovariance | TranslatedCovariance | None:
+        """The current covariance, as an independent copy."""
+        return (
+            None
+            if self._noise_covariance is None
+            else copy_covariance(self._noise_covariance, validated=True)
+        )
+
+    @property
+    def ledger(self) -> Ledger:
+        """Store of complete results; use ledger.snapshot() for a copied dictionary."""
+        return self._ledger
+
+    def add(
+        self,
+        block_to_register: Block,
+        *,
+        initial_block_result: BlockResult,
+        data_domain: str | None = None,
+        num_frequency_divisions: int | None = None,
+        num_time_divisions: int | None = None,
+    ) -> None:
+        """Register a block from a complete, explicitly prepared starting result.
+
+        block_to_register must have a unique name and implement sample.
+        Failed registration leaves the campaign unchanged.
+
+        initial_block_result supplies a complete starting estimate, parameters,
+        and sampler continuation state, for example at an injected signal.
+        Wheel copies and validates it without calling an initialization method or
+        consuming random draws. The result is required and cannot be None.
+        Its signal uses the selected block domain/grid, or the observation grid when no
+        data_domain is selected. Covariance carries its own source grid metadata.
+        The caller must keep estimates, parameters, and sampler state consistent.
+        This sets the starting state only; sample still runs normally.
+
+        data_domain selects time, frequency or wdm for this block's residual,
+        covariance and current result. None preserves their current domains.
+        For WDM, specify either division count; the other follows from the
+        observation length. Both counts must be even. An existing observation
+        WDM grid is reused if neither count is supplied.
+        """
+        if not isinstance(initial_block_result, BlockResult):
+            raise TypeError("initial_block_result must be a BlockResult")
+        domain_selection: DomainSelection = None
+        if data_domain is None:
+            if num_frequency_divisions is not None or num_time_divisions is not None:
+                raise ValueError("WDM division counts require data_domain='wdm'")
+        else:
+            domain_selection = (
+                data_domain,
+                _target_grid(
+                    data_domain,
+                    self._observed_data.num_time_samples,
+                    self._observed_data.wdm_grid,
+                    num_frequency_divisions,
+                    num_time_divisions,
+                ),
+            )
+        block_name = getattr(block_to_register, "name", None)
+        if not isinstance(block_name, str) or not block_name:
+            raise ValueError(
+                f"block name must be a non-empty string, got {block_name!r}"
+            )
+        if block_name in self._ledger:
+            raise ValueError(f"block name {block_name!r} already registered")
+        if not callable(getattr(block_to_register, "sample", None)):
+            raise TypeError(
+                f"block {block_name!r} does not implement sample; "
+                "a Block needs name and sample(conditional_residual, "
+                "noise_covariance, current_block_result, *, rng)."
+            )
+        new_block_result: object = initial_block_result
+        source_reference = self._observed_data
+        if (
+            domain_selection is not None
+            and initial_block_result.tdi_signal_contribution is not None
+        ):
+            domain, grid = domain_selection
+            # Only the seed's grid is needed. Transforming observation
+            # values here wastes work and can overflow independently of it.
+            source_reference = replace(
+                self._observed_data,
+                channel_data=initial_block_result.tdi_signal_contribution,
+                data_domain=domain,
+                wdm_grid=grid,
+            )
+        if domain_selection is not None:
+            new_block_result = self._canonical_result(
+                new_block_result, source_reference
+            )
+        self._adopt(
+            block_name,
+            new_block_result,
+            "initial_block_result",
+            self._rng,
+            block_to_register=block_to_register,
+            domain_selection=domain_selection,
+        )
+
+    def _block_inputs(
+        self,
+        domain_selection: DomainSelection,
+        exclude_block_name: str | None = None,
+    ) -> tuple[L1Data, DataCovariance | TranslatedCovariance | None]:
+        conditional_residual = self.residual(exclude_block_name=exclude_block_name)
+        noise_covariance = self.noise_covariance
+        if domain_selection is not None:
+            domain, grid = domain_selection
+            conditional_residual = transform(
+                conditional_residual,
+                domain,
+                num_frequency_divisions=None
+                if grid is None
+                else grid.num_frequency_divisions,
+            )
+            if noise_covariance is not None:
+                noise_covariance = transform(
+                    noise_covariance,
+                    domain,
+                    num_frequency_divisions=None
+                    if grid is None
+                    else grid.num_frequency_divisions,
                 )
-        # residual() already builds fresh arrays, so the block may mutate
-        # what it is handed; the ledger and `observed` are untouched either way
-        returned = block.start(self.residual())
-        self._validate_returned(returned, name, "start")
-        # every check passed -- commit atomically
-        self._blocks.append(block)
-        self._adopt(name, returned, "start")
+        return conditional_residual, noise_covariance
+
+    def _canonical_result(self, result: object, source_reference: L1Data) -> object:
+        if not isinstance(result, BlockResult):
+            return result  # _adopt supplies the block/method-specific error.
+        return transform(
+            result,
+            self._observed_data.data_domain,
+            reference_data=source_reference,
+            num_frequency_divisions=(
+                None
+                if self._observed_data.wdm_grid is None
+                else self._observed_data.wdm_grid.num_frequency_divisions
+            ),
+        )
 
     def run(
         self,
-        n_cycles: int,
-        on_cycle: Callable[[int, "Wheel"], None] | None = None,
+        num_cycles: int,
+        on_cycle_complete: Callable[[int, "Wheel"], None] | None = None,
     ) -> None:
-        """Drive the blocked-Gibbs loop for `n_cycles` cycles of the wheel.
+        """Visit blocks in registration order; notify after each complete cycle.
 
-        One full cycle visits every block once, handing each the data minus
-        every *other* block's current template, validating the template it
-        returns, and recording it in the ledger. That is the unit with
-        statistical meaning: only after a complete cycle is every block
-        conditioned on the current value of all the others.
-
-        Three nested scales, three words, so no name does double duty:
-
-        * a **cycle** -- one pass over every block (this loop);
-        * a **block update** -- one block's `update()` call within it;
-        * a **step** -- what a block's own sampler does, many times, inside a
-          single `update()` call.
-
-        Two notes for readers coming from elsewhere. The Monte Carlo
-        literature calls a cycle a *sweep*. GLASS uses `cycle` for something
-        different -- the number of repeat updates given to one module -- so
-        when comparing notes, enchilada's cycle is GLASS's outer Gibbs loop,
-        not its `cycle` variable.
+        Cycle indices are local to this invocation. Multiple run calls continue
+        the accepted ledger and RNG; run(0) does nothing.
 
         Args:
-            n_cycles: Number of full cycles of the wheel over all blocks.
-            on_cycle: Optional progress/checkpoint hook, called as
-                `on_cycle(cycle, self)` after each completed cycle
-                (`cycle` counts from 0). Read `residual()` off the wheel --
-                or anything off your own block objects -- to log or
-                checkpoint; the hook must not mutate the wheel. Equivalent to
-                calling `run(1)` in your own loop.
+            num_cycles: Non-negative number of complete Gibbs cycles to attempt.
+            on_cycle_complete: Optional callback receiving (cycle_index, wheel)
+                after every block in a cycle has returned an accepted result.
+                Indices start at zero for each run call. Partial cycles do not
+                invoke the callback.
         """
         if (
-            not isinstance(n_cycles, (int, np.integer))
-            or isinstance(n_cycles, bool)
-            or n_cycles < 0
+            not isinstance(num_cycles, (int, np.integer))
+            or isinstance(num_cycles, bool)
+            or num_cycles < 0
         ):
             raise ValueError(
-                f"n_cycles must be a non-negative integer, got {n_cycles!r}"
+                f"num_cycles must be a non-negative integer, got {num_cycles!r}"
             )
-        for cycle in range(n_cycles):
-            for block in self._blocks:
-                handed = self.residual(exclude=block.name)  # data minus OTHERS
-                returned = block.update(handed)
-                self._validate_returned(returned, block.name, "update")
-                self._adopt(block.name, returned, "update")
-            if on_cycle is not None:
-                on_cycle(cycle, self)
-
-    def residual(self, exclude: str | None = None) -> L1Data:
-        """A residual formed from the ledger, with the current noise on `.noise`.
-
-        With no argument: the full residual, observed data minus every
-        block's current template. Pass `exclude=name` for the residual that
-        block sees -- observed data minus every *other* block's template.
-        Fresh arrays each call, so callers may mutate freely.
-        """
-        if exclude is not None and exclude not in self._ledger:
-            raise ValueError(
-                f"unknown block {exclude!r}; registered: {sorted(self._ledger)}"
-            )
-        # Promote once, up front, to whatever dtype the observed data and every
-        # subtracted template share -- then the accumulation below can stay
-        # in-place. (Subtracting out-of-place per block would also promote,
-        # but allocates a fresh array per block per channel, which is the
-        # hot loop: run() calls this once per block per cycle.)
-        entries = [c for name, c in self._ledger.items() if name != exclude]
-        tdi = {}
-        for ch in self.observed.channels:
-            base = self.observed.tdi[ch]
-            dtype = (
-                np.result_type(base, *(e[ch] for e in entries))
-                if entries
-                else base.dtype
-            )
-            tdi[ch] = base.astype(dtype, copy=True)
-        for entry in entries:
-            for ch in tdi:
-                tdi[ch] -= entry[ch]
-        return replace(self.observed, tdi=tdi, noise=self._noise)
-
-    def contribution(self, name: str) -> dict[str, np.ndarray]:
-        """The named block's current ledger entry: its template, as a copy."""
-        if name not in self._ledger:
-            raise ValueError(
-                f"unknown block {name!r}; registered: {sorted(self._ledger)}"
-            )
-        return {ch: arr.copy() for ch, arr in self._ledger[name].items()}
-
-    def _adopt(self, name: str, returned: Template, method: str) -> None:
-        """Record a block's template in the ledger, and any noise it publishes.
-
-        The ledger takes a *copy*: the block may keep (and later overwrite)
-        the arrays it returned, and the ledger must not move with them.
-        """
-        self._ledger[name] = {
-            ch: returned.tdi[ch].copy() for ch in self.observed.channels
-        }
-        if returned.noise is not None:  # this block published a model
-            if self._noise_owner is not None and self._noise_owner != name:
-                warnings.warn(
-                    f"{name}.{method} replaced the noise model that "
-                    f"{self._noise_owner!r} owns. `L1Data.noise` is a single "
-                    f"slot -- the Wheel does not combine noise models, so "
-                    f"{self._noise_owner!r}'s is now gone and every block sees "
-                    f"only {name!r}'s. If you are modelling two components, "
-                    f"publish one combined model from a single noise block "
-                    f"(see enchilada.NoiseOverwrittenWarning).",
-                    NoiseOverwrittenWarning,
-                    # _adopt -> run/add -> the user's call: 3 frames
-                    stacklevel=3,
+        for cycle_index in range(num_cycles):
+            for block_name, block in self._blocks:
+                candidate_rng = deepcopy(self._rng)
+                domain_selection = self._block_domains[block_name]
+                conditional_residual, noise_covariance = self._block_inputs(
+                    domain_selection, block_name
                 )
-            self._noise_owner = name
-            self._noise = returned.noise
+                current_block_result = self._ledger[block_name]
+                if domain_selection is not None:
+                    domain, grid = domain_selection
+                    current_block_result = transform(
+                        current_block_result,
+                        domain,
+                        reference_data=self._observed_data,
+                        num_frequency_divisions=None
+                        if grid is None
+                        else grid.num_frequency_divisions,
+                    )
+                new_block_result: object = block.sample(
+                    conditional_residual=conditional_residual,
+                    noise_covariance=noise_covariance,
+                    current_block_result=current_block_result,
+                    rng=candidate_rng,
+                )
+                if domain_selection is not None:
+                    new_block_result = self._canonical_result(
+                        new_block_result, conditional_residual
+                    )
+                self._adopt(block_name, new_block_result, "sample", candidate_rng)
+            if on_cycle_complete is not None:
+                on_cycle_complete(cycle_index, self)
 
-    def _validate_returned(
-        self, returned: object, block_name: str, method: str
-    ) -> None:
-        """Refuse a return that would corrupt the run, in three checks.
+    def _form_residual(self, signal_sum: Signal) -> L1Data:
+        """Subtract an aggregate signal from pristine observations."""
+        channel_data = {}
+        for ch, observed_channel_values in self._observed_data.channel_data.items():
+            if signal_sum is None:
+                residual_channel_values = observed_channel_values.copy()
+            else:
+                with np.errstate(over="ignore", invalid="ignore"):
+                    residual_channel_values = observed_channel_values - signal_sum[ch]
+            if not np.isfinite(residual_channel_values).all():
+                raise ValueError(f"residual in channel {ch!r} became non-finite")
+            channel_data[ch] = residual_channel_values
+        return replace(self._observed_data, channel_data=channel_data)
 
-        Type, then the grid, then finiteness -- ordered
-        cheapest-and-most-fundamental first so the message a block author sees
-        names the most basic thing they got wrong. This is the whole list: a
-        `Template` carries no run settings and no orbit, so there is nothing
-        else left to drift.
+    def residual(self, exclude_block_name: str | None = None) -> L1Data:
+        """Return a copied full residual or a block's conditional residual.
+
+        exclude_block_name identifies a registered block whose signal is left
+        in the observations. None subtracts every block's signal.
         """
-        if not isinstance(returned, Template):
-            extra = (
-                " -- a block returns only its own template now, never the "
-                "residual with that template subtracted; build it with "
-                "`residual.template({...})`, or `residual.zero_template()` "
-                "when there is nothing to subtract"
-                if isinstance(returned, L1Data)
-                else ""
-            )
-            raise TypeError(
-                f"{block_name}.{method} must return a Template (the signal this "
-                f"block claims), got {type(returned).__name__}{extra}"
-            )
-        check_on_grid(
-            returned.tdi,
-            channels=self.observed.channels,
-            n_samples=self.observed.n_samples,
-            domain=self.observed.domain,
-            what=f"{block_name}.{method} template tdi",
+        if exclude_block_name is None:
+            return self.working_residual
+        self._require_block_name(exclude_block_name)
+        return self._form_residual(
+            self._signal_sum.excluding(self._block_indices[exclude_block_name])
         )
-        # A blown-up sampler returning NaN/inf would otherwise be recorded as
-        # that block's template and handed to every block updated later in
-        # the cycle.
-        for ch in self.observed.channels:
-            arr = returned.tdi[ch]
-            if not np.isfinite(arr).all():
-                n_bad = int((~np.isfinite(arr)).sum())
-                raise ValueError(
-                    f"{block_name}.{method} returned {n_bad} non-finite "
-                    f"sample(s) in channel {ch!r} (NaN or inf) in its template; "
-                    f"it would poison every block updated after it. Check the "
-                    f"sampler's proposal and its noise weighting."
-                )
+
+    def contribution(self, block_name: str) -> dict[str, np.ndarray]:
+        """Copy the registered block's summed TDI signal.
+
+        block_name must identify a registered block. An absent contribution
+        returns fresh zero arrays on the observation grid.
+        """
+        self._require_block_name(block_name)
+        signal = self._ledger._results_by_block_name[block_name].tdi_signal_contribution
+        if signal is None:
+            return {
+                ch: np.zeros_like(arr)
+                for ch, arr in self._observed_data.channel_data.items()
+            }
+        return {ch: arr.copy() for ch, arr in signal.items()}
+
+    def _require_block_name(self, block_name: str) -> None:
+        if block_name not in self._ledger:
+            raise ValueError(
+                f"unknown block {block_name!r}; registered: {sorted(self._ledger)}"
+            )
+
+    def _adopt(
+        self,
+        block_name: str,
+        new_block_result: object,
+        source_method_name: str,
+        candidate_rng: np.random.Generator,
+        *,
+        block_to_register: Block | None = None,
+        domain_selection: DomainSelection = None,
+    ) -> None:
+        """Validate a candidate result and RNG before committing campaign state.
+
+        source_method_name identifies the block call or initial result in diagnostics.
+        block_to_register is supplied only when adopting a new block's initial result.
+        """
+        if not isinstance(new_block_result, BlockResult):
+            raise TypeError(
+                f"{block_name}.{source_method_name} must return a BlockResult, got "
+                f"{type(new_block_result).__name__}"
+            )
+        # Snapshot BEFORE validation so subsequent use only touches owned state.
+        candidate_block_result = deepcopy(new_block_result)
+        candidate_block_result.__post_init__()
+        signal = candidate_block_result.tdi_signal_contribution
+        if signal is not None:
+            check_on_grid(
+                signal,
+                channel_names=self._observed_data.channel_names,
+                num_time_samples=self._observed_data.num_time_samples,
+                data_domain=self._observed_data.data_domain,
+                wdm_grid=self._observed_data.wdm_grid,
+                context_label=(
+                    f"{block_name}.{source_method_name} tdi_signal_contribution"
+                ),
+            )
+            for ch, arr in signal.items():
+                if not np.isfinite(arr).all():
+                    raise ValueError(
+                        f"{block_name}.{source_method_name} returned non-finite "
+                        f"samples in channel {ch!r}"
+                    )
+        candidate_noise_covariance = self._noise_covariance
+        candidate_noise_owner_block_name = self._noise_owner_block_name
+        if (
+            block_name == candidate_noise_owner_block_name
+            and candidate_block_result.noise_covariance is None
+        ):
+            raise ValueError(
+                f"{block_name}.{source_method_name} must return its complete "
+                "noise_covariance "
+                "because it owns the current covariance"
+            )
+        if candidate_block_result.noise_covariance is not None:
+            # Revalidate: callers can edit arrays inside a frozen dataclass.
+            candidate_noise_covariance = copy_covariance(
+                candidate_block_result.noise_covariance
+            )
+            candidate_noise_covariance.check_compatible(self._observed_data)
+            candidate_block_result = replace(
+                candidate_block_result,
+                noise_covariance=candidate_noise_covariance,
+            )
+            candidate_noise_owner_block_name = block_name
+        candidate_block_results = {
+            **self._ledger._results_by_block_name,
+            block_name: candidate_block_result,
+        }
+        block_index = (
+            len(self._blocks)
+            if block_to_register is not None
+            else self._block_indices[block_name]
+        )
+        candidate_signal_sum = self._signal_sum.with_signal(block_index, signal)
+        candidate_residual = self._form_residual(candidate_signal_sum.total)
+        candidate_block_indices = (
+            {**self._block_indices, block_name: block_index}
+            if block_to_register is not None
+            else self._block_indices
+        )
+        next_blocks = (
+            self._blocks
+            if block_to_register is None
+            else [*self._blocks, (block_name, block_to_register)]
+        )
+        candidate_block_domains = (
+            self._block_domains
+            if block_to_register is None
+            else {**self._block_domains, block_name: domain_selection}
+        )
+        next_rng = deepcopy(candidate_rng)
+        if (
+            candidate_noise_owner_block_name != self._noise_owner_block_name
+            and self._noise_owner_block_name is not None
+        ):
+            warnings.warn(
+                f"{block_name}.{source_method_name} replaced the noise model that "
+                f"{self._noise_owner_block_name!r} owns; "
+                "Wheel does not combine noise models. "
+                "Publish one combined model from a single noise block.",
+                NoiseOverwrittenWarning,
+                stacklevel=3,
+            )
+        # All potentially failing work, including warnings-as-errors, is done.
+        self._ledger._results_by_block_name = candidate_block_results
+        self._working_residual = candidate_residual
+        self._signal_sum = candidate_signal_sum
+        self._block_indices = candidate_block_indices
+        self._block_domains = candidate_block_domains
+        self._noise_covariance, self._noise_owner_block_name = (
+            candidate_noise_covariance,
+            candidate_noise_owner_block_name,
+        )
+        self._rng = next_rng
+        self._blocks = next_blocks

@@ -16,14 +16,73 @@ import textwrap
 import pytest
 
 CONSUMER = """
+from dataclasses import dataclass
 import numpy as np
-from enchilada import L1Data
+from typing import assert_type
+from enchilada import (
+    Block, L1Data, DataCovariance, TranslatedCovariance, BlockResult, Wheel, transform,
+)
+from enchilada.testing import EchoBlock, check_block
 
-r = L1Data(tdi={"A": np.zeros(8)}, sample_rate=1.0, channels=("A",),
-              tdi_generation="2.0", observable="strain")
+r = L1Data(channel_data={"A": np.zeros(8)}, sample_rate_hz=1.0, channel_names=("A",),
+              tdi_generation="2.0", physical_observable="strain")
 print(r.Tobs)      # correct spelling: must NOT error
 print(r.Tobbs)     # typo in expression position
 y: str = r.T_obs   # typo in assignment position
+
+assert_type(transform(r, "frequency"), L1Data)
+noise = DataCovariance.from_variance(r, 1.0)
+assert_type(transform(noise, "frequency"), DataCovariance | TranslatedCovariance)
+assert_type(transform(BlockResult(), "time"), BlockResult)
+wheel = Wheel(r, transform(noise, "frequency"))
+initial = BlockResult(sampler_state={"num_sample_calls": 0})
+wheel.add(EchoBlock("wdm"), initial_block_result=initial,
+          data_domain="wdm", num_time_divisions=2)
+wheel.add(EchoBlock("seeded"), initial_block_result=initial)
+check_block(EchoBlock("checked"), r, initial_block_result=initial)
+
+class SampleOnly:
+    name = "sample_only"
+
+    def sample(
+        self, conditional_residual: L1Data,
+        noise_covariance: DataCovariance | TranslatedCovariance | None,
+        current_block_result: BlockResult, *, rng: np.random.Generator,
+    ) -> BlockResult:
+        return current_block_result
+
+sample_only: Block = SampleOnly()
+wheel.add(sample_only, initial_block_result=BlockResult())
+check_block(sample_only, r, initial_block_result=BlockResult())
+
+@dataclass(frozen=True)
+class FrozenBlock:
+    name: str = "frozen"
+
+    def sample(
+        self, conditional_residual: L1Data,
+        noise_covariance: DataCovariance | TranslatedCovariance | None,
+        current_block_result: BlockResult, *, rng: np.random.Generator,
+    ) -> BlockResult:
+        return current_block_result
+
+frozen: Block = FrozenBlock()
+wheel.add(FrozenBlock(), initial_block_result=BlockResult())
+check_block(FrozenBlock(), r, initial_block_result=BlockResult())
+
+@dataclass(frozen=True)
+class ExplicitBlock(Block):
+    name: str
+
+    def sample(
+        self, conditional_residual: L1Data,
+        noise_covariance: DataCovariance | TranslatedCovariance | None,
+        current_block_result: BlockResult, *, rng: np.random.Generator,
+    ) -> BlockResult:
+        return current_block_result
+
+explicit: Block = ExplicitBlock("explicit")
+wheel.add(explicit, initial_block_result=BlockResult())
 """
 
 
@@ -45,6 +104,7 @@ def test_consumer_typos_are_static_errors(tmp_path):
     # exactly the two typos -- the correct `r.Tobs` on the preceding line must
     # not be flagged (an over-broad ban would break legitimate access)
     assert out.count("[attr-defined]") == 2, out
+    assert out.count("error:") == 2, out
 
 
 def test_runtime_attribute_hints_still_work():
@@ -53,11 +113,11 @@ def test_runtime_attribute_hints_still_work():
     from enchilada import L1Data
 
     r = L1Data(
-        tdi={"A": np.zeros(8)},
-        sample_rate=1.0,
-        channels=("A",),
+        channel_data={"A": np.zeros(8)},
+        sample_rate_hz=1.0,
+        channel_names=("A",),
         tdi_generation="2.0",
-        observable="strain",
+        physical_observable="strain",
     )
     assert hasattr(r, "Tobs") and not hasattr(r, "Tobbs")
     with pytest.raises(AttributeError, match="did you mean 'Tobs'"):
@@ -74,6 +134,37 @@ def test_block_protocol_is_runtime_checkable():
         pass
 
     assert not isinstance(NotABlock(), Block)
+
+
+def test_frozen_dataclass_can_explicitly_inherit_block():
+    from dataclasses import dataclass
+
+    import numpy as np
+
+    from enchilada import Block, BlockResult, L1Data, Wheel
+
+    @dataclass(frozen=True)
+    class ExplicitBlock(Block):
+        name: str
+
+        def sample(
+            self, conditional_residual, noise_covariance, current_block_result, *, rng
+        ):
+            return current_block_result
+
+    block = ExplicitBlock("explicit")
+    assert isinstance(block, Block)
+    observations = L1Data(
+        channel_data={"A": np.zeros(4)},
+        sample_rate_hz=1.0,
+        channel_names=("A",),
+        tdi_generation="2.0",
+        physical_observable="strain",
+    )
+    wheel = Wheel(observations)
+    wheel.add(block, initial_block_result=BlockResult(model_parameters={"value": 1}))
+    wheel.run(1)
+    assert wheel.ledger["explicit"].model_parameters == {"value": 1}
 
 
 def test_replace_is_re_exported():
@@ -93,15 +184,19 @@ def test_public_surface_is_pinned():
 
     assert enchilada.__all__ == [
         "Block",
-        "NoiseBlock",
+        "DataCovariance",
+        "Ledger",
         "NoiseOverwrittenWarning",
         "NumericOrbit",
         "Orbit",
         "L1Data",
-        "Template",
+        "BlockResult",
         "Wheel",
+        "WDMGrid",
+        "TranslatedCovariance",
         "__version__",
         "replace",
+        "transform",
     ]
     for name in enchilada.__all__:
         assert hasattr(enchilada, name), name

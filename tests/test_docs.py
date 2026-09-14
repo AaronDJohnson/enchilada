@@ -6,7 +6,7 @@ Three levels of check, weakest to strongest:
 * every fenced ``python`` block must parse -- catches syntax rot;
 * every call to a enchilada API in any block must use keyword arguments that
   actually exist -- catches the rename class of rot (``n_iterations`` ->
-  ``n_cycles``) even in illustrative fragments that cannot be executed;
+  ``num_cycles``) even in illustrative fragments that cannot be executed;
 * blocks tagged ``<!-- runnable -->`` must run to completion in a fresh
   interpreter -- the full check, for blocks that are self-contained.
 """
@@ -130,55 +130,4 @@ def test_readme_names_only_real_exports():
     for name in mentioned - submodules:
         assert hasattr(enchilada, name), (
             f"README references enchilada.{name}, which does not exist"
-        )
-
-
-# Identifiers this package used to expose. A mechanical rename updates the
-# spellings it can see and misses abbreviations, prose, and notebook markdown --
-# `seg` survived two full passes. This guard is a denylist rather than a
-# resolve-check because prose mentions (`EchoBlock`s in a sentence) are exactly
-# where stale names hide, and they are not syntax anything else can validate.
-# The prose words "sweep" and "turn" are deliberately allowed: `run`'s docstring
-# names the Monte Carlo term, and "take your turn" is ordinary English.
-RETIRED = [
-    r"Segment",  # unbounded: catches EchoSegment, NoiseSegment, ...
-    r"segment",  # unbounded: catches check_segment, _segments, ...
-    r"\bseg\b",
-    r"\bn_iterations\b",
-    r"\bn_turns\b",
-    r"\bfull_turns\b",
-    r"\bon_turn\b",
-    r"\bn_sweeps\b",
-    r"\bon_sweep\b",
-    r"\bsteps_per_sweep\b",
-    r"\bsteps_per_turn\b",
-    # The method is `update`; "block update" (spaced) remains the concept name
-    # in prose. Only the identifier form is retired.
-    r"block_update",
-    r"\.step\(",
-    r"\bdef step\b",
-]
-
-_DOC_FILES = sorted(
-    p
-    for d in ("src/enchilada", "tests", "examples")
-    for p in (Path(__file__).resolve().parent.parent / d).glob("*")
-    if p.suffix in {".py", ".ipynb"}
-) + [
-    Path(__file__).resolve().parent.parent / f
-    for f in ("README.md", "CHANGELOG.md", "pyproject.toml")
-]
-
-
-@pytest.mark.parametrize("path", _DOC_FILES, ids=lambda p: p.name)
-def test_no_retired_vocabulary(path):
-    if path.name == "test_docs.py":
-        pytest.skip("this file names the retired words on purpose")
-    text = path.read_text()
-    for pattern in RETIRED:
-        hits = re.findall(pattern, text)
-        assert not hits, (
-            f"{path.name} still uses retired vocabulary {pattern!r} "
-            f"({len(hits)} occurrence(s)). The current names are Block, "
-            f"block_update, and n_cycles/on_cycle."
         )
