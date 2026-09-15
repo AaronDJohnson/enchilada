@@ -37,6 +37,7 @@ All notable changes to enchilada are documented here. The format follows
 
 ### Changed
 
+- Change the project license from MIT to Apache License 2.0.
 - The core NumPy floor is 1.26.4, tested independently of the numeric-orbit
   dependencies on Python 3.12. CI and release gates also run optional WDM
   integration against a pinned backend revision.

@@ -1,7 +1,7 @@
 # enchilada
 
 [![CI](https://github.com/AaronDJohnson/enchilada/actions/workflows/ci.yml/badge.svg)](https://github.com/AaronDJohnson/enchilada/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/AaronDJohnson/enchilada/blob/main/LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
 Blocked-Gibbs global-fit orchestration for LISA.
 
@@ -647,4 +647,5 @@ and `benchmarks/benchmark_wheel.py` for a reproducible workload and memory costs
 
 0.2.0 — in development, with stateless blocks and
 orchestrator-owned state. This is still an alpha; pin a version for a running
-campaign. MIT licensed. Issues and questions welcome.
+campaign. Copyright (c) 2026 Aaron Johnson. Licensed under the
+[Apache License, Version 2.0](LICENSE). Issues and questions welcome.
