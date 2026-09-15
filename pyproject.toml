@@ -46,7 +46,7 @@ Issues = "https://github.com/AaronDJohnson/enchilada/issues"
 numeric-orbits = [
     "h5py>=3.0",          # h5py.File + dataset reads only
     "lisaorbits>=3.0.3",  # sets the >=3.12 python floor
-    "scipy>=1.8",         # scipy.interpolate.CubicSpline only
+    "scipy>=1.18.1",         # scipy.interpolate.CubicSpline only
 ]
 examples = [
     "jupyterlab>=4",
