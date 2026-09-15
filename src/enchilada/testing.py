@@ -1,116 +1,92 @@
-"""Helpers for sanity-checking the enchilada interface.
-
-Importable utilities for verifying that the Wheel/Block protocol works
-end-to-end without needing a real waveform model:
-
-- :class:`EchoBlock` -- a no-op block that prints what the Wheel hands
-  it; useful for watching the plumbing.
-- :func:`check_block` -- a conformance check for your own Block
-  implementation; run it in your test suite before plugging into a shared
-  campaign.
-"""
+"""Helpers for checking the stateless Wheel/Block protocol end to end."""
 
 import numpy as np
 
 from enchilada.block import Block
+from enchilada.block_result import BlockResult
+from enchilada.covariance import DataCovariance
 from enchilada.data import L1Data
+from enchilada.translated_covariance import TranslatedCovariance
 
 
 class EchoBlock:
-    """No-op block that prints what the Wheel passes to it.
+    """No-op block that prints its input and carries its counter in the BlockResult.
 
-    Subtracts nothing (its model is zero), so it returns the residual it was
-    handed unchanged and other blocks are unaffected. Keeps its own update
-    counter as internal state -- like any real block, its internals are
-    its own business. Useful for verifying that the Gibbs ring wires
-    blocks together correctly and that residual metadata survives the
-    round trip.
+    The instance holds only a name. Register it with an explicit initial result,
+    such as ``BlockResult(sampler_state={"num_sample_calls": 0})``. Independent
+    Wheels own independent counters; inspect ``wheel.ledger[name].sampler_state``.
     """
 
     def __init__(self, name: str):
         self.name = name
-        self.updates = 0
 
-    def start(self, residual: L1Data) -> L1Data:
-        """Print the run settings the Wheel handed over, and subtract nothing.
-
-        Registration is where a real block would read the conventions off the
-        residual and set its sampler up; this one just shows you what was
-        available at that moment.
-        """
-        print(
-            f"[{self.name}] start: "
-            f"fs={residual.fs} Hz, Tobs={residual.Tobs:.1f} s, "
-            f"N={residual.N}, channels={residual.channels}, "
-            f"observable={residual.observable!r}, domain={residual.domain!r}"
+    def sample(
+        self,
+        conditional_residual: L1Data,
+        noise_covariance: DataCovariance | TranslatedCovariance | None,
+        current_block_result: BlockResult,
+        *,
+        rng: np.random.Generator,
+    ) -> BlockResult:
+        """Print the conditional residual RMS and return the advanced counter."""
+        first_channel_name = conditional_residual.channel_names[0]
+        residual_rms = float(
+            np.sqrt(
+                np.mean(
+                    np.abs(conditional_residual.channel_data[first_channel_name]) ** 2
+                )
+            )
         )
-        return residual
-
-    def update(self, residual: L1Data) -> L1Data:
-        """Print the RMS of the residual handed over, and return it unchanged.
-
-        Because the model stays zero, the ledger entry stays zero and no other
-        block is affected -- so the RMS you see is the residual as it stands
-        after every other block has subtracted its model this cycle.
-        """
-        ch0 = residual.channels[0]
-        # abs() so the RMS is real for frequency-domain (complex) data too
-        rms = float(np.sqrt(np.mean(np.abs(residual.tdi[ch0]) ** 2)))
+        num_sample_calls = current_block_result.sampler_state["num_sample_calls"]
         print(
-            f"[{self.name}] update {self.updates}: residual RMS on {ch0!r} = {rms:.4e}"
+            f"[{self.name}] sample {num_sample_calls}: "
+            f"residual RMS on {first_channel_name!r} = {residual_rms:.4e}"
         )
-        self.updates += 1
-        return residual
+        return BlockResult(sampler_state={"num_sample_calls": num_sample_calls + 1})
 
 
-def check_block(block: Block, observed: L1Data, n_cycles: int = 2) -> None:
-    """Conformance check for a `Block` implementation.
+def check_block(
+    block_under_test: Block,
+    observed_data: L1Data,
+    num_cycles: int = 2,
+    *,
+    initial_block_result: BlockResult,
+    initial_noise_covariance: DataCovariance | TranslatedCovariance | None = None,
+    random_seed: int | None = 0,
+) -> None:
+    """Run a block on a scratch Wheel and validate each returned BlockResult.
 
-    Drives the full Wheel protocol against `observed` on a scratch Wheel and
-    verifies:
+    Adopts the required ``initial_block_result``, followed by ``num_cycles``
+    calls to ``sample``,
+    including the parameter/state round trip. Wheel checks the signal grid and
+    any published DataCovariance. The supplied block should retain configuration
+    only, so this check can precede its registration in a scientific campaign.
 
-    - `start` returns a valid `L1Data` that keeps every run setting
-      unchanged (only `tdi`/`noise` may move);
-    - each of `n_cycles` block updates does the same (mid-run drift raises);
-    - if the block sets a noise model on the residual (a noise block),
-      that model satisfies the consumption contract -- `residual.noise_psd`
-      succeeds rather than raising for want of a `psd` method.
+    Args:
+        block_under_test: Configured block whose exchange contract is checked.
+        observed_data: L1 observations and shared run settings for the scratch run.
+        num_cycles: Number of sampling cycles after initialization; defaults to 2.
+        initial_block_result: Required complete starting result on the observation
+            grid, including the continuation state needed by sample. Cannot be None.
+        initial_noise_covariance: Starting covariance for the scratch Wheel.
+            None leaves covariance unset. A noise block may supply covariance
+            during the check.
+        random_seed: Seed for the scratch Wheel's NumPy generator. Defaults to
+            0 for reproducibility; None requests nondeterministic initialization.
 
-    It also escalates the `ModelWithdrawnWarning` the Wheel merely warns about,
-    so a block that stops re-subtracting its model fails here rather than
-    quietly leaving the fit later. (If your block legitimately drops to a
-    zero model during these cycles -- a death move -- give it a starting state
-    that does not, or filter the warning around your own call.)
-
-    It does not check the residual bookkeeping -- the `Wheel` owns that, so
-    there is no cross-block arithmetic in a block to get wrong (see the
-    `Wheel` docstring for the ledger). Whether your *sampler* recovers truth
-    is still yours to verify; `examples/toy_fit.py` is the pattern.
-
-    Raises with a pointed message at the first violation; returns quietly
-    when the block conforms. Run this in your own test suite before
-    plugging a block into a shared campaign:
-
-        from enchilada.testing import check_block
-        check_block(MyBlock(name="ucb"), toy_observed)
+    This checks the protocol, not statistical correctness or whether hidden
+    sampler state has been left on the block. Test posterior recovery and
+    independent campaigns separately; ``examples/toy_fit.py`` provides a pattern.
     """
-    import warnings
+    from enchilada.wheel import Wheel
 
-    from enchilada.wheel import ModelWithdrawnWarning, Wheel
-
-    wheel = Wheel(observed)
-    # The Wheel only *warns* when a model is withdrawn, because mid-run it
-    # cannot tell a legitimate death move from a forgotten re-subtraction. A
-    # pre-campaign conformance check is exactly where that heuristic should be
-    # strict, so escalate it here.
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", ModelWithdrawnWarning)
-        wheel.add(block)  # start(): validated for a well-formed residual
-        wheel.run(n_cycles)  # update() x n_cycles: each return validated
-
-    # if this block threads a noise model, it must satisfy the contract signal
-    # blocks consume it through: a callable psd(freqs[, channel])
-    result = wheel.residual()
-    noise = result.noise
-    if noise is not None and noise is not observed.noise:
-        result.noise_psd()  # exercises psd; raises TypeError if it is missing
+    wheel = Wheel(
+        observed_data=observed_data,
+        initial_noise_covariance=initial_noise_covariance,
+        random_seed=random_seed,
+    )
+    wheel.add(
+        block_to_register=block_under_test,
+        initial_block_result=initial_block_result,
+    )
+    wheel.run(num_cycles=num_cycles)

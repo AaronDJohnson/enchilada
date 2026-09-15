@@ -1,9 +1,13 @@
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar, Never
 
 import numpy as np
 
+from enchilada.block_result import BlockResult, check_on_grid, check_rfft_endpoints
+from enchilada.covariance import DataCovariance
+from enchilada.domains import WDMGrid, check_wdm_coefficients
 from enchilada.orbits import Orbit
+from enchilada.translated_covariance import TranslatedCovariance
 
 
 @dataclass(frozen=True, eq=False)
@@ -12,27 +16,33 @@ class L1Data:
 
     One `L1Data` object is constructed at the top of a run to hold the observed
     data and the campaign settings (sample rate, channels, epoch, ...). The
-    Wheel produces a new `L1Data` object each cycle of the wheel with the same
-    metadata fields but freshly computed residual `tdi` -- the data with every
-    other block's current model subtracted.
+    same type carries the observed data and every residual: the Wheel hands
+    each block an `L1Data` with the same metadata but `channel_data` recomputed
+    as the data minus every other block's current signal. What a block returns is
+    a `BlockResult` (see `block_result` and `zero_block_result`), not an `L1Data`.
 
     Every field below is part of the cross-group data contract, and
     `__post_init__` validates the whole object on every construction
-    (including the `replace(...)` the Wheel performs each cycle): tdi keys
-    must equal `channels`, array lengths must match `domain`/`n_samples`,
-    and an attached `orbit` must span the observation. Inconsistent data
-    fails loudly at construction, not deep inside a sampler.
+    (including the `replace(...)` the Wheel performs each cycle): `channel_data`
+    keys must equal `channel_names`, array lengths must match `data_domain` and
+    `num_time_samples`, and an attached `orbit_ephemeris` must span the observation.
+    Inconsistent data fails loudly at construction, not deep inside a sampler.
 
     Fields:
-        tdi: Channel name -> 1D array. Keys match `channels` exactly. In the
-            time domain (`domain="time"`) each array holds `n_samples` real
-            samples. In the frequency domain (`domain="frequency"`) each
-            array holds the one-sided spectrum on the rfft grid of the
-            underlying time series -- length `n_samples // 2 + 1`, with the
-            continuous-transform normalization `dt * np.fft.rfft(x)`.
-        sample_rate: Samples per second, in Hz.
-        n_samples: Number of *time-domain* samples per channel -- always,
-            even when `domain="frequency"` (it pins the duration, so
+        channel_data: Channel name -> array. Keys match `channel_names` exactly.
+            In the time domain (`data_domain="time"`) each array holds
+            `num_time_samples` real samples. In the frequency domain
+            (`data_domain="frequency"`) each array holds the one-sided spectrum
+            on the rfft grid of the underlying time series -- length
+            `num_time_samples // 2 + 1`, with the continuous-transform
+            normalization `dt * np.fft.rfft(x)`. DC is real, and the final
+            Nyquist coefficient is real when `num_time_samples` is even.
+            WDM arrays are real coefficient grids shaped
+            ``(num_frequency_divisions + 1, num_time_divisions)``; inactive
+            edge coefficients must be exactly zero.
+        sample_rate_hz: Samples per second, in Hz.
+        num_time_samples: Number of *time-domain* samples per channel -- always,
+            in every data domain (it pins the duration, so
             `Tobs`/`df`/`dt` and the PSD grid stay well defined).
 
             **Omit it for time-domain data**: the arrays are exactly that
@@ -42,35 +52,38 @@ class L1Data:
             real series has `n // 2 + 1` bins, which loses the parity of n:
             513 bins are consistent with n=1024 *and* n=1025, and those imply
             different `Tobs` and `df`.
-        channels: TDI channel names in this run, e.g. ("A", "E", "T").
+            For WDM data it is derived from ``wdm_grid`` when omitted.
+        channel_names: TDI channel names in this run, e.g. ("A", "E", "T").
         tdi_generation: TDI generation string, e.g. "1.5" or "2.0".
-        observable: Physical interpretation of the data. Recommended values:
+        physical_observable: Physical interpretation of the data. Recommended values:
             "fractional_frequency" (relative frequency deviation dnu/nu, the
             LDC / lisainstrument default), "phase" (radians), "strain".
             Campaign-specific strings are allowed; every block reads this
             one field, so agreement is by construction -- state it once,
             correctly, rather than letting each group assume its own.
-        domain: "time" (default) or "frequency". Selects the tdi
-            representation described above; the model a block returns
-            must keep it (`L1Data` validates the tdi shapes).
-        epoch: GPS seconds corresponding to sample index 0. Defaults to
+        data_domain: "time" (default), "frequency", or "wdm". Selects the channel_data
+            representation described above. A block's TDI signal contribution
+            must use the same representation and grid.
+        wdm_grid: Required WDM division counts when ``data_domain="wdm"``;
+            must be None in other domains. Sampling interval and epoch retain
+            their meanings for the underlying time series. Keyword-only.
+        start_time_gps: GPS seconds corresponding to sample index 0. Defaults to
             ``0.0`` -- fine for synthetic data with no absolute-time
             reference. Set it for real data: it anchors the constellation
-            response (spacecraft positions at `epoch + n*dt`), the orbit-span
-            check, and the frequency-domain phase reference. Shadowed by `t0`.
-        noise: The current noise/covariance model the residual should be
-            whitened with, or `None`. Noise blocks update this field and
-            on the model they return, and the Wheel copies that model to
-            every other block. `None` when no noise model is set. See
-            `block.NoiseBlock`.
-        orbit: The LISA constellation ephemeris  --
+            response (spacecraft positions at `start_time_gps + n*dt`), the
+            orbit-span check, and the frequency-domain phase reference.
+            Shadowed by `t0`.
+        orbit_ephemeris: The LISA constellation ephemeris  --
             the spacecraft positions every block must share to build its
             response (see `enchilada.orbits.Orbit`). Currently a *fixed* property
-            of the dataset, like `epoch`/`tdi_generation`: set it once on the
-            observed data and the Wheel copies it unchanged. Blocks read `data.orbit`
-            rather than constructing their own, ensuring every piece
-            uses the *same* constellation. `None` lets a block fall back to
-            its own default orbit (back-compatible with orbit-less runs).
+            of the dataset, like `start_time_gps`/`tdi_generation`: set it once
+            on the observed data and the Wheel copies it unchanged. Blocks read
+            `data.orbit_ephemeris` so every piece uses the same constellation.
+            `None` means no ephemeris is supplied; blocks requiring one must
+            provide a configured orbit or reject the data.
+
+    Noise covariance is supplied separately to the Wheel and to each block as
+    a `DataCovariance`; it is not part of the observation container.
 
     Derived properties are exposed under both descriptive long names and
     the short symbols LISA papers use. Both spellings return the same value
@@ -79,164 +92,202 @@ class L1Data:
     vocabularies. Call `L1Data.aliases()` for the full long-to-short table.
 
     Equality is identity (`eq=False`). A generated `__eq__` would compare the
-    tdi arrays elementwise and raise "truth value of an array is ambiguous",
-    so `r1 == r2` is True only for the same object -- which is also what the
-    Wheel's orbit check relies on. Use `numpy.allclose` on the arrays to
-    compare contents.
+    channel_data arrays elementwise and raise "truth value of an array is ambiguous",
+    so `r1 == r2` is True only for the same object. Use `numpy.allclose`
+    on the arrays to compare contents.
 
     """
 
-    tdi: dict[str, np.ndarray]
-    sample_rate: float
-    channels: tuple[str, ...]
+    channel_data: dict[str, np.ndarray]
+    sample_rate_hz: float
+    channel_names: tuple[str, ...]
     tdi_generation: str
-    observable: str
-    n_samples: int = 0
-    epoch: float = 0.0
-    domain: str = "time"
-    noise: Any | None = None
-    orbit: Orbit | None = None
+    physical_observable: str
+    num_time_samples: int = 0
+    start_time_gps: float = 0.0
+    data_domain: str = "time"
+    orbit_ephemeris: Orbit | None = None
+    wdm_grid: WDMGrid | None = field(default=None, kw_only=True)
 
-    DOMAINS: ClassVar[tuple[str, ...]] = ("time", "frequency")
-    """Valid values for `domain`."""
+    DOMAINS: ClassVar[tuple[str, ...]] = ("time", "frequency", "wdm")
+    """Valid values for `data_domain`."""
 
     RECOMMENDED_OBSERVABLES: ClassVar[tuple[str, ...]] = (
         "fractional_frequency",
         "phase",
         "strain",
     )
-    """Common values for `observable`; other campaign-agreed strings are fine."""
+    """Common `physical_observable` values; campaign-specific strings are allowed."""
 
     # ---- consistency validation ------------------------------------------
 
     def __post_init__(self) -> None:
         """Validate the data contract; runs on every construction/replace.
 
-        Ordered by dependency: conventions first (so `domain` is known), then
-        the tdi structure (so an array length can be read), then `n_samples`
-        (derived from that length, or required), then the length and orbit
-        checks that need it.
+        Ordered by dependency: conventions first (so `data_domain` is known),
+        then the channel arrays (so an array length can be read), then
+        `num_time_samples` (derived from that length, or required), then the
+        length and orbit checks that need it.
         """
         self._validate_conventions()
-        self._validate_tdi_structure()
-        self._resolve_and_check_n_samples()
-        self._validate_tdi_lengths()
+        self._validate_channel_data_structure()
+        self._resolve_and_check_num_time_samples()
+        self._validate_channel_data_lengths()
         self._validate_orbit_span()
 
     def _validate_conventions(self) -> None:
         """Scalar run settings: rates, epoch, and convention strings."""
-        if not np.isfinite(self.sample_rate) or self.sample_rate <= 0:
+        if not np.isfinite(self.sample_rate_hz) or self.sample_rate_hz <= 0:
             raise ValueError(
-                f"sample_rate must be a positive finite number in Hz, "
-                f"got {self.sample_rate!r}"
+                f"sample_rate_hz must be a positive finite number in Hz, "
+                f"got {self.sample_rate_hz!r}"
             )
-        if not np.isfinite(self.epoch):
-            raise ValueError(f"epoch must be finite GPS seconds, got {self.epoch!r}")
+        if not np.isfinite(self.start_time_gps):
+            raise ValueError(
+                f"start_time_gps must be finite GPS seconds, "
+                f"got {self.start_time_gps!r}"
+            )
         if not isinstance(self.tdi_generation, str) or not self.tdi_generation:
             raise ValueError(
                 f"tdi_generation must be a non-empty string, "
                 f"got {self.tdi_generation!r}"
             )
-        if not isinstance(self.observable, str) or not self.observable:
+        if (
+            not isinstance(self.physical_observable, str)
+            or not self.physical_observable
+        ):
             raise ValueError(
-                f"observable must be a non-empty string saying what the TDI samples "
-                f"physically are, got {self.observable!r}; recommended values: "
+                f"physical_observable must be a non-empty string saying what "
+                f"the TDI samples physically are, got {self.physical_observable!r}; "
+                f"recommended values: "
                 f"{', '.join(self.RECOMMENDED_OBSERVABLES)}"
             )
-        if self.domain not in self.DOMAINS:
+        if self.data_domain not in self.DOMAINS:
             raise ValueError(
-                f"domain must be one of {self.DOMAINS}, got {self.domain!r}"
+                f"data_domain must be one of {self.DOMAINS}, got {self.data_domain!r}"
             )
+        if self.data_domain == "wdm":
+            if self.wdm_grid is None:
+                raise ValueError("wdm_grid is required when data_domain='wdm'")
+            if not isinstance(self.wdm_grid, WDMGrid):
+                raise TypeError("wdm_grid must be a WDMGrid")
+        elif self.wdm_grid is not None:
+            raise ValueError("wdm_grid must be None outside data_domain='wdm'")
 
-    def _validate_tdi_structure(self) -> None:
-        """tdi is a dict of 1-D arrays whose keys are exactly `channels`."""
-        if not isinstance(self.tdi, dict):
+    def _validate_channel_data_structure(self) -> None:
+        """Require channel arrays with the rank of the declared representation."""
+        if not isinstance(self.channel_data, dict):
             raise TypeError(
-                f"tdi must be a dict of channel -> array, got {type(self.tdi).__name__}"
+                f"channel_data must be a dict of channel -> array, "
+                f"got {type(self.channel_data).__name__}"
             )
-        if isinstance(self.channels, (list, tuple)) and not isinstance(
-            self.channels, tuple
+        if isinstance(self.channel_names, (list, tuple)) and not isinstance(
+            self.channel_names, tuple
         ):
-            # normalise here: a list would otherwise compare unequal to the
-            # tuple a block returns, and the Wheel would blame the block
-            # for "changing a run setting" it never touched.
-            object.__setattr__(self, "channels", tuple(self.channels))
-        if not isinstance(self.channels, tuple):
+            # Store channel names as an immutable sequence for grid comparisons.
+            object.__setattr__(self, "channel_names", tuple(self.channel_names))
+        if not isinstance(self.channel_names, tuple):
             raise TypeError(
-                f"channels must be a tuple of channel names, "
-                f"got {type(self.channels).__name__}"
+                f"channel_names must be a tuple of channel names, "
+                f"got {type(self.channel_names).__name__}"
             )
-        if not self.channels:
-            raise ValueError("channels must be a non-empty tuple of channel names")
-        if len(set(self.channels)) != len(self.channels):
-            raise ValueError(f"channels contains duplicates: {self.channels}")
-        if set(self.tdi) != set(self.channels):
-            missing = sorted(set(self.channels) - set(self.tdi))
-            extra = sorted(set(self.tdi) - set(self.channels))
+        if not self.channel_names:
+            raise ValueError("channel_names must be a non-empty tuple of channel names")
+        if len(set(self.channel_names)) != len(self.channel_names):
+            raise ValueError(f"channel_names contains duplicates: {self.channel_names}")
+        if set(self.channel_data) != set(self.channel_names):
+            missing = sorted(set(self.channel_names) - set(self.channel_data))
+            extra = sorted(set(self.channel_data) - set(self.channel_names))
             raise ValueError(
-                f"tdi keys must match channels exactly; "
+                f"channel_data keys must match channel_names exactly; "
                 f"missing {missing}, unexpected {extra}"
             )
-        for ch in self.channels:
-            arr = self.tdi[ch]
-            if not isinstance(arr, np.ndarray) or arr.ndim != 1:
+        for ch in self.channel_names:
+            arr = self.channel_data[ch]
+            expected_ndim = 2 if self.data_domain == "wdm" else 1
+            if not isinstance(arr, np.ndarray) or arr.ndim != expected_ndim:
                 raise TypeError(
-                    f"tdi[{ch!r}] must be a 1-D numpy array, got {type(arr).__name__}"
+                    f"channel_data[{ch!r}] must be a {expected_ndim}-D numpy array, "
+                    f"got {type(arr).__name__}"
                 )
 
-    def _resolve_and_check_n_samples(self) -> None:
-        """Fill in `n_samples` from the data where that is exact.
+    def _resolve_and_check_num_time_samples(self) -> None:
+        """Fill in `num_time_samples` from the data where that is exact.
 
         Time domain: read it off the arrays.
+        WDM domain: the grid's division product fixes it exactly.
         Frequency domain: it cannot be recovered from the data (see the
-        `n_samples` field docstring for why), so it must have been stated.
+        `num_time_samples` field docstring for why), so it must have been stated.
         Also validates an explicitly supplied value.
         """
-        if self.n_samples == 0:  # sentinel: not supplied
-            first = self.tdi[self.channels[0]]
-            if self.domain == "time":
-                object.__setattr__(self, "n_samples", int(first.shape[0]))
+        if self.num_time_samples == 0:  # sentinel: not supplied
+            first = self.channel_data[self.channel_names[0]]
+            if self.data_domain == "time":
+                object.__setattr__(self, "num_time_samples", int(first.shape[0]))
+            elif self.data_domain == "wdm":
+                assert self.wdm_grid is not None  # checked with the conventions
+                object.__setattr__(
+                    self, "num_time_samples", self.wdm_grid.num_time_samples
+                )
             else:
                 n_bins = int(first.shape[0])
                 raise ValueError(
-                    f"n_samples must be given when domain='frequency': the "
+                    f"num_time_samples must be given when data_domain='frequency': the "
                     f"{n_bins}-bin rfft grid does not determine it (it is "
-                    f"consistent with n_samples={2 * (n_bins - 1)} and "
+                    f"consistent with num_time_samples={2 * (n_bins - 1)} and "
                     f"={2 * n_bins - 1}, which imply different Tobs and df). "
                     f"Pass the number of time-domain samples the spectrum came "
                     f"from; only time-domain data can have it derived."
                 )
         if (
-            not isinstance(self.n_samples, (int, np.integer))
-            or isinstance(self.n_samples, bool)  # True would pass as 1
-            or self.n_samples <= 0
+            not isinstance(self.num_time_samples, (int, np.integer))
+            or isinstance(self.num_time_samples, bool)  # True would pass as 1
+            or self.num_time_samples <= 0
         ):
             raise ValueError(
-                f"n_samples must be a positive integer, got {self.n_samples!r}"
+                f"num_time_samples must be a positive integer, "
+                f"got {self.num_time_samples!r}"
+            )
+        if (
+            self.wdm_grid is not None
+            and self.num_time_samples != self.wdm_grid.num_time_samples
+        ):
+            raise ValueError(
+                "num_time_samples must equal the WDM grid division product"
             )
 
-    def _validate_tdi_lengths(self) -> None:
-        """Check that every array lives on this domain's grid, and is real in the time
-        domain."""
-        expected = self.n_samples if self.domain == "time" else self.n_samples // 2 + 1
-        for ch in self.channels:
-            arr = self.tdi[ch]
+    def _validate_channel_data_lengths(self) -> None:
+        """Check each array's length and dtype against the data domain's grid."""
+        if self.data_domain == "wdm":
+            assert self.wdm_grid is not None  # checked with the conventions
+            check_wdm_coefficients(self.channel_data, self.wdm_grid, "channel_data")
+            return
+        expected = (
+            self.num_time_samples
+            if self.data_domain == "time"
+            else self.num_time_samples // 2 + 1
+        )
+        for ch in self.channel_names:
+            arr = self.channel_data[ch]
             if arr.shape[0] != expected:
                 raise ValueError(
-                    f"tdi[{ch!r}] has length {arr.shape[0]}, expected {expected} for "
-                    f"domain={self.domain!r} with n_samples={self.n_samples} "
-                    f"(n_samples always counts time-domain samples; frequency-domain "
-                    f"arrays live on the rfft grid of length n_samples // 2 + 1)"
+                    f"channel_data[{ch!r}] has length {arr.shape[0]}, "
+                    f"expected {expected} for data_domain={self.data_domain!r} "
+                    f"with num_time_samples={self.num_time_samples} "
+                    f"(num_time_samples always counts time-domain samples; "
+                    f"frequency-domain "
+                    f"arrays live on the rfft grid of length num_time_samples // 2 + 1)"
                 )
-            if self.domain == "time" and np.iscomplexobj(arr):
+            if self.data_domain == "time" and np.iscomplexobj(arr):
                 raise TypeError(
-                    f"tdi[{ch!r}] is complex but domain='time'; time-domain TDI is "
-                    f"real (did you mean domain='frequency'?)"
+                    f"channel_data[{ch!r}] is complex but data_domain='time'; "
+                    f"time-domain TDI is real (did you mean data_domain='frequency'?)"
                 )
-            if self.domain == "frequency" and not np.iscomplexobj(arr):
+            if self.data_domain == "frequency" and not np.iscomplexobj(arr):
                 raise TypeError(
-                    f"tdi[{ch!r}] is real but domain='frequency'; a one-sided "
-                    f"spectrum is complex. Accepting a real array here would let "
+                    f"channel_data[{ch!r}] is real but data_domain='frequency'; "
+                    f"a one-sided spectrum is complex. Accepting a real array "
+                    f"here would let "
                     f"a block return `spectrum.real` and be silently credited "
                     f"with the whole imaginary part as its model."
                 )
@@ -245,256 +296,249 @@ class L1Data:
             # ledger arithmetic with a raw numpy casting error.
             if not np.issubdtype(arr.dtype, np.inexact):
                 raise TypeError(
-                    f"tdi[{ch!r}] has dtype {arr.dtype}; TDI must be floating or "
-                    f"complex (an integer or object array cannot carry a residual "
+                    f"channel_data[{ch!r}] has dtype {arr.dtype}; "
+                    f"TDI must be floating or complex (an integer or object array "
+                    f"cannot carry a residual "
                     f"-- convert with .astype(float) first)"
                 )
+        if self.data_domain == "frequency":
+            check_rfft_endpoints(
+                self.channel_data,
+                num_time_samples=self.num_time_samples,
+                context_label="channel_data",
+            )
 
     def _validate_orbit_span(self) -> None:
-        """Check that a tabulated orbit (one exposing t_range) covers the data
+        """Check that a tabulated orbit (one exposing time_range_gps) covers the data
         span."""
-        if self.orbit is None:
+        if self.orbit_ephemeris is None:
             return
-        t_range = getattr(self.orbit, "t_range", None)
-        if t_range is None:
+        time_range_gps = getattr(self.orbit_ephemeris, "time_range_gps", None)
+        if time_range_gps is None:
             return
-        t_lo, t_hi = float(t_range[0]), float(t_range[1])
-        # The samples sit at epoch + n*dt for n in [0, n_samples-1], so the last
-        # one is at epoch + (n_samples-1)*dt -- NOT epoch + Tobs. Requiring the
-        # ephemeris to reach epoch + Tobs would reject an orbit tabulated on the
+        orbit_start_time_gps, orbit_end_time_gps = (
+            float(time_range_gps[0]),
+            float(time_range_gps[1]),
+        )
+        # The samples sit at start_time_gps + n*dt for n in [0, N-1], so the last
+        # one is at start_time_gps + (N-1)*dt, one sample before start_time_gps + Tobs.
+        # Requiring that extra sample would reject an orbit tabulated on the
         # data's own sample grid.
         #
-        # Multiply `sample_interval` exactly as every grid builder here does
-        # (`epoch + arange(n) * dt`, see NumericOrbit.from_hdf5) rather than
-        # dividing by sample_rate: the two differ by an ulp for rates whose dt
+        # Multiply `sample_interval_s` exactly as every grid builder here does
+        # (`start_time_gps + arange(n) * dt`, see NumericOrbit.from_hdf5) rather than
+        # dividing by sample_rate_hz: the two differ by an ulp for rates whose dt
         # is not exactly representable, and this is an exact float comparison,
         # so the mismatch would spuriously reject a data-grid orbit.
         #
         # This is a coarse check for gross epoch mismatches, not a guarantee: a
         # block applying TDI light-travel delays evaluates retarded times
-        # slightly outside [epoch, last_sample] and needs margin (and
+        # slightly outside [start_time_gps, last_sample_time_gps] and needs margin (and
         # NumericOrbit.positions raises if asked beyond its table).
-        last_sample = self.epoch + (self.n_samples - 1) * self.sample_interval
-        if t_lo > self.epoch or t_hi < last_sample:
+        last_sample_time_gps = (
+            self.start_time_gps + (self.num_time_samples - 1) * self.sample_interval_s
+        )
+        if (
+            orbit_start_time_gps > self.start_time_gps
+            or orbit_end_time_gps < last_sample_time_gps
+        ):
             raise ValueError(
-                f"orbit ephemeris spans [{t_lo}, {t_hi}] s but the data samples "
-                f"span [{self.epoch}, {last_sample}] s; every block would need "
-                f"spacecraft positions outside the tabulated ephemeris (mismatched "
-                f"epoch conventions? GPS vs zero-based times?)"
+                f"orbit_ephemeris spans "
+                f"[{orbit_start_time_gps}, {orbit_end_time_gps}] s "
+                f"but the data samples span "
+                f"[{self.start_time_gps}, {last_sample_time_gps}] s; "
+                f"every block would "
+                f"need spacecraft positions outside the tabulated ephemeris "
+                f"(mismatched epoch conventions? GPS vs zero-based times?)"
             )
 
     # ---- descriptive (long) names ---------------------------------------
 
     @property
-    def observation_time(self) -> float:
-        """Total observation time in seconds. Shadowed by `Tobs`."""
-        return self.n_samples / self.sample_rate
+    def observation_duration_s(self) -> float:
+        """Total observation duration in seconds. Shadowed by `Tobs`."""
+        return self.num_time_samples / self.sample_rate_hz
 
     @property
-    def sample_interval(self) -> float:
+    def sample_interval_s(self) -> float:
         """Seconds between consecutive samples. Shadowed by `dt`."""
-        return 1.0 / self.sample_rate
+        return 1.0 / self.sample_rate_hz
 
     @property
-    def frequency_resolution(self) -> float:
+    def frequency_resolution_hz(self) -> float:
         """Width of a Fourier bin, in Hz. Shadowed by `df`."""
-        return 1.0 / self.observation_time
+        return 1.0 / self.observation_duration_s
 
     @property
-    def nyquist_frequency(self) -> float:
+    def nyquist_frequency_hz(self) -> float:
         """Nyquist frequency, in Hz. Shadowed by `fny`."""
-        return self.sample_rate / 2.0
+        return self.sample_rate_hz / 2.0
 
     # ---- conventional short-name shadows --------------------------------
 
     @property
     def Tobs(self) -> float:
-        """LISA shorthand for `observation_time` (seconds)."""
-        return self.observation_time
+        """LISA shorthand for `observation_duration_s` (seconds)."""
+        return self.observation_duration_s
 
     @property
     def fs(self) -> float:
-        """LISA shorthand for `sample_rate` (Hz)."""
-        return self.sample_rate
+        """LISA shorthand for `sample_rate_hz` (Hz)."""
+        return self.sample_rate_hz
 
     @property
     def dt(self) -> float:
-        """LISA shorthand for `sample_interval` (seconds)."""
-        return self.sample_interval
+        """LISA shorthand for `sample_interval_s` (seconds)."""
+        return self.sample_interval_s
 
     @property
     def N(self) -> int:
-        """LISA shorthand for `n_samples`."""
-        return self.n_samples
+        """LISA shorthand for `num_time_samples`."""
+        return self.num_time_samples
 
     @property
     def df(self) -> float:
-        """LISA shorthand for `frequency_resolution` (Hz)."""
-        return self.frequency_resolution
+        """LISA shorthand for `frequency_resolution_hz` (Hz)."""
+        return self.frequency_resolution_hz
 
     @property
     def fny(self) -> float:
-        """LISA shorthand for `nyquist_frequency` (Hz)."""
-        return self.nyquist_frequency
+        """LISA shorthand for `nyquist_frequency_hz` (Hz)."""
+        return self.nyquist_frequency_hz
 
     @property
     def t0(self) -> float:
-        """LISA shorthand for `epoch` (GPS seconds)."""
-        return self.epoch
+        """LISA shorthand for `start_time_gps` (GPS seconds)."""
+        return self.start_time_gps
 
     # ---- domain transforms (fixing the campaign's FFT convention) ------
 
     def to_frequency(self) -> "L1Data":
-        """Transform the dataset to a one-sided dft (``domain="frequency"``).
+        """Transform the dataset to a one-sided dft (``data_domain="frequency"``).
 
         Applies the campaign's Fourier convention -- ``X(f) = dt * rfft(x)``,
-        consistent with the :meth:`noise_psd` normalization. ``n_samples`` is
-        preserved to ensure the transform is invertible (see :meth:`to_time`).
+        consistent with `DataCovariance.from_psd`. ``num_time_samples`` is preserved
+        to ensure the transform is invertible (see :meth:`to_time`).
 
         Data enters a campaign as a time series, so this is the normal way to
         get a frequency-domain residual: build `L1Data` from the time
-        series (where `n_samples` is read off the arrays) and transform. You
-        then never state `n_samples` by hand at all.
+        series (where `num_time_samples` is read off the arrays) and transform. You
+        then never state `num_time_samples` by hand at all.
 
-        Returns ``self`` unchanged if already in the frequency domain.
+        Revalidates the source and returns independently owned channel arrays,
+        including when the source is already in the frequency domain.
         """
-        if self.domain == "frequency":
-            return self
-        tdi = {
-            ch: self.sample_interval * np.fft.rfft(arr) for ch, arr in self.tdi.items()
-        }
-        return replace(self, tdi=tdi, domain="frequency")
+        from enchilada.translation import transform
+
+        return transform(self, "frequency")
 
     def to_time(self) -> "L1Data":
-        """Transform the dataset to a time series (``domain="time"``).
+        """Transform the dataset to a time series (``data_domain="time"``).
 
         Inverts :meth:`to_frequency` exactly -- ``x = irfft(X / dt, n)`` -- for
-        *either* parity of ``n``, because ``n_samples`` travelled with the data.
-        A bare spectrum with no ``n_samples`` cannot be inverted this way: its
+        *either* parity of ``n``, because ``num_time_samples`` travelled with the data.
+        A bare spectrum with no ``num_time_samples`` cannot be inverted this way: its
         ``n // 2 + 1`` bins are consistent with both ``2*(bins-1)`` and
         ``2*bins-1``, and choosing wrong silently resamples the series.
 
-        Returns ``self`` unchanged if already in the time domain.
+        Revalidates the source and returns independently owned channel arrays,
+        including when the source is already in the time domain.
         """
-        if self.domain == "time":
-            return self
-        tdi = {
-            ch: np.fft.irfft(arr / self.sample_interval, n=self.n_samples)
-            for ch, arr in self.tdi.items()
-        }
-        return replace(self, tdi=tdi, domain="time")
+        from enchilada.translation import transform
 
-    # ---- noise variance (assembled on this run's grid) ------------------
+        return transform(self, "time")
 
-    def noise_psd(self, channel: str | None = None) -> np.ndarray | None:
-        """One-sided noise PSD on this run's rfft grid, or ``None``.
+    # ---- block results ------------------------------------------------------
 
-        The frequency-domain noise piece: the per-bin variance a Fourier-domain
-        block whitens against. Enchilada assembles it on the run's frequency
-        grid (from `n_samples`/`sample_rate`) so blocks never recompute the
-        normalization. DC (bin 0) is ``+inf`` (zero weight). Returns ``None``
-        when no noise model is set (`self.noise is None`).
+    def block_result(
+        self,
+        tdi_signal_contribution: dict[str, np.ndarray] | None = None,
+        *,
+        noise_covariance: DataCovariance | TranslatedCovariance | None = None,
+        model_parameters: dict[str, Any] | None = None,
+        sampler_state: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> BlockResult:
+        """Build the `BlockResult` a block returns, checked against this grid.
 
-        Pass `channel` (e.g. `"A"`, `"E"`, `"T"`) for the per-channel PSD -- LISA's
-        A and E share a PSD but T (the null channel) differs, so a likelihood that
-        models T must weight it by its own noise. `channel=None` (the default)
-        calls the model's plain `psd(freqs)`, preserving back-compatibility with
-        noise objects that expose only an A/E PSD.
+        `tdi_signal_contribution` sums this block's sources in each TDI channel,
+        with this residual's channel names, lengths, and real/complex dtype.
+        None means zero contribution, removing any signal previously returned
+        by this block. The Wheel performs all subtraction on the block's behalf.
+        `noise_covariance` optionally replaces the run's full covariance.
 
-        Requires the threaded noise object to expose ``psd(freqs[, channel])``.
-        The grid has length ``n_samples // 2 + 1``, so in a frequency-domain
-        run (`domain="frequency"`) it lines up bin-for-bin with the tdi arrays.
+            def sample(self, conditional_residual, noise_covariance,
+                       current_block_result, *, rng):
+                ...fit using the supplied data, covariance, and sampler state...
+                return conditional_residual.block_result(
+                    tdi_signal_contribution=signals,
+                    model_parameters=params, sampler_state=continuation,
+                )
 
-        Normalization is the **one-sided** PSD in units of ``[observable]**2 / Hz``,
-        tied to the ``dt * rfft(x)`` frequency spectrum (see the `tdi` field) by
+        `model_parameters` describes the physical model used to produce the
+        estimates. `sampler_state` preserves algorithm continuation information.
+        Together with `metadata`, these form the complete snapshot stored in
+        the ledger and supplied on the next sample call.
 
-            E[ |X(f)|**2 ] = (Tobs / 2) * S(f)      (interior bins)
-
-        so a frequency-domain block's per-bin weight is
-        ``|X(f)|**2 / ((Tobs/2) S)`` for the interior bins. Two bins are not
-        interior: DC (set to ``+inf`` here, so it carries zero weight) and, when
-        ``n_samples`` is even, the Nyquist bin, which is purely real and carries
-        one degree of freedom rather than two -- weight it half, or drop it, or
-        the likelihood over-counts that single bin by 2x.
-
-        For the **time-domain per-sample variance**, call
-        :meth:`noise_variance`, which does this weighting for you and is
-        therefore independent of the parity of ``n_samples``.
-
-        For white noise ``S = 2 sigma**2 / fs``; the noise object carries its own
-        ``fs`` (the ``psd(freqs)`` call passes only frequencies), so it computes
-        ``S`` from the ``sigma`` it holds.
+        Validated here, where a wrong length or dtype is the block author's
+        mistake to see, rather than on return. The arrays are taken as given
+        (not copied): the Wheel copies what it records, so reusing your own
+        buffer between cycles is safe.
         """
-        if self.noise is None:
-            return None
-        if not callable(getattr(self.noise, "psd", None)):
-            raise TypeError(
-                f"noise object {type(self.noise).__name__} does not expose "
-                f"psd(freqs[, channel]); the model a noise block puts on "
-                f"L1Data.noise must implement it to serve frequency-domain "
-                f"blocks (see block.NoiseBlock for the noise contract)"
-            )
-        freqs = np.fft.rfftfreq(self.n_samples, d=self.sample_interval)
-        psd = np.empty(freqs.shape)
-        psd[0] = np.inf
-        psd[1:] = (
-            self.noise.psd(freqs[1:])
-            if channel is None
-            else self.noise.psd(freqs[1:], channel)
+        result = BlockResult(
+            tdi_signal_contribution=tdi_signal_contribution,
+            noise_covariance=noise_covariance,
+            model_parameters={} if model_parameters is None else model_parameters,
+            sampler_state={} if sampler_state is None else sampler_state,
+            metadata={} if metadata is None else metadata,
         )
-        # Check that the PSD will not produce NaN's. The Wheel only checks
-        # the tdi field.
-        interior = psd[1:]
-        if not np.isfinite(interior).all() or np.any(interior <= 0.0):
-            bad = int((~np.isfinite(interior)).sum() + (interior <= 0.0).sum())
-            raise ValueError(
-                f"noise model {type(self.noise).__name__}.psd returned {bad} "
-                f"non-finite or non-positive value(s) on this run's frequency "
-                f"grid; a PSD must be finite and strictly positive to whiten "
-                f"against (check the noise block's fit, not the signal "
-                f"block asking for it)"
+        if result.tdi_signal_contribution is not None:
+            check_on_grid(
+                result.tdi_signal_contribution,
+                channel_names=self.channel_names,
+                num_time_samples=self.num_time_samples,
+                data_domain=self.data_domain,
+                context_label="tdi_signal_contribution",
+                wdm_grid=self.wdm_grid,
             )
-        return psd
+        return result
 
-    def noise_variance(self, channel: str | None = None) -> float | None:
-        """Per-sample time-domain variance implied by the noise model, or None.
+    def zero_block_result(
+        self,
+        *,
+        noise_covariance: DataCovariance | TranslatedCovariance | None = None,
+        model_parameters: dict[str, Any] | None = None,
+        sampler_state: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> BlockResult:
+        """A `BlockResult` with a zero signal on this grid: nothing to subtract.
 
-        The quantity a *time-domain* block needs for its likelihood weight,
-        so it does not have to re-derive it from the PSD grid. Integrates the
-        one-sided PSD over this run's grid, excluding DC (which carries no
-        variance for zero-mean data) and half-weighting the Nyquist bin when
-        `n_samples` is even, because that bin carries one degree of freedom
-        rather than two.
+        Allocates fresh zero arrays matching each channel's shape and dtype.
+        Use this when explicit arrays are useful. A source-free or noise-only
+        block can instead leave `tdi_signal_contribution=None` without allocating
+        any arrays:
 
-        That weighting is what makes the answer independent of the parity of
-        `n_samples`: it returns the variance of the zero-mean series, which for
-        white noise is ``sigma**2 * (1 - 1/n_samples)`` -- the naive
-        ``sum(psd[1:]) * df`` instead lands on ``sigma**2`` for even n and
-        ``sigma**2 (1-1/n)`` for odd n, i.e. it disagrees with itself across
-        parities.
-
-        Requires the same `psd(freqs[, channel])` contract as
-        :meth:`noise_psd`, and raises the same error if it is missing.
+            return BlockResult(model_parameters={"sources": []})
+            return BlockResult(noise_covariance=covariance)
         """
-        psd = self.noise_psd(channel)
-        if psd is None:
-            return None
-        interior = psd[1:]  # bin 0 is +inf by construction; DC holds no variance
-        weights = np.ones(interior.shape)
-        if self.n_samples % 2 == 0:
-            weights[-1] = 0.5  # Nyquist: 1 degree of freedom, not 2
-        return float(np.sum(interior * weights) * self.frequency_resolution)
+        return self.block_result(
+            {ch: np.zeros_like(arr) for ch, arr in self.channel_data.items()},
+            noise_covariance=noise_covariance,
+            model_parameters=model_parameters,
+            sampler_state=sampler_state,
+            metadata=metadata,
+        )
 
     # ---- discoverability ------------------------------------------------
 
     ALIASES: ClassVar[dict[str, str]] = {
-        "observation_time": "Tobs",
-        "sample_rate": "fs",
-        "sample_interval": "dt",
-        "n_samples": "N",
-        "frequency_resolution": "df",
-        "nyquist_frequency": "fny",
-        "epoch": "t0",
+        "observation_duration_s": "Tobs",
+        "sample_rate_hz": "fs",
+        "sample_interval_s": "dt",
+        "num_time_samples": "N",
+        "frequency_resolution_hz": "df",
+        "nyquist_frequency_hz": "fny",
+        "start_time_gps": "t0",
     }
     """Long-name -> short-name table. Both spellings are valid attributes
     on every `L1Data` instance and return the same value."""
@@ -520,14 +564,14 @@ class L1Data:
         "F_s": "fs",
         "d_t": "dt",
         "D_t": "dt",
-        "N_samples": "n_samples",
-        "n_Samples": "n_samples",
-        "Nsamples": "n_samples",
+        "N_samples": "num_time_samples",
+        "n_Samples": "num_time_samples",
+        "Nsamples": "num_time_samples",
         "d_f": "df",
         "f_ny": "fny",
         "F_ny": "fny",
-        "f_nyquist": "nyquist_frequency",
-        "nyquist": "nyquist_frequency",
+        "f_nyquist": "nyquist_frequency_hz",
+        "nyquist": "nyquist_frequency_hz",
         "t_0": "t0",
         "T_0": "t0",
     }

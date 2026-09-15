@@ -1,6 +1,6 @@
 [project]
 name = "enchilada"
-version = "0.1.0"
+version = "0.2.0"
 description = "Blocked-Gibbs global-fit orchestration for LISA: the Wheel/Block/L1Data protocol"
 readme = "README.md"
 license = "MIT"
@@ -31,10 +31,9 @@ keywords = [
     "astronomy",
 ]
 dependencies = [
-    # only long-stable numpy APIs are used (fft.rfft/irfft/rfftfreq, isfinite,
-    # issubdtype, linalg.norm, NDArray typing); the floor is validated by a CI
-    # leg resolving with --resolution lowest-direct
-    "numpy>=1.23",
+    # NumPy 1.26.4 supports the Python 3.12 floor. A separate core-minimum CI
+    # lane pins this version without numeric-orbits raising the NumPy minimum.
+    "numpy>=1.26.4",
 ]
 
 [project.urls]
@@ -62,7 +61,8 @@ dev = [
 ]
 
 [build-system]
-requires = ["uv_build>=0.11.32,<0.12.0"]
+# Keep the declared backend aligned with UV_VERSION in the CI/release workflows.
+requires = ["uv_build==0.12.1"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
@@ -77,6 +77,14 @@ source-include = [
     "examples/**/*.py",
     "examples/**/*.ipynb",
     "examples/**/*.txt",
+    "benchmarks/**/*.py",
+    "docs/performance.md",
+    "docs/domain-translation.md",
+    "specs/**/*.md",
+    ".specify/templates/**/*.md",
+    "openspec/**/*.md",
+    "openspec/config.yaml",
+    ".github/workflows/*.yml",
     "CHANGELOG.md",
 ]
 
@@ -111,7 +119,7 @@ fail_under = 95
 
 [tool.ruff]
 line-length = 88
-src = ["src", "tests", "examples"]
+src = ["src", "tests", "examples", "benchmarks"]
 
 [tool.ruff.lint]
 select = ["E4", "E5", "E7", "E9", "F", "I", "B", "UP"]  # E5 = line length

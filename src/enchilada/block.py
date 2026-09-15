@@ -1,154 +1,78 @@
-from typing import Protocol, runtime_checkable
+"""The stateless boundary between a model and its orchestrator."""
 
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
+
+import numpy as np
+
+from enchilada.block_result import BlockResult
+from enchilada.covariance import DataCovariance
 from enchilada.data import L1Data
+from enchilada.translated_covariance import TranslatedCovariance
 
 
 @runtime_checkable
 class Block(Protocol):
-    """Plug a sampler into the Wheel by implementing this interface.
+    """A configured model with explicit, orchestrator-owned sampling state.
 
-    The Wheel hands you a residual and takes back your updated one. It calls
-    two methods on you:
+    Keep fixed model configuration on the instance. Put every changing parameter,
+    walker, tuning value, and continuation record in the returned BlockResult.
+    Use the supplied RNG; Wheel owns it and commits its progress with the result.
+    A single configured block can therefore participate in independent Wheels.
 
-    - `start` once, when you are registered. Read the run settings and
-      conventions off the residual, set yourself up, subtract your initial
-      model, and return the updated residual (return it unchanged if you
-      start from nothing).
-    - `update` once each cycle -- one **block update**. The residual you
-      receive is the observed data with **every other** block's model already
-      subtracted -- **but not your own**. So it is exactly the data your
-      source class must explain: fit against it directly, subtract your new
-      model, and return the result. There is nothing to add back.
+    Prepare a complete `initial_block_result` in campaign setup and supply it to
+    `Wheel.add`. It must contain consistent estimates and all state needed to
+    sample. Initialization can use an injection, a chosen estimate, or a separate
+    model-specific prior-drawing helper. Wheel never calls an initialization hook.
+    `sample` advances `current_block_result`
+    against `conditional_residual` and `noise_covariance`, returning a complete
+    new BlockResult. A call may perform several internal sampling steps.
 
-    No add-back. The Wheel keeps a ledger of every block's current model and
-    hands you the data minus *everyone else*, so your own model is never in
-    what you receive. You fit it as-is. When you return, the Wheel reads your
-    new ledger entry straight off the difference between what it handed you and
-    what you returned -- you never do the cross-block arithmetic, and there
-    is no add-back to forget. (This is why the Wheel, not the block, owns the
-    residual bookkeeping; you still own everything about your sampler.)
+    `conditional_residual` is the observed data minus every OTHER block's current
+    signal; this block's signal is still present. The block does not perform
+    cross-block subtraction or add-back. `noise_covariance` is the current
+    covariance or None. `current_block_result` is this block's latest accepted
+    result from the ledger, including `model_parameters` and `sampler_state`.
+    Model parameters describe the physical estimates; sampler state preserves
+    algorithm internals such as walkers and proposal tuning. A simple sampler
+    may leave sampler_state empty.
 
-    What is yours. Your parameters, your RNG, your posterior chain, your
-    proposal tuning, your checkpoints, and your current model all live inside
-    your object (or the external process it wraps). The Wheel never sees,
-    stores, or restores your sampler state; it only records the summed model
-    you produce, so it can form the next residual.
+    Signal-only, noise-only, and joint models all use this interface. Return
+    the summed TDI signal in `BlockResult.tdi_signal_contribution` and a replacement
+    DataCovariance in `BlockResult.noise_covariance`. Both estimates are optional.
+    A noise-only block returns `BlockResult(noise_covariance=covariance, ...)`.
+    A None signal means zero contribution, replacing any previous signal.
+    The current covariance owner must return its complete covariance every call;
+    other blocks can omit covariance without changing it. Wheel keeps one
+    covariance owner; publish combined noise components together.
 
-    The pattern:
+    Each call receives independent snapshots of the conditional residual,
+    covariance, and current result. The orbit is a shared immutable resource.
+    Register a preferred data_domain with Wheel.add to receive matching inputs.
+    A translated covariance exposes exact operators; it may correlate samples.
+    Validate unsupported conventions explicitly.
 
-        from enchilada import replace   # or: from dataclasses import replace
-
-        def update(self, residual):
-            tdi = dict(residual.tdi)             # keep the channels you do not touch
-            for ch in residual.channels:
-                data = tdi[ch]                   # already data minus OTHERS
-                self.amplitude = draw_against(data, self.template)  # your sample
-                tdi[ch] = data - self.amplitude * self.template     # subtract yours
-            return replace(residual, tdi=tdi)
-
-    Noise is not special. A block that models the noise instead of a signal
-    removes nothing from `tdi`; it returns the residual with an updated `noise`
-    object -- `replace(residual, noise=my_model)` -- so its ledger entry is
-    zero, and signal blocks read the model back through `residual.noise_psd`
-    (per-bin weight) or `residual.noise_variance` (per-sample variance, for a
-    time-domain likelihood). See `NoiseBlock`.
-
-    `isinstance(x, Block)` is a *shape* check, not a semantic one. `Block` is
-    runtime-checkable, so it tests only that `x` has `name`, `start` and
-    `update` -- and those are common enough names that a progress bar or an
-    online learner can pass. Use it to catch an obviously wrong object early;
-    do not read a pass as "this is a block." `Wheel.add` does not rely on it
-    (it checks each method itself and validates what `start` returns).
-
-    Implementation notes:
-        - `name` must be unique within a Wheel; it identifies your block in
-          diagnostics and error messages.
-        - Return an `L1Data` with the same run settings you were handed
-          (`channels`, `n_samples`, `sample_rate`, `domain`, `epoch`,
-          `tdi_generation`, `observable`, `orbit`); only `tdi` and `noise` may
-          change. The Wheel validates this after `start` and every `update`, and
-          `L1Data` itself validates that your `tdi` keeps the right keys and
-          shapes.
-        - You are handed a fresh copy of the `tdi` arrays each call, so you may
-          mutate them in place if convenient; just return the result. The
-          `noise` and `orbit` objects are shared by reference -- treat them as
-          immutable, swapping via `replace(residual, noise=...)` rather than
-          mutating in place.
-        - `residual.noise` may be `None`: either no noise model is set, or on
-          the first cycle you are updated before the noise block is
-          (registration order). Both `noise_psd()` and `noise_variance()`
-          return `None` in that case -- guard for it rather than assuming a
-          model is present.
-        - Read the data conventions off the residual instead of assuming them:
-          `residual.observable`, `residual.domain`, `residual.channels`. If
-          your sampler only supports one convention, check these in `start` and
-          raise.
-        - For samplers in another language, write a thin Python wrapper that
-          shells out, writes/reads files, and implements this protocol. The
-          wrapper (or the process behind it) carries all the state; the Wheel
-          cannot tell the difference.
+    This protocol checks method shape only. It cannot prove that user code is
+    stateless or that its sampling transitions are statistically correct.
     """
 
-    name: str
+    if TYPE_CHECKING:
 
-    def start(self, residual: L1Data) -> L1Data:
-        """Join a run: set yourself up and return the residual you produce.
+        @property
+        def name(self) -> str:
+            """Stable registration name; immutable configurations are supported."""
+            ...
+    else:
+        # Avoid an inherited property setter blocking dataclass construction
+        # when an implementation explicitly subclasses this protocol.
+        name: str
 
-        Called once when the block is added to a Wheel. `residual` is the
-        observed data minus the models of any blocks already registered,
-        with the current noise model on `residual.noise`. Read run settings
-        off it, subtract your initial model, and return the updated residual --
-        unchanged if you start with no model.
-        """
+    def sample(
+        self,
+        conditional_residual: L1Data,
+        noise_covariance: DataCovariance | TranslatedCovariance | None,
+        current_block_result: BlockResult,
+        *,
+        rng: np.random.Generator,
+    ) -> BlockResult:
+        """Advance the supplied state and return the complete new block result."""
         ...
-
-    def update(self, residual: L1Data) -> L1Data:
-        """Perform one block update: revise your model, return the residual.
-
-        Args:
-            residual: The observed data with every **other** block's current
-                model subtracted -- not your own. This is the data your source
-                class must explain; fit against it directly (no add-back),
-                subtract your new model, and return the result. Run settings
-                (`residual.fs`, `residual.Tobs`, ...) are as in `start`; the
-                current noise model rides on `residual.noise`.
-
-        Returns:
-            The updated residual, with your new model subtracted (or, for a
-            noise block, with `noise` updated). The Wheel derives your new
-            ledger entry from what changed and forms the next residual.
-        """
-        ...
-
-
-class NoiseBlock(Block, Protocol):
-    """Convention for a `Block` that models the noise, not a signal.
-
-    Structurally identical to `Block` -- a noise block implements the same
-    `start`/`update` -- but by convention it leaves `tdi` untouched (so its
-    ledger entry is zero) and instead returns the residual with an updated
-    `noise` object:
-
-        def update(self, residual):
-            model = self.estimate_noise(residual.tdi)  # residual is ~pure noise
-            return replace(residual, noise=model)
-
-    The `noise` object it puts on the residual is consumed by signal blocks
-    through `L1Data.noise_psd` (and `L1Data.noise_variance`, which
-    integrates it for time-domain use), so it must expose
-
-    - ``psd(freqs[, channel]) -> ndarray`` -- the one-sided PSD (see
-      `L1Data.noise_psd` for the pinned normalization convention).
-
-    `isinstance(block, NoiseBlock)` cannot tell you anything -- it returns True
-    for *every* block. That is not a bug to fix: a noise block declares no
-    method a signal block lacks, because the difference between them is what
-    they do with `tdi` and `noise`, not their shape. Use this protocol as
-    documentation and as a type annotation; to find the noise block in a
-    campaign, track which one you registered for that job.
-
-    That contract is enforced where the model is consumed (`noise_psd` raises
-    if it is missing), not by the Wheel, which stays entirely noise-agnostic.
-    The Wheel threads the updated noise onto every residual it forms after, so
-    every block updated later sees the refreshed estimate.
-    """

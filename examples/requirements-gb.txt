@@ -1,9 +1,13 @@
 # External stack for examples/gb_block_eryn.ipynb (the galactic-binary example).
 #
+# From the checkout root, prepare the project extras before this external stack:
+#     uv sync --extra numeric-orbits --extra examples
 #     uv pip install -r examples/requirements-gb.txt
+#     uv run --no-sync jupyter lab examples/gb_block_eryn.ipynb
 #
-# JupyterLab is not listed here -- it comes from enchilada's own `examples`
-# extra (`uv sync --extra examples`), since every notebook needs it.
+# JupyterLab comes from enchilada's `examples` extra. Install the external stack
+# last: a later exact `uv sync` removes packages outside the project lockfile.
+# `--no-sync` launches the notebook using the prepared environment.
 #
 # None of these are enchilada dependencies, and this is deliberately a
 # requirements file rather than an extra: the example demonstrates that a real
@@ -26,8 +30,11 @@
 #                                                  supports 3.14; this example
 #                                                  does not)
 #
-# Floors are the versions the example was verified against, not guesses --
-# `uv pip compile` resolves this set cleanly on both 3.12 and 3.13.
+# These lower bounds come from dependency-resolution checks. Resolving wheels
+# does not validate a native GBGPU inference run; runtime checks are separate.
+# Released Eryn 1.2.6 uses np.in1d, removed in NumPy 2.4. This cap applies only
+# to the optional example environment, not enchilada's core dependency.
+numpy<2.4
 gbgpu>=1.2.4
 eryn>=1.2.6
 lisaanalysistools>=1.2.8

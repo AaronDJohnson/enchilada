@@ -1,0 +1,27 @@
+schema: spec-driven
+
+context: |
+  Enchilada is a Python >=3.12 library coordinating independently owned scientific
+  model blocks for LISA global fits. The core runtime dependency is NumPy.
+  This OpenSpec baseline documents commit dd412c3d47d3a209b632f43ee3220215936a31cc
+  for comparison with specs/001-package-baseline and the scientific template.
+  Blocks return Template objects; Wheel copies their signals and supplies each
+  block with observations minus all other blocks' latest adopted signals.
+  The coordinator does not establish arbitrary blocks' posterior correctness.
+  Read openspec/comparison.md and openspec/evidence.md for scope and evidence limits.
+  Scientific conventions and equations are observable contracts and belong in specs.
+  Use changes/ for proposed behavior; do not present proposed checks as existing evidence.
+
+rules:
+  specs:
+    - Use a named requirement with SHALL or MUST and at least one concrete GIVEN/WHEN/THEN scenario.
+    - Preserve relevant equations, units, array axes, normalization, and update timing.
+    - Explain programmer-facing contracts through their scientific consequences.
+    - Inspect relevant source and tests; distinguish enforced guards from caller obligations.
+    - Identify independent references and explicit numerical or statistical tolerances.
+    - Record unknown scientific decisions and missing evidence explicitly; do not invent defaults or results.
+  design:
+    - Explain scientific assumptions, state ownership, failure behavior, and numerical tradeoffs.
+  tasks:
+    - Tie verification work to named requirements and record the actual commands and outcomes.
+    - Keep an unimplemented, skipped, or inconclusive scientific check visibly unresolved.

@@ -582,7 +582,7 @@ wheels = [
 
 [[package]]
 name = "enchilada"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "numpy" },
@@ -611,7 +611,7 @@ requires-dist = [
     { name = "h5py", marker = "extra == 'numeric-orbits'", specifier = ">=3.0" },
     { name = "jupyterlab", marker = "extra == 'examples'", specifier = ">=4" },
     { name = "lisaorbits", marker = "extra == 'numeric-orbits'", specifier = ">=3.0.3" },
-    { name = "numpy", specifier = ">=1.23" },
+    { name = "numpy", specifier = ">=1.26.4" },
     { name = "scipy", marker = "extra == 'numeric-orbits'", specifier = ">=1.8" },
 ]
 provides-extras = ["numeric-orbits", "examples"]

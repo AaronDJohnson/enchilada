@@ -1,4 +1,4 @@
-"""L1Data: the data contract validates itself and assembles noise grids."""
+"""L1Data validates channel samples, metadata, and Fourier conventions."""
 
 from dataclasses import replace
 
@@ -6,88 +6,156 @@ import numpy as np
 import pytest
 
 from conftest import make_observed
-from enchilada import L1Data
+from enchilada import BlockResult, DataCovariance, L1Data
+
+
+class TestWDMData:
+    def test_grid_supplies_time_sample_count_and_preserves_campaign_metadata(self):
+        from enchilada.domains import WDMGrid
+
+        grid = WDMGrid(num_frequency_divisions=4, num_time_divisions=8)
+        data = L1Data(
+            channel_data={"A": np.zeros(grid.array_shape)},
+            sample_rate_hz=2.0,
+            channel_names=("A",),
+            tdi_generation="2.0",
+            physical_observable="fractional_frequency",
+            data_domain="wdm",
+            start_time_gps=100.0,
+            wdm_grid=grid,
+        )
+        assert data.num_time_samples == 32
+        assert data.Tobs == 16.0
+        assert data.dt == 0.5
+        assert data.start_time_gps == 100.0
+        assert data.wdm_grid is grid
+        assert replace(data, num_time_samples=32).num_time_samples == 32
+        with pytest.raises(ValueError, match="num_time_samples"):
+            replace(data, num_time_samples=64)
+
+    def test_wdm_requires_grid_metadata(self, observed):
+        with pytest.raises(ValueError, match="wdm_grid"):
+            replace(observed, data_domain="wdm")
+
+    def test_other_domains_reject_wdm_grid_metadata(self, observed):
+        from enchilada.domains import WDMGrid
+
+        grid = WDMGrid(num_frequency_divisions=4, num_time_divisions=16)
+        for data in (observed, observed.to_frequency()):
+            with pytest.raises(ValueError, match="wdm_grid"):
+                replace(data, wdm_grid=grid)
+
+    def test_wdm_grid_must_have_the_public_type(self, observed):
+        with pytest.raises(TypeError, match="WDMGrid"):
+            replace(observed, data_domain="wdm", wdm_grid=(4, 16))
+
+    @pytest.mark.parametrize("invalid", ["shape", "complex", "integer", "inactive"])
+    def test_wdm_validates_each_channel(self, observed, invalid):
+        from enchilada.domains import WDMGrid
+
+        grid = WDMGrid(num_frequency_divisions=4, num_time_divisions=16)
+        channels = {ch: np.zeros(grid.array_shape) for ch in observed.channel_names}
+        error = ValueError
+        if invalid == "shape":
+            channels["E"] = np.zeros((5, 8))
+        elif invalid == "complex":
+            channels["E"] = channels["E"].astype(complex)
+            error = TypeError
+        elif invalid == "integer":
+            channels["E"] = channels["E"].astype(int)
+            error = TypeError
+        else:
+            channels["E"][0, 1] = 1.0
+        with pytest.raises(error, match="E"):
+            replace(observed, data_domain="wdm", wdm_grid=grid, channel_data=channels)
 
 
 class TestPostInitValidation:
     def test_valid_construction(self, rng):
         obs = make_observed(rng)
-        assert obs.Tobs == obs.n_samples / obs.sample_rate
+        assert obs.Tobs == obs.num_time_samples / obs.sample_rate_hz
 
-    def test_observable_is_required(self, rng):
-        with pytest.raises(TypeError, match="observable"):
+    def test_noise_model_cannot_be_bundled_with_observations(self, observed):
+        with pytest.raises(TypeError, match="noise"):
+            replace(observed, noise=object())
+
+    def test_physical_observable_is_required(self, rng):
+        with pytest.raises(TypeError, match="physical_observable"):
             L1Data(
-                tdi={"A": np.zeros(8)},
-                sample_rate=1.0,
-                n_samples=8,
-                channels=("A",),
+                channel_data={"A": np.zeros(8)},
+                sample_rate_hz=1.0,
+                num_time_samples=8,
+                channel_names=("A",),
                 tdi_generation="2.0",
-                epoch=0.0,
+                start_time_gps=0.0,
             )
 
-    def test_epoch_is_optional_defaults_to_zero(self, rng):
+    def test_start_time_gps_is_optional_defaults_to_zero(self, rng):
         obs = L1Data(
-            tdi={"A": np.zeros(8)},
-            sample_rate=1.0,
-            n_samples=8,
-            channels=("A",),
+            channel_data={"A": np.zeros(8)},
+            sample_rate_hz=1.0,
+            num_time_samples=8,
+            channel_names=("A",),
             tdi_generation="2.0",
-            observable="fractional_frequency",
-        )  # no epoch supplied
-        assert obs.epoch == 0.0
+            physical_observable="fractional_frequency",
+        )  # no start_time_gps supplied
+        assert obs.start_time_gps == 0.0
         assert obs.t0 == 0.0
 
-    def test_empty_observable_rejected(self, rng):
+    def test_empty_physical_observable_rejected(self, rng):
         with pytest.raises(ValueError, match="fractional_frequency"):
-            make_observed(rng, observable="")
+            make_observed(rng, physical_observable="")
 
-    def test_tdi_keys_must_match_channels(self, rng):
+    def test_channel_data_keys_must_match_channel_names(self, rng):
         with pytest.raises(ValueError, match="missing.*'T'.*unexpected.*'X'"):
             make_observed(
                 rng,
-                tdi={"A": np.zeros(64), "E": np.zeros(64), "X": np.zeros(64)},
+                channel_data={"A": np.zeros(64), "E": np.zeros(64), "X": np.zeros(64)},
             )
 
-    def test_array_length_must_match_n_samples(self, rng):
+    def test_array_length_must_match_num_time_samples(self, rng):
         with pytest.raises(ValueError, match="length 99, expected 64"):
             make_observed(
                 rng,
-                tdi={"A": np.zeros(64), "E": np.zeros(99), "T": np.zeros(64)},
+                channel_data={"A": np.zeros(64), "E": np.zeros(99), "T": np.zeros(64)},
             )
 
     def test_complex_time_domain_rejected(self, rng):
-        with pytest.raises(TypeError, match="domain='frequency'"):
+        with pytest.raises(TypeError, match="data_domain='frequency'"):
             make_observed(
-                rng, tdi={ch: np.zeros(64, complex) for ch in ("A", "E", "T")}
+                rng, channel_data={ch: np.zeros(64, complex) for ch in ("A", "E", "T")}
             )
 
-    def test_unknown_domain_rejected(self, rng):
-        with pytest.raises(ValueError, match="domain"):
-            make_observed(rng, domain="fourier")
+    def test_unknown_data_domain_rejected(self, rng):
+        with pytest.raises(ValueError, match="data_domain"):
+            make_observed(rng, data_domain="fourier")
 
-    @pytest.mark.parametrize("sample_rate", [0.0, -1.0, float("nan")])
-    def test_bad_sample_rate_rejected(self, rng, sample_rate):
-        with pytest.raises(ValueError, match="sample_rate"):
-            make_observed(rng, sample_rate=sample_rate)
+    @pytest.mark.parametrize("sample_rate_hz", [0.0, -1.0, float("nan")])
+    def test_bad_sample_rate_hz_rejected(self, rng, sample_rate_hz):
+        with pytest.raises(ValueError, match="sample_rate_hz"):
+            make_observed(rng, sample_rate_hz=sample_rate_hz)
 
     def test_frequency_domain_arrays_live_on_rfft_grid(self, rng):
         n = 64
         good = make_observed(
             rng,
-            domain="frequency",
-            tdi={ch: np.zeros(n // 2 + 1, complex) for ch in ("A", "E", "T")},
+            data_domain="frequency",
+            channel_data={ch: np.zeros(n // 2 + 1, complex) for ch in ("A", "E", "T")},
         )
-        assert good.domain == "frequency"
+        assert good.data_domain == "frequency"
         with pytest.raises(ValueError, match="rfft grid"):
             make_observed(
                 rng,
-                domain="frequency",
-                tdi={ch: np.zeros(n, complex) for ch in ("A", "E", "T")},
+                data_domain="frequency",
+                channel_data={ch: np.zeros(n, complex) for ch in ("A", "E", "T")},
             )
 
     def test_replace_revalidates(self, observed):
         with pytest.raises(ValueError, match="length"):
-            replace(observed, tdi={ch: np.zeros(3) for ch in observed.channels})
+            replace(
+                observed,
+                channel_data={ch: np.zeros(3) for ch in observed.channel_names},
+            )
 
 
 class TestAliases:
@@ -100,156 +168,138 @@ class TestAliases:
             _ = observed.T_obs
 
 
-class FlatPSD:
-    """Noise model: flat one-sided PSD, T channel twice A/E."""
-
-    def psd(self, freqs, channel=None):
-        return np.full_like(freqs, 2.0 if channel == "T" else 1.0)
-
-
-class TestNoiseGrids:
-    def test_none_without_noise_model(self, observed):
-        assert observed.noise_psd() is None
-
-    def test_psd_grid_matches_rfft(self, observed):
-        obs = replace(observed, noise=FlatPSD())
-        psd = obs.noise_psd()
-        assert psd.shape == (observed.n_samples // 2 + 1,)
-        assert psd[0] == np.inf
-        assert np.all(psd[1:] == 1.0)
-
-    def test_channel_dispatch(self, observed):
-        obs = replace(observed, noise=FlatPSD())
-        assert obs.noise_psd("T")[1] == 2.0
-        assert obs.noise_psd("A")[1] == 1.0
-
-    def test_psd_grid_aligns_with_frequency_domain_data(self, rng):
-        n = 64
-        obs = make_observed(
-            rng,
-            domain="frequency",
-            tdi={ch: np.zeros(n // 2 + 1, complex) for ch in ("A", "E", "T")},
-            noise=FlatPSD(),
-        )
-        assert obs.noise_psd().shape == obs.tdi["A"].shape
-        assert obs.df == 1.0 / obs.Tobs
-
-    def test_contract_error_names_the_interface(self, observed):
-        obs = replace(observed, noise=object())
-        with pytest.raises(TypeError, match=r"psd\(freqs\[, channel\]\)"):
-            obs.noise_psd()
-
-
 class TestOrbitSpanCheck:
     class StubOrbit:
-        t_range = (0.0, 100.0)
+        time_range_gps = (0.0, 100.0)
 
-    def test_orbit_covering_data_accepted(self, rng):
-        obs = make_observed(rng, orbit=self.StubOrbit(), sample_rate=1.0)
-        assert obs.orbit is not None  # 64 s of data inside [0, 100]
+    def test_orbit_ephemeris_covering_data_accepted(self, rng):
+        obs = make_observed(rng, orbit_ephemeris=self.StubOrbit(), sample_rate_hz=1.0)
+        assert obs.orbit_ephemeris is not None  # 64 s of data inside [0, 100]
 
-    @pytest.mark.parametrize("epoch", [-1.0, 50.0])
-    def test_orbit_not_covering_data_rejected(self, rng, epoch):
+    @pytest.mark.parametrize("start_time_gps", [-1.0, 50.0])
+    def test_orbit_ephemeris_not_covering_data_rejected(self, rng, start_time_gps):
         with pytest.raises(ValueError, match="outside the tabulated ephemeris"):
-            make_observed(rng, orbit=self.StubOrbit(), sample_rate=1.0, epoch=epoch)
+            make_observed(
+                rng,
+                orbit_ephemeris=self.StubOrbit(),
+                sample_rate_hz=1.0,
+                start_time_gps=start_time_gps,
+            )
 
-    def test_orbit_tabulated_on_the_data_grid_accepted(self, rng):
-        # 64 samples at 1 Hz from epoch 0 -> last sample at t = 63 s. An orbit
+    def test_orbit_ephemeris_tabulated_on_the_data_grid_accepted(self, rng):
+        # 64 samples at 1 Hz starting at GPS time 0 -> last sample at t = 63 s. An orbit
         # tabulated on exactly that grid covers every time a block can ask
         # for, so it must be accepted (it spans [0, 63], not [0, Tobs=64]).
         class GridOrbit:
-            t_range = (0.0, 63.0)
+            time_range_gps = (0.0, 63.0)
 
-        obs = make_observed(rng, orbit=GridOrbit(), sample_rate=1.0, epoch=0.0)
-        assert obs.orbit is not None
+        obs = make_observed(
+            rng, orbit_ephemeris=GridOrbit(), sample_rate_hz=1.0, start_time_gps=0.0
+        )
+        assert obs.orbit_ephemeris is not None
 
-    # (n_samples, sample_rate) pairs where (n-1)*dt and (n-1)/fs are NOT
+    # (num_time_samples, sample_rate_hz) pairs where (n-1)*dt and (n-1)/fs are NOT
     # bit-identical -- i.e. exactly where computing the bound by division
     # spuriously rejects a grid-tabulated orbit -- plus an exactly-representable
     # non-unit rate so the dt scaling itself is pinned.
     @pytest.mark.parametrize(
-        ("n_samples", "sample_rate"),
+        ("num_time_samples", "sample_rate_hz"),
         [(32, 3.0), (32, 6.0), (32, 7.0), (128, 3.0), (64, 0.5), (64, 0.1)],
     )
-    def test_data_grid_orbit_accepted_at_any_rate(self, rng, n_samples, sample_rate):
+    def test_data_grid_orbit_ephemeris_accepted_at_any_rate(
+        self, rng, num_time_samples, sample_rate_hz
+    ):
         """An orbit tabulated the documented way is accepted at every rate.
 
-        The grid idiom is `epoch + arange(n) * dt` (NumericOrbit.from_hdf5), so
+        The grid idiom is `start_time_gps + arange(n) * dt` (NumericOrbit.from_hdf5), so
         the check must compute its bound the same way; deriving it as
-        (n-1)/sample_rate differs by an ulp at these rates and rejects.
+        (n-1)/sample_rate_hz differs by an ulp at these rates and rejects.
         """
 
         class GridOrbit:
             def __init__(self, t_end):
-                self.t_range = (0.0, t_end)
+                self.time_range_gps = (0.0, t_end)
 
-        dt = 1.0 / sample_rate
-        last = 0.0 + (n_samples - 1) * dt
+        dt = 1.0 / sample_rate_hz
+        last = 0.0 + (num_time_samples - 1) * dt
         obs = make_observed(
             rng,
-            n_samples=n_samples,
-            orbit=GridOrbit(last),
-            sample_rate=sample_rate,
-            epoch=0.0,
+            num_time_samples=num_time_samples,
+            orbit_ephemeris=GridOrbit(last),
+            sample_rate_hz=sample_rate_hz,
+            start_time_gps=0.0,
         )
-        assert obs.orbit is not None
+        assert obs.orbit_ephemeris is not None
         # a full sample interval short is still rejected, at every rate
         with pytest.raises(ValueError, match="outside the tabulated ephemeris"):
             make_observed(
                 rng,
-                n_samples=n_samples,
-                orbit=GridOrbit(last - dt),
-                sample_rate=sample_rate,
-                epoch=0.0,
+                num_time_samples=num_time_samples,
+                orbit_ephemeris=GridOrbit(last - dt),
+                sample_rate_hz=sample_rate_hz,
+                start_time_gps=0.0,
             )
 
-    def test_orbit_ending_before_the_last_sample_rejected(self, rng):
+    def test_orbit_ephemeris_ending_before_the_last_sample_rejected(self, rng):
         # one hair short of the last sample (63 s) must still be caught
         class ShortOrbit:
-            t_range = (0.0, 62.9)
+            time_range_gps = (0.0, 62.9)
 
         with pytest.raises(ValueError, match="outside the tabulated ephemeris"):
-            make_observed(rng, orbit=ShortOrbit(), sample_rate=1.0, epoch=0.0)
+            make_observed(
+                rng,
+                orbit_ephemeris=ShortOrbit(),
+                sample_rate_hz=1.0,
+                start_time_gps=0.0,
+            )
 
-    def test_orbit_without_t_range_skips_check(self, rng):
-        obs = make_observed(rng, orbit=object(), epoch=1e9)
-        assert obs.orbit is not None
+    def test_orbit_ephemeris_without_time_range_gps_skips_check(self, rng):
+        obs = make_observed(rng, orbit_ephemeris=object(), start_time_gps=1e9)
+        assert obs.orbit_ephemeris is not None
 
 
 class TestRemainingValidationBranches:
-    """Negative cases for the scalar/tdi guards not covered above."""
+    """Negative cases for the scalar/channel_data guards not covered above."""
 
-    def test_n_samples_must_be_a_positive_int(self, observed):
+    def test_num_time_samples_must_be_a_positive_int(self, observed):
         # 0 is the "derive it" sentinel, so the invalid values are negatives
         # and non-integers
-        with pytest.raises(ValueError, match="n_samples must be a positive integer"):
-            replace(observed, n_samples=-4)
-        with pytest.raises(ValueError, match="n_samples must be a positive integer"):
-            replace(observed, n_samples=8.0)  # float is not an int
+        with pytest.raises(
+            ValueError, match="num_time_samples must be a positive integer"
+        ):
+            replace(observed, num_time_samples=-4)
+        with pytest.raises(
+            ValueError, match="num_time_samples must be a positive integer"
+        ):
+            replace(observed, num_time_samples=8.0)  # float is not an int
 
-    def test_epoch_must_be_finite(self, observed):
-        with pytest.raises(ValueError, match="epoch must be finite"):
-            replace(observed, epoch=float("nan"))
+    def test_start_time_gps_must_be_finite(self, observed):
+        with pytest.raises(ValueError, match="start_time_gps must be finite"):
+            replace(observed, start_time_gps=float("nan"))
 
     def test_tdi_generation_must_be_a_non_empty_string(self, observed):
         with pytest.raises(ValueError, match="tdi_generation must be a non-empty"):
             replace(observed, tdi_generation="")
 
-    def test_tdi_must_be_a_dict(self, observed):
-        with pytest.raises(TypeError, match="tdi must be a dict"):
-            replace(observed, tdi=[1.0, 2.0])
+    def test_channel_data_must_be_a_dict(self, observed):
+        with pytest.raises(TypeError, match="channel_data must be a dict"):
+            replace(observed, channel_data=[1.0, 2.0])
 
-    def test_channels_must_be_non_empty(self, observed):
-        with pytest.raises(ValueError, match="channels must be a non-empty"):
-            replace(observed, channels=(), tdi={})
+    def test_channel_names_must_be_non_empty(self, observed):
+        with pytest.raises(ValueError, match="channel_names must be a non-empty"):
+            replace(observed, channel_names=(), channel_data={})
 
-    def test_channels_must_not_contain_duplicates(self, rng):
-        with pytest.raises(ValueError, match="channels contains duplicates"):
-            make_observed(rng, channels=("A", "A"), tdi={"A": np.zeros(64)})
+    def test_channel_names_must_not_contain_duplicates(self, rng):
+        with pytest.raises(ValueError, match="channel_names contains duplicates"):
+            make_observed(
+                rng, channel_names=("A", "A"), channel_data={"A": np.zeros(64)}
+            )
 
-    def test_tdi_values_must_be_1d_arrays(self, observed):
+    def test_channel_data_values_must_be_1d_arrays(self, observed):
         with pytest.raises(TypeError, match="must be a 1-D numpy array"):
-            replace(observed, tdi={ch: [0.0] * 64 for ch in observed.channels})
+            replace(
+                observed, channel_data={ch: [0.0] * 64 for ch in observed.channel_names}
+            )
 
     def test_private_attribute_miss_raises_plain_attributeerror(self, observed):
         with pytest.raises(AttributeError):
@@ -261,76 +311,130 @@ class TestRemainingValidationBranches:
 
 
 class TestNSamplesDerivation:
-    """n_samples is read off the data where that is exact, required where not."""
+    """num_time_samples is read off the data where that is exact, required where not."""
 
     def _kwargs(self, **over):
         base = dict(
-            sample_rate=0.1,
-            channels=("A", "E"),
+            sample_rate_hz=0.1,
+            channel_names=("A", "E"),
             tdi_generation="2.0",
-            observable="fractional_frequency",
+            physical_observable="fractional_frequency",
         )
         base.update(over)
         return base
 
     def test_time_domain_derives_from_the_arrays(self):
-        r = L1Data(tdi={ch: np.zeros(1024) for ch in ("A", "E")}, **self._kwargs())
-        assert r.n_samples == 1024
+        r = L1Data(
+            channel_data={ch: np.zeros(1024) for ch in ("A", "E")}, **self._kwargs()
+        )
+        assert r.num_time_samples == 1024
         assert r.Tobs == 1024 / 0.1
         assert r.df == 1.0 / r.Tobs
 
     def test_explicit_value_still_honoured_and_checked(self):
         kw = self._kwargs()
-        tdi = {ch: np.zeros(1024) for ch in ("A", "E")}
-        assert L1Data(tdi=tdi, n_samples=1024, **kw).n_samples == 1024
+        channel_data = {ch: np.zeros(1024) for ch in ("A", "E")}
+        assert (
+            L1Data(
+                channel_data=channel_data, num_time_samples=1024, **kw
+            ).num_time_samples
+            == 1024
+        )
         with pytest.raises(ValueError, match="expected 512"):
-            L1Data(tdi=tdi, n_samples=512, **kw)
+            L1Data(channel_data=channel_data, num_time_samples=512, **kw)
 
     def test_frequency_domain_requires_it_and_says_why(self):
         # 513 bins are consistent with n=1024 and n=1025 -- the parity is lost,
         # so enchilada asks instead of guessing
         with pytest.raises(ValueError, match="does not determine it") as exc:
             L1Data(
-                tdi={ch: np.zeros(513, complex) for ch in ("A", "E")},
-                domain="frequency",
+                channel_data={ch: np.zeros(513, complex) for ch in ("A", "E")},
+                data_domain="frequency",
                 **self._kwargs(),
             )
         msg = str(exc.value)
-        assert "n_samples=1024" in msg and "=1025" in msg
+        assert "num_time_samples=1024" in msg and "=1025" in msg
 
     @pytest.mark.parametrize("n", [1024, 1025])
     def test_frequency_domain_accepts_either_parity_when_stated(self, n):
         r = L1Data(
-            tdi={ch: np.zeros(n // 2 + 1, complex) for ch in ("A", "E")},
-            domain="frequency",
-            n_samples=n,
+            channel_data={ch: np.zeros(n // 2 + 1, complex) for ch in ("A", "E")},
+            data_domain="frequency",
+            num_time_samples=n,
             **self._kwargs(),
         )
-        assert r.n_samples == n
+        assert r.num_time_samples == n
         assert r.Tobs == n / 0.1  # the two parities really do differ
 
     def test_derived_value_survives_replace(self):
-        r = L1Data(tdi={ch: np.zeros(64) for ch in ("A", "E")}, **self._kwargs())
-        r2 = replace(r, tdi={ch: np.ones(64) for ch in ("A", "E")})
-        assert r2.n_samples == 64
+        r = L1Data(
+            channel_data={ch: np.zeros(64) for ch in ("A", "E")}, **self._kwargs()
+        )
+        r2 = replace(r, channel_data={ch: np.ones(64) for ch in ("A", "E")})
+        assert r2.num_time_samples == 64
 
     def test_derivation_still_validates_every_channel(self):
         # derived from the first channel, but a ragged second one is caught
         with pytest.raises(ValueError, match="has length 60, expected 64"):
-            L1Data(tdi={"A": np.zeros(64), "E": np.zeros(60)}, **self._kwargs())
+            L1Data(
+                channel_data={"A": np.zeros(64), "E": np.zeros(60)}, **self._kwargs()
+            )
 
 
 class TestDomainTransforms:
-    """to_frequency/to_time carry n_samples, so the round trip is exact."""
+    """to_frequency/to_time carry num_time_samples, so the round trip is exact."""
+
+    @pytest.mark.parametrize(
+        "num_time_samples,index,endpoint",
+        [(1, 0, "DC"), (4, 0, "DC"), (4, -1, "Nyquist"), (5, 0, "DC")],
+    )
+    def test_imaginary_rfft_endpoints_are_rejected(
+        self, num_time_samples, index, endpoint
+    ):
+        spectrum = np.zeros(num_time_samples // 2 + 1, dtype=complex)
+        spectrum[index] = 1 + 2j
+        with pytest.raises(ValueError, match=rf"{endpoint}.*real"):
+            L1Data(
+                channel_data={"A": spectrum},
+                sample_rate_hz=0.2,
+                num_time_samples=num_time_samples,
+                channel_names=("A",),
+                tdi_generation="2.0",
+                physical_observable="strain",
+                data_domain="frequency",
+            )
+        assert spectrum[index] == 1 + 2j  # validation never projects the input
+
+    @pytest.mark.parametrize("num_time_samples", [1, 4, 5])
+    def test_valid_frequency_inputs_round_trip_without_losing_components(
+        self, num_time_samples
+    ):
+        spectrum = np.arange(num_time_samples // 2 + 1, dtype=complex) + 1
+        if num_time_samples > 1:
+            spectrum[1:] += 2j
+        if num_time_samples % 2 == 0:
+            spectrum[-1] = spectrum[-1].real
+        observed = L1Data(
+            channel_data={"A": spectrum},
+            sample_rate_hz=0.2,
+            num_time_samples=num_time_samples,
+            channel_names=("A",),
+            tdi_generation="2.0",
+            physical_observable="strain",
+            data_domain="frequency",
+        )
+        np.testing.assert_allclose(
+            observed.to_time().to_frequency().channel_data["A"], spectrum
+        )
 
     def _time_residual(self, n, fs=0.2, **over):
         rng = np.random.default_rng(0)
         kw = dict(
-            tdi={ch: rng.standard_normal(n) for ch in ("A", "E")},
-            sample_rate=fs,
-            channels=("A", "E"),
+            channel_data={ch: rng.standard_normal(n) for ch in ("A", "E")},
+            sample_rate_hz=fs,
+            channel_names=("A", "E"),
             tdi_generation="1.5",
-            observable="fractional_frequency",
+            physical_observable="fractional_frequency",
         )
         kw.update(over)
         return L1Data(**kw)
@@ -339,41 +443,74 @@ class TestDomainTransforms:
     def test_round_trip_is_exact(self, n):
         t = self._time_residual(n)
         f = t.to_frequency()
-        assert f.domain == "frequency"
-        assert f.tdi["A"].size == n // 2 + 1
+        assert f.data_domain == "frequency"
+        assert f.channel_data["A"].size == n // 2 + 1
         back = f.to_time()
-        assert back.domain == "time"
-        for ch in t.channels:
-            np.testing.assert_allclose(back.tdi[ch], t.tdi[ch], atol=1e-12)
+        assert back.data_domain == "time"
+        for ch in t.channel_names:
+            np.testing.assert_allclose(
+                back.channel_data[ch], t.channel_data[ch], atol=1e-12
+            )
 
     @pytest.mark.parametrize("n", [1024, 1025])
-    def test_n_samples_is_carried_not_restated(self, n):
+    def test_num_time_samples_is_carried_not_restated(self, n):
         # never passed by hand: derived from the arrays, then carried across
         t = self._time_residual(n)
         f = t.to_frequency()
-        assert t.n_samples == f.n_samples == n
+        assert t.num_time_samples == f.num_time_samples == n
         assert f.Tobs == t.Tobs and f.df == t.df and f.dt == t.dt
 
-    def test_transforms_are_idempotent_no_ops(self):
-        t = self._time_residual(64)
-        assert t.to_time() is t
-        f = t.to_frequency()
-        assert f.to_frequency() is f
+    @pytest.mark.parametrize("domain", ["time", "frequency"])
+    def test_same_domain_conversion_returns_independent_arrays(self, domain):
+        source = self._time_residual(64)
+        if domain == "frequency":
+            source = source.to_frequency()
+        converted = getattr(source, f"to_{domain}")()
+        for name in source.channel_names:
+            original = source.channel_data[name].copy()
+            np.testing.assert_array_equal(converted.channel_data[name], original)
+            converted.channel_data[name][:] = 0
+            np.testing.assert_array_equal(source.channel_data[name], original)
 
-    def test_noise_and_orbit_ride_along(self):
-        class Noise:
-            def psd(self, f, channel=None):
-                return np.ones_like(f)
+    @pytest.mark.parametrize("source_domain", ["time", "frequency"])
+    @pytest.mark.parametrize("target_domain", ["time", "frequency"])
+    @pytest.mark.parametrize("invalid", ["length", "nonfinite"])
+    def test_convenience_conversions_revalidate_mutated_channels(
+        self, source_domain, target_domain, invalid
+    ):
+        source = self._time_residual(5)
+        if source_domain == "frequency":
+            source = source.to_frequency()
+        if invalid == "length":
+            # Mutate every channel so a stacked FFT could silently pad/truncate.
+            for name in source.channel_names:
+                source.channel_data[name] = source.channel_data[name][:-1]
+        else:
+            source.channel_data["A"][1] = np.nan
+        with pytest.raises(ValueError, match="length|finite"):
+            getattr(source, f"to_{target_domain}")()
 
-        noise = Noise()
-        t = self._time_residual(64, noise=noise)
-        assert t.to_frequency().noise is noise
+    @pytest.mark.parametrize("target_domain", ["time", "frequency"])
+    @pytest.mark.parametrize("index", [0, -1], ids=["DC", "Nyquist"])
+    def test_convenience_conversions_reject_mutated_fourier_endpoints(
+        self, target_domain, index
+    ):
+        source = self._time_residual(4).to_frequency()
+        source.channel_data["A"][index] = 1j
+        with pytest.raises(ValueError, match="coefficient must be real"):
+            getattr(source, f"to_{target_domain}")()
 
-    def test_transform_convention_matches_noise_psd_normalization(self):
+    def test_orbit_ephemeris_is_preserved_by_domain_transforms(self):
+        orbit = object()
+        t = self._time_residual(64, orbit_ephemeris=orbit)
+        assert t.to_frequency().orbit_ephemeris is orbit
+        assert t.to_frequency().to_time().orbit_ephemeris is orbit
+
+    def test_transform_convention_matches_coefficient_covariance(self):
         """E[|X(f)|^2] == (Tobs/2) * S(f) for X = dt*rfft(x).
 
-        Pins that to_frequency's convention and noise_psd's normalization are
-        the same convention -- in code, not just in the docstrings.
+        Compare simulated Fourier power with the covariance constructed from
+        its known one-sided PSD to check the normalization end to end.
         """
         fs, n, sigma = 0.2, 1 << 13, 0.7
 
@@ -386,17 +523,17 @@ class TestDomainTransforms:
         trials = 40
         for _ in range(trials):
             t = L1Data(
-                tdi={"A": rng.normal(0.0, sigma, n)},
-                sample_rate=fs,
-                channels=("A",),
+                channel_data={"A": rng.normal(0.0, sigma, n)},
+                sample_rate_hz=fs,
+                channel_names=("A",),
                 tdi_generation="1.5",
-                observable="fractional_frequency",
-                noise=White(),
+                physical_observable="fractional_frequency",
             )
-            power = np.abs(t.to_frequency().tdi["A"]) ** 2
+            power = np.abs(t.to_frequency().channel_data["A"]) ** 2
             acc = power if acc is None else acc + power
         measured = acc / trials
-        predicted = 0.5 * t.Tobs * t.noise_psd("A")
+        noise_covariance = DataCovariance.from_psd(t, White())
+        predicted = noise_covariance.covariance_matrix[:, 0, 0].real
         interior = slice(10, -10)
         ratio = float(np.mean(measured[interior] / predicted[interior]))
         assert ratio == pytest.approx(1.0, abs=0.05)
@@ -405,38 +542,43 @@ class TestDomainTransforms:
 class TestDtypeAndTypeContract:
     """dtype and container types are part of the validated contract."""
 
-    def test_integer_tdi_rejected_at_construction(self, rng):
+    def test_integer_channel_data_rejected_at_construction(self, rng):
         # would otherwise fail deep inside the Wheel's ledger arithmetic
         with pytest.raises(TypeError, match="must be floating or complex"):
-            make_observed(rng, tdi={ch: np.arange(64) for ch in ("A", "E", "T")})
+            make_observed(
+                rng, channel_data={ch: np.arange(64) for ch in ("A", "E", "T")}
+            )
 
     def test_object_dtype_rejected(self, rng):
         with pytest.raises(TypeError, match="must be floating or complex"):
             make_observed(
-                rng, tdi={ch: np.zeros(64, dtype=object) for ch in ("A", "E", "T")}
+                rng,
+                channel_data={ch: np.zeros(64, dtype=object) for ch in ("A", "E", "T")},
             )
 
     def test_float32_is_allowed(self, rng):
         obs = make_observed(
-            rng, tdi={ch: np.zeros(64, np.float32) for ch in ("A", "E", "T")}
+            rng, channel_data={ch: np.zeros(64, np.float32) for ch in ("A", "E", "T")}
         )
-        assert obs.tdi["A"].dtype == np.float32
+        assert obs.channel_data["A"].dtype == np.float32
 
-    def test_channels_of_a_wrong_container_type_rejected(self, rng):
+    def test_channel_names_of_a_wrong_container_type_rejected(self, rng):
         # a set has no order, so it cannot define the channel sequence
-        with pytest.raises(TypeError, match="channels must be a tuple"):
-            make_observed(rng, channels={"A", "E", "T"})
+        with pytest.raises(TypeError, match="channel_names must be a tuple"):
+            make_observed(rng, channel_names={"A", "E", "T"})
 
-    def test_channels_list_is_coerced_to_tuple(self, rng):
+    def test_channel_names_list_is_coerced_to_tuple(self, rng):
         # a list would otherwise compare unequal to the tuple a block returns,
         # and the Wheel would blame the block for changing a run setting
-        obs = make_observed(rng, channels=["A", "E", "T"])
-        assert obs.channels == ("A", "E", "T")
-        assert isinstance(obs.channels, tuple)
+        obs = make_observed(rng, channel_names=["A", "E", "T"])
+        assert obs.channel_names == ("A", "E", "T")
+        assert isinstance(obs.channel_names, tuple)
 
-    def test_bool_n_samples_rejected(self, observed):
-        with pytest.raises(ValueError, match="n_samples must be a positive integer"):
-            replace(observed, n_samples=True)
+    def test_bool_num_time_samples_rejected(self, observed):
+        with pytest.raises(
+            ValueError, match="num_time_samples must be a positive integer"
+        ):
+            replace(observed, num_time_samples=True)
 
     def test_equality_is_identity_and_hashing_works(self, rng):
         # dataclass eq over a dict of arrays used to raise a raw numpy error
@@ -445,122 +587,120 @@ class TestDtypeAndTypeContract:
         assert isinstance(hash(a), int)
 
 
-class TestNoiseVariance:
-    class White:
-        def __init__(self, sigma, fs):
-            self.sigma, self.fs = sigma, fs
-
-        def psd(self, f, channel=None):
-            return np.full_like(f, 2.0 * self.sigma**2 / self.fs)
-
-    def _residual(self, n, fs=4.0, **over):
-        kw = dict(
-            tdi={"A": np.zeros(n)},
-            sample_rate=fs,
-            channels=("A",),
-            tdi_generation="1.5",
-            observable="fractional_frequency",
-            noise=self.White(0.7, fs),
-        )
-        kw.update(over)
-        return L1Data(**kw)
-
-    def test_none_without_a_noise_model(self, observed):
-        assert observed.noise_variance() is None
-
-    @pytest.mark.parametrize("n", [2048, 2049])
-    def test_independent_of_the_parity_of_n(self, n):
-        # the naive sum(psd[1:])*df lands on sigma**2 for even n and
-        # sigma**2 (1-1/n) for odd n; the weighted form agrees with itself
-        var = self._residual(n).noise_variance()
-        assert var == pytest.approx(0.49 * (1 - 1 / n), rel=1e-12)
-
-    def test_matches_the_empirical_variance(self):
-        n, fs, sigma = 1 << 14, 4.0, 0.7
-        r = self._residual(n, fs=fs)
-        rng = np.random.default_rng(0)
-        emp = float(np.mean([np.var(rng.normal(0, sigma, n)) for _ in range(40)]))
-        assert r.noise_variance() == pytest.approx(emp, rel=0.02)
-
-    def test_contract_error_matches_noise_psd(self, observed):
-        obs = replace(observed, noise=object())
-        with pytest.raises(TypeError, match="does not expose"):
-            obs.noise_variance()
-
-
-class TestPsdGridAndAliases:
-    """Pin the actual frequency grid and the derived quantities numerically."""
-
-    class RampPSD:
-        """Frequency-dependent, so a wrong grid cannot pass unnoticed."""
-
-        def psd(self, f, channel=None):
-            return 1.0 + np.asarray(f)
-
-    @pytest.mark.parametrize(("n", "fs"), [(64, 0.5), (65, 2.0), (1024, 0.1)])
-    def test_psd_is_evaluated_on_the_rfft_grid(self, n, fs):
-        r = L1Data(
-            tdi={"A": np.zeros(n)},
-            sample_rate=fs,
-            channels=("A",),
-            tdi_generation="1.5",
-            observable="strain",
-            noise=self.RampPSD(),
-        )
-        freqs = np.fft.rfftfreq(n, d=1.0 / fs)
-        psd = r.noise_psd()
-        assert psd[0] == np.inf
-        np.testing.assert_allclose(psd[1:], 1.0 + freqs[1:], rtol=1e-12)
+class TestDerivedQuantities:
+    """Pin the derived quantities numerically."""
 
     def test_derived_quantities_are_numerically_right(self, rng):
-        obs = make_observed(rng, n_samples=64, sample_rate=0.5)
-        assert obs.nyquist_frequency == pytest.approx(0.25)  # fs / 2
-        assert obs.sample_interval == pytest.approx(2.0)  # 1 / fs
-        assert obs.observation_time == pytest.approx(128.0)  # n / fs
-        assert obs.frequency_resolution == pytest.approx(1 / 128.0)  # 1 / Tobs
+        obs = make_observed(rng, num_time_samples=64, sample_rate_hz=0.5)
+        assert obs.nyquist_frequency_hz == pytest.approx(0.25)  # fs / 2
+        assert obs.sample_interval_s == pytest.approx(2.0)  # 1 / fs
+        assert obs.observation_duration_s == pytest.approx(128.0)  # n / fs
+        assert obs.frequency_resolution_hz == pytest.approx(1 / 128.0)  # 1 / Tobs
 
 
-class TestNoisePsdSanity:
-    """A noise block leaves tdi untouched, so the Wheel's finiteness guard
-    never sees a bad fit -- the damage travels through the noise object. These
-    pin the only place it can be caught."""
+class TestBlockResultFactories:
+    """Block-result factories build what a block returns on this data's grid."""
+
+    def test_block_result_carries_the_arrays_given(self, observed):
+        tdi = {ch: np.full_like(arr, 2.0) for ch, arr in observed.channel_data.items()}
+        t = observed.block_result(tdi)
+        assert isinstance(t, BlockResult)
+        for ch in observed.channel_names:
+            np.testing.assert_array_equal(t.tdi_signal_contribution[ch], 2.0)
+        assert t.noise_covariance is None  # a signal block publishes nothing
+
+    def test_block_result_arrays_are_taken_not_copied(self, observed):
+        arrs = {ch: np.zeros_like(a) for ch, a in observed.channel_data.items()}
+        t = observed.block_result(arrs)
+        assert (
+            t.tdi_signal_contribution["A"] is arrs["A"]
+        )  # the block may reuse its own buffer
 
     @pytest.mark.parametrize(
-        ("bad", "what"),
+        "bad, match",
         [
-            (np.nan, "NaN from an ill-conditioned Whittle fit"),
-            (np.inf, "inf from a divide-by-zero in the model"),
-            (-1e-40, "negative from a least-squares PSD in a low-power band"),
-            (0.0, "exactly zero: 1/S is inf, so it is not whitenable either"),
+            ({"A": np.zeros(64)}, "must match the run's channels"),
+            (
+                {ch: np.zeros(9) for ch in ("A", "E", "T")},
+                "length 9, expected 64",
+            ),
+            (
+                {ch: np.zeros(64, complex) for ch in ("A", "E", "T")},
+                "complex but data_domain='time'",
+            ),
         ],
     )
-    def test_a_psd_that_is_not_finite_and_positive_is_refused(self, rng, bad, what):
-        class BrokenNoise:
-            def psd(self, freqs, channel=None):
-                out = np.full(freqs.shape, 1e-40)
-                out[2] = bad
-                return out
+    def test_off_grid_block_result_is_refused_where_it_is_built(
+        self, observed, bad, match
+    ):
+        with pytest.raises((ValueError, TypeError), match=match):
+            observed.block_result(bad)
 
-        r = make_observed(rng, noise=BrokenNoise())
-        with pytest.raises(ValueError, match="non-finite or non-positive"):
-            r.noise_psd()
+    def test_zero_block_result_matches_shapes_and_dtypes(self, observed):
+        z = observed.zero_block_result()
+        assert isinstance(z, BlockResult)
+        for ch in observed.channel_names:
+            assert (
+                z.tdi_signal_contribution[ch].shape == observed.channel_data[ch].shape
+            )
+            assert (
+                z.tdi_signal_contribution[ch].dtype == observed.channel_data[ch].dtype
+            )
+            np.testing.assert_array_equal(z.tdi_signal_contribution[ch], 0.0)
 
-    def test_the_message_blames_the_noise_model_by_name(self, rng):
-        class WhittleFit:
-            def psd(self, freqs, channel=None):
-                return np.full(freqs.shape, np.nan)
+    def test_arrays_are_fresh_and_independent(self, observed):
+        snapshot = observed.channel_data["A"].copy()
+        z1, z2 = observed.zero_block_result(), observed.zero_block_result()
+        assert z1.tdi_signal_contribution["A"] is not observed.channel_data["A"]
+        z1.tdi_signal_contribution["A"][0] = 1.0
+        np.testing.assert_array_equal(observed.channel_data["A"], snapshot)  # untouched
+        np.testing.assert_array_equal(
+            z2.tdi_signal_contribution["A"], 0.0
+        )  # its own arrays
 
-        r = make_observed(rng, noise=WhittleFit())
-        with pytest.raises(ValueError, match=r"noise model WhittleFit\.psd"):
-            r.noise_psd()
+    def test_frequency_domain_block_result_is_complex_on_the_rfft_grid(self, rng):
+        n = 64
+        obs = make_observed(
+            rng,
+            data_domain="frequency",
+            channel_data={
+                ch: rng.standard_normal(n // 2 + 1) + 0j for ch in ("A", "E", "T")
+            },
+        )
+        z = obs.zero_block_result()
+        assert np.iscomplexobj(
+            z.tdi_signal_contribution["A"]
+        ) and z.tdi_signal_contribution["A"].shape == (n // 2 + 1,)
+        # and a real array on that grid is refused, so `.real` cannot slip through
+        with pytest.raises(TypeError, match="real but data_domain='frequency'"):
+            obs.block_result({ch: np.zeros(n // 2 + 1) for ch in obs.channel_names})
 
-    def test_a_finite_positive_psd_passes_through_untouched(self, rng):
-        """The guard must not reject the DC bin it sets to +inf itself."""
 
-        class GoodNoise:
-            def psd(self, freqs, channel=None):
-                return np.full(freqs.shape, 3e-41)
+class TestBlockResultClass:
+    """The container itself, for block results built without the factories."""
 
-        psd = make_observed(rng, noise=GoodNoise()).noise_psd()
-        assert psd[0] == np.inf  # DC carries zero weight by construction
-        assert np.all(psd[1:] == 3e-41)
+    def test_with_noise_covariance_returns_a_new_block_result(self, observed):
+        z = observed.zero_block_result()
+        model = DataCovariance.from_variance(observed, 1.0)
+        published = z.with_noise_covariance(model)
+        assert published.noise_covariance is model
+        assert z.noise_covariance is None  # frozen: the original is unchanged
+        assert published.tdi_signal_contribution is z.tdi_signal_contribution
+
+    def test_equality_is_identity_not_elementwise(self, observed):
+        a, b = observed.zero_block_result(), observed.zero_block_result()
+        assert a == a and a != b  # would raise "truth value ambiguous" otherwise
+
+    @pytest.mark.parametrize(
+        "bad, exc, match",
+        [
+            ("not a dict", TypeError, "must be a dict"),
+            ({}, ValueError, "is empty"),
+            ({"A": [0.0, 1.0]}, TypeError, "must be a 1-D or 2-D numpy array"),
+            ({"A": np.zeros((2, 2, 2))}, TypeError, "must be a 1-D or 2-D numpy array"),
+            ({"A": np.zeros(4, int)}, TypeError, "must be floating or complex"),
+        ],
+    )
+    def test_malformed_containers_are_refused(self, bad, exc, match):
+        with pytest.raises(exc, match=match):
+            BlockResult(tdi_signal_contribution=bad)

@@ -1,0 +1,89 @@
+name: WDM integration
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  UV_VERSION: "0.12.1"
+  # Update the tested backend and docs/domain-translation.md together.
+  WDM_REVISION: "6f145b4076862ea4786150a54d5a1f28af3c7055"
+  WDM_VERSION: "0.2.0"
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Check out the tested optional backend
+        uses: actions/checkout@v7
+        with:
+          repository: AaronDJohnson/wdm
+          ref: ${{ env.WDM_REVISION }}
+          path: .wdm-backend
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.13"
+      - name: Install locked test dependencies and pinned WDM
+        # numeric-orbits also supplies locked matplotlib for the notebook test.
+        # Keep those versions when adding WDM, then check its dependency bounds.
+        run: |
+          test "$(git -C .wdm-backend rev-parse HEAD)" = "$WDM_REVISION"
+          uv sync --locked --extra numeric-orbits
+          uv pip install --python .venv/bin/python --no-deps ./.wdm-backend
+          uv pip check --python .venv/bin/python
+      - name: Require the installed backend and notebook dependencies
+        # A missing optional backend must fail this job before pytest can skip.
+        # Version validation is CI-only; local source/editable use stays valid.
+        run: |
+          uv run --no-sync python - <<'PY'
+          import importlib.metadata as metadata
+          import os
+
+          import enchilada
+          import matplotlib
+          import numpy
+          import scipy
+          import wdm
+
+          assert metadata.version("wdm") == os.environ["WDM_VERSION"]
+          for name in (
+              "forward_many", "inverse_many", "forward_time", "inverse_time",
+              "active_mask",
+          ):
+              assert callable(getattr(wdm, name, None)), f"missing WDM API: {name}"
+          print(f"enchilada={enchilada.__version__} from {enchilada.__file__}")
+          print(f"wdm={metadata.version('wdm')} revision={os.environ['WDM_REVISION']}")
+          print(f"backend import: {wdm.__file__}")
+          print(f"numpy={numpy.__version__} scipy={scipy.__version__}")
+          print(f"matplotlib={matplotlib.__version__}")
+          PY
+      - name: Test numerical translation and executable walkthroughs
+        env:
+          MPLBACKEND: Agg
+          MPLCONFIGDIR: ${{ runner.temp }}/wdm-matplotlib
+        run: |
+          uv run --no-sync pytest -q \
+            tests/test_translation.py \
+            tests/test_covariance_translation.py \
+            tests/test_wheel_translation.py \
+            tests/test_toy_translation.py \
+            tests/test_translation_review.py \
+            tests/test_translation_example.py \
+            --junitxml="$RUNNER_TEMP/wdm-integration.xml"
+          uv run --no-sync python - "$RUNNER_TEMP/wdm-integration.xml" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          cases = ET.parse(sys.argv[1]).findall(".//testcase")
+          assert cases, "WDM integration suite collected no tests"
+          skipped = [case.attrib["name"] for case in cases if case.find("skipped") is not None]
+          assert not skipped, f"WDM integration tests must execute, skipped: {skipped}"
+          print(f"WDM integration: {len(cases)} tests executed without skips")
+          PY
