@@ -3,7 +3,7 @@ name = "enchilada"
 version = "0.2.0"
 description = "Blocked-Gibbs global-fit orchestration for LISA: the Wheel/Block/L1Data protocol"
 readme = "README.md"
-license = "MIT"
+license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [
     { name = "Aaron Johnson", email = "aaron9035@gmail.com" },
