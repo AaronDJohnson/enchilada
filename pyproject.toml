@@ -33,7 +33,7 @@ keywords = [
 dependencies = [
     # NumPy 1.26.4 supports the Python 3.12 floor. A separate core-minimum CI
     # lane pins this version without numeric-orbits raising the NumPy minimum.
-    "numpy>=1.26.4",
+    "numpy>=2.5.3",
 ]
 
 [project.urls]
