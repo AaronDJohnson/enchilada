@@ -62,7 +62,7 @@ dev = [
 
 [build-system]
 # Keep the declared backend aligned with UV_VERSION in the CI/release workflows.
-requires = ["uv_build==0.12.1"]
+requires = ["uv_build==0.12.13"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
