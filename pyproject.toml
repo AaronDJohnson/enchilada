@@ -49,7 +49,7 @@ numeric-orbits = [
     "scipy>=1.8",         # scipy.interpolate.CubicSpline only
 ]
 examples = [
-    "jupyterlab>=4",
+    "jupyterlab>=4.6.3",
 ]
 
 [dependency-groups]
