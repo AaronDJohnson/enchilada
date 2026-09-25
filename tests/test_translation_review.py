@@ -5,7 +5,7 @@ import importlib.util
 import numpy as np
 import pytest
 
-from enchilada import BlockResult, DataCovariance, Wheel
+from enchilada import BlockState, DataCovariance, Wheel
 from enchilada.translation import transform
 
 
@@ -33,12 +33,12 @@ def test_noise_only_wdm_result_can_reuse_grid_with_compatible_time_reference(obs
         "wdm",
         num_frequency_divisions=4,
     )
-    original = BlockResult(noise_covariance=covariance, sampler_state={"step": 3})
+    original = BlockState(covariance_matrix=covariance, parameters={"variance": 1.0})
     converted = transform(original, "wdm", reference_data=observed)
-    assert converted.noise_covariance.wdm_grid == covariance.wdm_grid
-    assert converted.sampler_state == original.sampler_state
-    assert converted.tdi_signal_contribution is None
-    assert converted.noise_covariance is not covariance
+    assert converted.covariance_matrix.wdm_grid == covariance.wdm_grid
+    assert converted.parameters == original.parameters
+    assert converted.template is None
+    assert converted.covariance_matrix is not covariance
 
 
 def test_omitted_domain_preserves_inputs_while_explicit_domain_aligns_them(observed):
@@ -49,7 +49,7 @@ def test_omitted_domain_preserves_inputs_while_explicit_domain_aligns_them(obser
             self.name = name
 
         def sample(
-            self, conditional_residual, noise_covariance, current_block_result, *, rng
+            self, conditional_residual, noise_covariance, current_block_state, *, rng
         ):
             received.append(
                 (
@@ -59,13 +59,13 @@ def test_omitted_domain_preserves_inputs_while_explicit_domain_aligns_them(obser
                     noise_covariance.data_domain,
                 )
             )
-            return current_block_result
+            return current_block_state
 
     covariance = transform(DataCovariance.from_variance(observed, 2.0), "frequency")
     wheel = Wheel(observed, covariance)
-    wheel.add(RecordInputs("default"), initial_block_result=BlockResult())
+    wheel.add(RecordInputs("default"), initial_block_state=BlockState())
     wheel.add(
-        RecordInputs("explicit"), initial_block_result=BlockResult(), data_domain="time"
+        RecordInputs("explicit"), initial_block_state=BlockState(), data_domain="time"
     )
     assert received == []
     wheel.run(1)
@@ -103,23 +103,23 @@ def test_rejected_translated_output_rolls_back_mutated_inputs_and_rng(
         name = "mutate"
 
         def sample(
-            self, conditional_residual, noise_covariance, current_block_result, *, rng
+            self, conditional_residual, noise_covariance, current_block_state, *, rng
         ):
-            draw = rng.normal()
+            amplitude = rng.normal()
             if fail[0]:
                 conditional_residual.channel_data["A"][:] = 1e9
                 native = noise_covariance.source_covariance
                 native.covariance_matrix.setflags(write=True)
                 native.covariance_matrix[:] = -1.0
-                current_block_result.sampler_state["coordinates"][0] = -8.0
+                current_block_state.parameters["coordinates"][0] = -8.0
                 signal = {
                     name: np.zeros_like(values)
                     for name, values in conditional_residual.channel_data.items()
                 }
                 signal["A"][0] = 1j
-                return BlockResult(tdi_signal_contribution=signal)
-            return BlockResult(
-                sampler_state={"draw": draw, "coordinates": np.array([3.0])}
+                return BlockState(template=signal)
+            return BlockState(
+                parameters={"amplitude": amplitude, "coordinates": np.array([3.0])}
             )
 
     initial_covariance = DataCovariance.from_variance(observed, 2.0)
@@ -128,17 +128,17 @@ def test_rejected_translated_output_rolls_back_mutated_inputs_and_rng(
     for wheel in (actual, control):
         wheel.add(
             MutateInputs(),
-            initial_block_result=BlockResult(
-                sampler_state={"draw": 0.0, "coordinates": np.array([3.0])}
+            initial_block_state=BlockState(
+                parameters={"amplitude": 0.0, "coordinates": np.array([3.0])}
             ),
             data_domain="frequency",
         )
-    previous_draw = actual.ledger["mutate"].sampler_state["draw"]
+    previous_amplitude = actual.ledger["mutate"].parameters["amplitude"]
     with pytest.raises(ValueError, match="DC coefficient must be real"):
         actual.run(1)
-    assert actual.ledger["mutate"].sampler_state["draw"] == previous_draw
+    assert actual.ledger["mutate"].parameters["amplitude"] == previous_amplitude
     np.testing.assert_array_equal(
-        actual.ledger["mutate"].sampler_state["coordinates"], [3.0]
+        actual.ledger["mutate"].parameters["coordinates"], [3.0]
     )
     for name in canonical.channel_names:
         np.testing.assert_array_equal(
@@ -155,6 +155,6 @@ def test_rejected_translated_output_rolls_back_mutated_inputs_and_rng(
     actual.run(1)
     control.run(1)
     assert (
-        actual.ledger["mutate"].sampler_state["draw"]
-        == control.ledger["mutate"].sampler_state["draw"]
+        actual.ledger["mutate"].parameters["amplitude"]
+        == control.ledger["mutate"].parameters["amplitude"]
     )

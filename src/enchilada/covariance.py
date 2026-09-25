@@ -22,7 +22,7 @@ def _validate_covariance_values(
     wdm_grid: WDMGrid | None,
 ) -> None:
     """Validate operands before a transform can discard invalid coordinates."""
-    from enchilada.block_result import check_on_grid
+    from enchilada.block_state import check_on_grid
 
     if not isinstance(values, dict) or set(values) != set(channel_names):
         raise ValueError("values keys must match covariance channel_names exactly")
@@ -45,48 +45,44 @@ def _validate_covariance_values(
 class DataCovariance:
     """Covariance ``E[x_i x_j.conj()]`` between channels at each grid point.
 
-    ``covariance_matrix`` has shape ``(n_points, n_channels, n_channels)``. Points are
-    independent: this representation supports channel correlations, but not
-    correlations between different times or Fourier bins. In the time domain,
-    points are the ``num_time_samples`` real samples. In the frequency domain, they
-    are the ``num_time_samples // 2 + 1`` coefficients of ``dt * rfft(x)``. These are
-    coefficient covariances, **not** spectral densities. :meth:`from_psd`
-    converts the established one-sided PSD convention explicitly.
+    Grid points are independent; channels at each point may be correlated.
+    Time grids contain ``num_time_samples`` real samples. Fourier grids contain
+    ``num_time_samples // 2 + 1`` coefficients of ``dt * rfft(x)``. WDM grids have
+    shape ``(Nf+1, Nt)``, with structural edge pixels excluded by
+    ``wdm_grid.active_mask``.
 
-    ``active_mask`` identifies points used in inference: True includes a point,
-    False excludes it. None includes all points. Every matrix is finite and
-    Hermitian; active matrices must additionally be positive definite.
-    Inactive points may have zero covariance, avoiding infinities in matrix
-    arithmetic. DC and even-length Nyquist coefficients are real.
+    Frequency covariances describe proper complex interior coefficients (zero
+    pseudocovariance), with real DC and even-length Nyquist coefficients. These
+    are coefficient covariances, not spectral densities; :meth:`from_psd`
+    converts the one-sided PSD convention.
 
+    Every matrix is finite and Hermitian; active matrices are positive definite.
+    Inactive matrices may be zero. Stored covariance and mask arrays are
+    independent, read-only copies.
     Symmetry is checked relative to each pair of channel standard deviations.
     Accepted numerical roundoff is symmetrized before testing positive
     definiteness, so the stored matrix is exactly Hermitian.
 
-    In the WDM domain the leading matrix dimensions are ``(Nf+1, Nt)``;
-    structural edge pixels are excluded by ``wdm_grid.active_mask``. Frequency
-    coefficients are proper complex random variables at interior bins (zero
-    pseudocovariance), with real DC and even-length Nyquist coefficients.
-
-    Operations use real coordinates: frequency interiors are packed as
-    ``sqrt(2) * Re(Z), sqrt(2) * Im(Z)`` and endpoints as ``Re(Z)``. This
-    convention counts each real degree of freedom once in quadratic forms and
-    determinants. Inactive points are projected out, not zero-variance data
-    constraints. Input arrays are copied and made read-only.
+    Array operations accept channel dictionaries of real time/WDM arrays or
+    complex rFFT arrays. Their mathematical normalization uses real coordinates:
+    ``sqrt(2) * Re(Z), sqrt(2) * Im(Z)`` for frequency interiors and ``Re(Z)`` for
+    endpoints. Callers do not pack these coordinates themselves. Quadratic forms
+    and determinants count each real degree of freedom once. Inactive points
+    are projected out, not treated as zero-variance data constraints.
 
     Fields:
         covariance_matrix: Channel covariance at each sample, Fourier bin, or
-            WDM pixel, shaped (*grid_shape, num_channels, num_channels).
+            WDM pixel, shaped ``(*grid_shape, num_channels, num_channels)``.
         channel_names: Ordered TDI channel names for both matrix channel axes.
         sample_rate_hz: Sampling frequency of the underlying time series, in Hz.
-        num_time_samples: Number of underlying time samples per channel, even
-            when the covariance is represented in the frequency domain.
+        num_time_samples: Number of underlying time samples per channel in every
+            representation.
         data_domain: "time", "frequency" (default), or "wdm"; determines the grid
             points and the real/complex coefficient convention.
         start_time_gps: GPS seconds at sample index zero; defaults to 0.0 for
             synthetic data without an absolute-time reference.
-        active_mask: Boolean array with one entry per grid point. None selects
-            all physical points and is normalized to an explicit mask.
+        active_mask: Boolean array per grid point; True includes, False excludes.
+            None selects all physical points and becomes an explicit mask.
         wdm_grid: Required frequency/time division metadata for WDM covariance;
             omitted in time and frequency representations.
     """
@@ -231,9 +227,10 @@ class DataCovariance:
         Returns frequency covariance even when ``reference_data`` is a time series.
         The one-sided density ``S`` becomes ``C = (Tobs / 2) * S``. The same
         covariance conversion applies at Nyquist, whose coefficient is real
-        and has one degree of freedom. DC is zero and inactive, enforcing the
-        zero-mean convention. Channels are independent in this adapter;
-        construct a matrix directly for correlated channels.
+        and has one degree of freedom. DC covariance is stored as zero and
+        excluded from the likelihood; input data need not have zero mean.
+        Channels are independent in this adapter; construct a matrix directly
+        for correlated channels.
         """
         method = getattr(noise_psd_model, "psd", None)
         if not callable(method):
@@ -333,9 +330,8 @@ class DataCovariance:
     def check_compatible(self, reference_data: "L1Data") -> None:
         """Require the same channels, sampling grid, and epoch as ``reference_data``.
 
-        Representation may differ: a time-domain block can consume a spectral
-        model through :meth:`noise_variance`. Matrix operations must still
-        honor this object's explicit ``data_domain``; this check does not transform.
+        Representation may differ. This checks metadata only and does not transform
+        arrays or verify that a likelihood supports the covariance representation.
         """
         for name in (
             "channel_names",

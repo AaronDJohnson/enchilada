@@ -8,12 +8,12 @@ All notable changes to enchilada are documented here. The format follows
 
 ### Added
 
-- `Wheel.add(initial_block_result=...)` starts a block from an explicit injection
-  or other complete result without consuming campaign RNG draws. It uses the
+- `Wheel.add(initial_block_state=...)` starts a block from an explicit injection
+  or other complete physical state without consuming campaign RNG draws. It uses the
   usual validation, copied state, domain translation, and covariance ownership.
-  `check_block` accepts the same required starting result, demonstrated in
+  `check_block` accepts the same required starting state, demonstrated in
   `examples/create_block.ipynb`.
-- `transform` converts observations, covariance, and block results between time,
+- `transform` converts observations, covariance, and block states between time,
   frequency, and WDM representations. `WDMGrid` validates dependent division
   counts; the optional local WDM backend is loaded lazily.
 - Native WDM covariance and exact `TranslatedCovariance` operators preserve
@@ -26,10 +26,9 @@ All notable changes to enchilada are documented here. The format follows
 - `DataCovariance` stores coefficient covariance on an explicit observation grid,
   with point × channel × channel matrices, an inference mask, PSD/variance
   factories, and marginal noise weights. Active matrices are positive definite.
-- `Ledger` provides defensive snapshots of each block's complete `BlockResult`:
-  optional `tdi_signal_contribution` and `noise_covariance`, physical
-  `model_parameters`, algorithm continuation `sampler_state`, and diagnostics
-  in `metadata`. `ledger.snapshot()` returns an independent dictionary for
+- `Ledger` provides defensive snapshots of each block's complete `BlockState`:
+  optional `template` and `covariance_matrix`, and physical `parameters`.
+  `ledger.snapshot()` returns an independent dictionary for
   inspection; the Ledger itself compares by identity.
 - `examples/requirements-gb.txt` installs the external galactic-binary example
   stack separately from core dependencies. Its preflight checks and documented
@@ -37,24 +36,42 @@ All notable changes to enchilada are documented here. The format follows
 
 ### Changed
 
+- Rename the block container to `BlockState` in `enchilada.block_state`, its
+  factories to `block_state` and `zero_block_state`, and its arguments to
+  `initial_block_state` and `current_block_state`, with no compatibility aliases.
+- `BlockState` publishes only `template`, `covariance_matrix`, and `parameters`, with
+  `with_covariance_matrix` for a replacement covariance. The renamed covariance
+  field still holds a `DataCovariance` or `TranslatedCovariance` object, or `None`.
+  Sampler continuation and diagnostics move to each block's own typed `State`;
+  Wheel owns accepted physical
+  estimates and its RNG, and cannot roll back mutations to block-local state.
+  Independent campaigns require separate block instances.
+- `L1Data.wdm_grid` is automatically derived from WDM coefficient shapes and is
+  no longer a constructor argument. This read-only metadata is `None` for time
+  and frequency data. Select WDM divisions through `transform` or `Wheel.add`;
+  covariance grid APIs are unchanged.
+- `L1Data` infers channel names from dictionary insertion order when omitted or
+  None. Explicit ordering remains supported for covariance alignment. Only
+  `channel_data` may be positional; all observation settings are keyword-only.
 - Change the project license from MIT to Apache License 2.0.
 - The core NumPy floor is 1.26.4, tested independently of the numeric-orbit
   dependencies on Python 3.12. CI and release gates also run optional WDM
   integration against a pinned backend revision.
 - Blocks require only `name` and
-  `sample(conditional_residual, noise_covariance, current_block_result, *, rng)`.
+  `sample(conditional_residual, noise_covariance, current_block_state, *, rng)`.
   Both `Wheel.add` and `check_block` require a complete, non-None
-  `initial_block_result`; initialization is explicit campaign setup, with no
-  prior-drawing hook in the protocol. Instances hold fixed configuration; Wheel
-  owns accepted model and sampler state.
+  `initial_block_state`; initialization is explicit campaign setup, with no
+  prior-drawing hook in the protocol. Instances hold configuration and their own
+  sampler state; Wheel owns accepted physical estimates.
 - Wheel maintains independent `observed_data` and `working_residual`, the current
   `noise_covariance`, a ledger, and its RNG. Each block receives the observations
-  minus all other blocks' accepted signals. Result, covariance, residual, and RNG
-  adoption is atomic; a failed call leaves that block's accepted state intact.
+  minus all other blocks' accepted signals. Published state, covariance, residual,
+  and RNG adoption is atomic; a failed call leaves that block's accepted estimate
+  intact, but does not restore its local sampler state.
   A persistent balanced tree caches signal sums for logarithmic block replacement
   and exclusion. Internal covariance snapshots avoid repeated factorization while
   new covariance publications retain validation.
-- Every block result is a complete snapshot. A missing signal means zero and
+- Every block state is a complete physical snapshot. A missing template means zero and
   removes any previous contribution. Noise-only blocks publish covariance directly.
   The current covariance owner must always return its full covariance; another
   block taking ownership emits `NoiseOverwrittenWarning`.
@@ -69,10 +86,10 @@ All notable changes to enchilada are documented here. The format follows
   metres, nominal arm length, and transfer frequency explicitly.
 - `on_cycle_complete(cycle_index, wheel)` runs after a full cycle accepts, with a
   zero-based index local to each `run`. It does not run for a partially failed cycle.
-- Examples prepare injected values or prior draws in setup, with explicit
-  continuation state and callback history
-  collection. EchoBlock counts accepted calls in `sampler_state["num_sample_calls"]`;
-  the GB example restores Eryn state and refreshes conditional likelihoods.
+- Examples prepare injected values or prior draws in setup, with block-owned
+  continuation state and callback history collection. EchoBlock records calls in
+  `state.num_sample_calls` and diagnostics in `state.metadata`; the GB example
+  keeps Eryn continuation state on the block and refreshes conditional likelihoods.
 - Release builds test the packaged source before publication and use a pinned
   PEP 517 backend. Dependency-floor tests preserve their resolved environment;
   notebook setup installs project extras before external model dependencies.
@@ -90,9 +107,8 @@ All notable changes to enchilada are documented here. The format follows
   the same public typing contract as mutable configurations, including explicit
   protocol subclasses.
 - Manual release dispatches cannot publish, even when run against a tag.
-- Source archives include linked specifications and their reusable scientific
-  template. Historical API descriptions are labeled and removed-source links
-  target their recorded baseline.
+- Source archives include the examples and workflows linked from the README;
+  packaged documentation links are checked after extraction.
 - The optional GB example constrains NumPy below 2.4 because released Eryn 1.2.6
   calls the removed `numpy.in1d` function. This upper bound applies only to the
   example dependencies.
@@ -101,7 +117,7 @@ All notable changes to enchilada are documented here. The format follows
   before Cholesky validation and storage.
 - NumericOrbit copies its input arrays and rejects nonfinite query times, keeping
   caller mutations and invalid times from changing its interpolation bounds.
-- Observation and block-result spectra require real DC coefficients and real
+- Observation and block-state spectra require real DC coefficients and real
   Nyquist coefficients for even time-series lengths.
 - Residuals subtract aggregated signals from pristine observations, preserving
   the data when large block contributions cancel. Signal sums use at least
@@ -112,7 +128,7 @@ All notable changes to enchilada are documented here. The format follows
 - Noise storage and weighting helpers on observation data. Covariance is managed
   separately through `DataCovariance` and Wheel.
 - Separate noise-block and stateful-block contracts; signal, noise, and joint
-  models use the same stateless `Block` protocol.
+  models use the same `Block` protocol.
 - Heuristic signal-withdrawal warnings. An omitted or explicit zero signal removes
   the block's previous contribution.
 

@@ -6,11 +6,78 @@ import numpy as np
 import pytest
 
 from conftest import make_observed
-from enchilada import BlockResult, DataCovariance, L1Data
+from enchilada import BlockState, DataCovariance, L1Data, Wheel, transform
+
+
+class TestConstructorSettings:
+    @pytest.mark.parametrize("settings", [{}, {"channel_names": None}])
+    def test_inferred_channel_order_aligns_covariance_axes(self, settings):
+        data = L1Data(
+            {"E": np.full(4, 2.0), "A": np.ones(4)},
+            sample_rate_hz=1.0,
+            tdi_generation="2.0",
+            physical_observable="strain",
+            **settings,
+        )
+        assert data.channel_names == ("E", "A")
+        covariance = DataCovariance.from_variance(data, {"A": 1.0, "E": 4.0})
+        np.testing.assert_array_equal(covariance.covariance_matrix[0], [[4, 0], [0, 1]])
+        assert covariance.quadratic_form(data.channel_data) == pytest.approx(8.0)
+
+    def test_resolved_order_survives_reordered_buffers_and_transforms(self):
+        data = L1Data(
+            {"E": np.full(4, 2.0), "A": np.ones(4)},
+            sample_rate_hz=1.0,
+            tdi_generation="2.0",
+            physical_observable="strain",
+        )
+        reordered = replace(
+            data,
+            channel_data={"A": data.channel_data["A"], "E": data.channel_data["E"]},
+        )
+        covariance = DataCovariance.from_variance(data, {"A": 1.0, "E": 4.0})
+        wheel = Wheel(reordered, covariance)
+        assert wheel.observed_data.channel_names == ("E", "A")
+        assert reordered.to_frequency().to_time().channel_names == ("E", "A")
+
+    def test_explicit_channel_order_overrides_dictionary_order(self):
+        data = L1Data(
+            {"E": np.full(4, 2.0), "A": np.ones(4)},
+            sample_rate_hz=1.0,
+            channel_names=("A", "E"),
+            tdi_generation="2.0",
+            physical_observable="strain",
+        )
+        covariance = DataCovariance.from_variance(data, {"E": 4.0, "A": 1.0})
+        assert data.channel_names == ("A", "E")
+        np.testing.assert_array_equal(covariance.covariance_matrix[0], [[1, 0], [0, 4]])
+        covariance.check_compatible(data.to_frequency())
+
+    def test_settings_cannot_be_passed_positionally(self):
+        with pytest.raises(TypeError, match="positional"):
+            L1Data({"A": np.zeros(4)}, 1.0, ("A",), "2.0", "strain")
+
+    def test_empty_inferred_channels_are_rejected(self):
+        with pytest.raises(ValueError, match="channel_names must be a non-empty"):
+            L1Data(
+                {},
+                sample_rate_hz=1.0,
+                tdi_generation="2.0",
+                physical_observable="strain",
+            )
+
+    def test_inference_requires_a_channel_dictionary(self):
+        with pytest.raises(TypeError, match="channel_data must be a dict"):
+            L1Data(
+                [np.zeros(4)],
+                sample_rate_hz=1.0,
+                tdi_generation="2.0",
+                physical_observable="strain",
+            )
 
 
 class TestWDMData:
-    def test_grid_supplies_time_sample_count_and_preserves_campaign_metadata(self):
+    def test_coefficients_supply_grid_and_preserve_campaign_metadata(self):
         from enchilada.domains import WDMGrid
 
         grid = WDMGrid(num_frequency_divisions=4, num_time_divisions=8)
@@ -22,32 +89,56 @@ class TestWDMData:
             physical_observable="fractional_frequency",
             data_domain="wdm",
             start_time_gps=100.0,
-            wdm_grid=grid,
         )
         assert data.num_time_samples == 32
         assert data.Tobs == 16.0
         assert data.dt == 0.5
         assert data.start_time_gps == 100.0
-        assert data.wdm_grid is grid
+        assert data.wdm_grid == grid
+        assert replace(data).wdm_grid == grid
         assert replace(data, num_time_samples=32).num_time_samples == 32
         with pytest.raises(ValueError, match="num_time_samples"):
             replace(data, num_time_samples=64)
 
-    def test_wdm_requires_grid_metadata(self, observed):
-        with pytest.raises(ValueError, match="wdm_grid"):
+    def test_wdm_requires_coefficient_arrays(self, observed):
+        with pytest.raises(TypeError, match="2-D"):
             replace(observed, data_domain="wdm")
 
-    def test_other_domains_reject_wdm_grid_metadata(self, observed):
+    def test_grid_is_not_a_constructor_input(self, observed):
         from enchilada.domains import WDMGrid
 
         grid = WDMGrid(num_frequency_divisions=4, num_time_divisions=16)
-        for data in (observed, observed.to_frequency()):
-            with pytest.raises(ValueError, match="wdm_grid"):
-                replace(data, wdm_grid=grid)
+        with pytest.raises(TypeError, match="wdm_grid"):
+            L1Data(
+                observed.channel_data,
+                sample_rate_hz=observed.sample_rate_hz,
+                tdi_generation=observed.tdi_generation,
+                physical_observable=observed.physical_observable,
+                wdm_grid=grid,
+            )
+        with pytest.raises((TypeError, ValueError), match="wdm_grid"):
+            replace(observed, wdm_grid=grid)
 
-    def test_wdm_grid_must_have_the_public_type(self, observed):
-        with pytest.raises(TypeError, match="WDMGrid"):
-            replace(observed, data_domain="wdm", wdm_grid=(4, 16))
+    @pytest.mark.parametrize("shape", [(4, 16), (5, 7), (1, 16)])
+    def test_inferred_grid_requires_positive_even_divisions(self, observed, shape):
+        channels = {name: np.zeros(shape) for name in observed.channel_names}
+        with pytest.raises(ValueError, match="positive even integer"):
+            replace(observed, data_domain="wdm", channel_data=channels)
+
+    @pytest.mark.parametrize("value_kind", ["data", "block_state"])
+    def test_transform_rejects_buffers_that_no_longer_match_the_grid(
+        self, observed, value_kind
+    ):
+        data = replace(
+            observed,
+            data_domain="wdm",
+            channel_data={name: np.zeros((5, 16)) for name in observed.channel_names},
+        )
+        for name in data.channel_names:
+            data.channel_data[name] = np.zeros((9, 8))
+        value = data if value_kind == "data" else BlockState(template=data.channel_data)
+        with pytest.raises(ValueError, match="WDM shape"):
+            transform(value, "wdm", reference_data=data)
 
     @pytest.mark.parametrize("invalid", ["shape", "complex", "integer", "inactive"])
     def test_wdm_validates_each_channel(self, observed, invalid):
@@ -67,7 +158,7 @@ class TestWDMData:
         else:
             channels["E"][0, 1] = 1.0
         with pytest.raises(error, match="E"):
-            replace(observed, data_domain="wdm", wdm_grid=grid, channel_data=channels)
+            replace(observed, data_domain="wdm", channel_data=channels)
 
 
 class TestPostInitValidation:
@@ -598,23 +689,21 @@ class TestDerivedQuantities:
         assert obs.frequency_resolution_hz == pytest.approx(1 / 128.0)  # 1 / Tobs
 
 
-class TestBlockResultFactories:
-    """Block-result factories build what a block returns on this data's grid."""
+class TestBlockStateFactories:
+    """Block-state factories build what a block returns on this data's grid."""
 
-    def test_block_result_carries_the_arrays_given(self, observed):
+    def test_block_state_carries_the_arrays_given(self, observed):
         tdi = {ch: np.full_like(arr, 2.0) for ch, arr in observed.channel_data.items()}
-        t = observed.block_result(tdi)
-        assert isinstance(t, BlockResult)
+        t = observed.block_state(tdi)
+        assert isinstance(t, BlockState)
         for ch in observed.channel_names:
-            np.testing.assert_array_equal(t.tdi_signal_contribution[ch], 2.0)
-        assert t.noise_covariance is None  # a signal block publishes nothing
+            np.testing.assert_array_equal(t.template[ch], 2.0)
+        assert t.covariance_matrix is None  # a signal block publishes nothing
 
-    def test_block_result_arrays_are_taken_not_copied(self, observed):
+    def test_block_state_arrays_are_taken_not_copied(self, observed):
         arrs = {ch: np.zeros_like(a) for ch, a in observed.channel_data.items()}
-        t = observed.block_result(arrs)
-        assert (
-            t.tdi_signal_contribution["A"] is arrs["A"]
-        )  # the block may reuse its own buffer
+        t = observed.block_state(arrs)
+        assert t.template["A"] is arrs["A"]  # the block may reuse its own buffer
 
     @pytest.mark.parametrize(
         "bad, match",
@@ -630,35 +719,29 @@ class TestBlockResultFactories:
             ),
         ],
     )
-    def test_off_grid_block_result_is_refused_where_it_is_built(
+    def test_off_grid_block_state_is_refused_where_it_is_built(
         self, observed, bad, match
     ):
         with pytest.raises((ValueError, TypeError), match=match):
-            observed.block_result(bad)
+            observed.block_state(bad)
 
-    def test_zero_block_result_matches_shapes_and_dtypes(self, observed):
-        z = observed.zero_block_result()
-        assert isinstance(z, BlockResult)
+    def test_zero_block_state_matches_shapes_and_dtypes(self, observed):
+        z = observed.zero_block_state()
+        assert isinstance(z, BlockState)
         for ch in observed.channel_names:
-            assert (
-                z.tdi_signal_contribution[ch].shape == observed.channel_data[ch].shape
-            )
-            assert (
-                z.tdi_signal_contribution[ch].dtype == observed.channel_data[ch].dtype
-            )
-            np.testing.assert_array_equal(z.tdi_signal_contribution[ch], 0.0)
+            assert z.template[ch].shape == observed.channel_data[ch].shape
+            assert z.template[ch].dtype == observed.channel_data[ch].dtype
+            np.testing.assert_array_equal(z.template[ch], 0.0)
 
     def test_arrays_are_fresh_and_independent(self, observed):
         snapshot = observed.channel_data["A"].copy()
-        z1, z2 = observed.zero_block_result(), observed.zero_block_result()
-        assert z1.tdi_signal_contribution["A"] is not observed.channel_data["A"]
-        z1.tdi_signal_contribution["A"][0] = 1.0
+        z1, z2 = observed.zero_block_state(), observed.zero_block_state()
+        assert z1.template["A"] is not observed.channel_data["A"]
+        z1.template["A"][0] = 1.0
         np.testing.assert_array_equal(observed.channel_data["A"], snapshot)  # untouched
-        np.testing.assert_array_equal(
-            z2.tdi_signal_contribution["A"], 0.0
-        )  # its own arrays
+        np.testing.assert_array_equal(z2.template["A"], 0.0)  # its own arrays
 
-    def test_frequency_domain_block_result_is_complex_on_the_rfft_grid(self, rng):
+    def test_frequency_domain_block_state_is_complex_on_the_rfft_grid(self, rng):
         n = 64
         obs = make_observed(
             rng,
@@ -667,28 +750,28 @@ class TestBlockResultFactories:
                 ch: rng.standard_normal(n // 2 + 1) + 0j for ch in ("A", "E", "T")
             },
         )
-        z = obs.zero_block_result()
-        assert np.iscomplexobj(
-            z.tdi_signal_contribution["A"]
-        ) and z.tdi_signal_contribution["A"].shape == (n // 2 + 1,)
+        z = obs.zero_block_state()
+        assert np.iscomplexobj(z.template["A"]) and z.template["A"].shape == (
+            n // 2 + 1,
+        )
         # and a real array on that grid is refused, so `.real` cannot slip through
         with pytest.raises(TypeError, match="real but data_domain='frequency'"):
-            obs.block_result({ch: np.zeros(n // 2 + 1) for ch in obs.channel_names})
+            obs.block_state({ch: np.zeros(n // 2 + 1) for ch in obs.channel_names})
 
 
-class TestBlockResultClass:
-    """The container itself, for block results built without the factories."""
+class TestBlockStateClass:
+    """The container itself, for block states built without the factories."""
 
-    def test_with_noise_covariance_returns_a_new_block_result(self, observed):
-        z = observed.zero_block_result()
+    def test_with_covariance_matrix_returns_a_new_block_state(self, observed):
+        z = observed.zero_block_state()
         model = DataCovariance.from_variance(observed, 1.0)
-        published = z.with_noise_covariance(model)
-        assert published.noise_covariance is model
-        assert z.noise_covariance is None  # frozen: the original is unchanged
-        assert published.tdi_signal_contribution is z.tdi_signal_contribution
+        published = z.with_covariance_matrix(model)
+        assert published.covariance_matrix is model
+        assert z.covariance_matrix is None  # frozen: the original is unchanged
+        assert published.template is z.template
 
     def test_equality_is_identity_not_elementwise(self, observed):
-        a, b = observed.zero_block_result(), observed.zero_block_result()
+        a, b = observed.zero_block_state(), observed.zero_block_state()
         assert a == a and a != b  # would raise "truth value ambiguous" otherwise
 
     @pytest.mark.parametrize(
@@ -703,4 +786,4 @@ class TestBlockResultClass:
     )
     def test_malformed_containers_are_refused(self, bad, exc, match):
         with pytest.raises(exc, match=match):
-            BlockResult(tdi_signal_contribution=bad)
+            BlockState(template=bad)

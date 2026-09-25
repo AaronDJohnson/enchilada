@@ -56,6 +56,26 @@ def make_block(model):
     )
 
 
+def test_gb_prior_keeps_continuation_on_its_block(gb_model, spectral_context):
+    from dataclasses import fields
+
+    block = make_block(gb_model)
+    other = make_block(gb_model)
+    assert hasattr(block, "state")
+    assert block.state is not other.state
+    data, noise = spectral_context
+    published = gb_model.draw_gb_prior(block, data, noise, rng=np.random.default_rng(0))
+    assert {field.name for field in fields(published)} == {
+        "template",
+        "covariance_matrix",
+        "parameters",
+    }
+    assert block.state.coords["model_0"].shape == (1, 12, 1, 4)
+    assert block.state.samples.shape == (0, 4)
+    assert block.state.updates == 0
+    assert other.state.coords == {}
+
+
 @pytest.mark.parametrize("translated", [False, True])
 def test_gb_rejects_covariance_without_native_frequency_psd(
     gb_model, spectral_context, translated
@@ -103,19 +123,19 @@ def test_gb_frequency_registration_restores_native_spectral_covariance(
         name = block.name
 
         def sample(
-            self, conditional_residual, noise_covariance, current_block_result, *, rng
+            self, conditional_residual, noise_covariance, current_block_state, *, rng
         ):
             block._context(conditional_residual, noise_covariance)
-            return current_block_result
+            return current_block_state
 
-    wheel.add(ContextProbe(), initial_block_result=initial, data_domain="frequency")
+    wheel.add(ContextProbe(), initial_block_state=initial, data_domain="frequency")
     wheel.run(1)
     result = wheel.ledger["gb"]
-    assert result.tdi_signal_contribution["A"].shape == observed.channel_data["A"].shape
+    assert result.template["A"].shape == observed.channel_data["A"].shape
     frequency_result = transform(result, "frequency", reference_data=observed)
-    assert np.linalg.norm(frequency_result.tdi_signal_contribution["A"]) > 0
+    assert np.linalg.norm(frequency_result.template["A"]) > 0
     np.testing.assert_allclose(
         transform(wheel.residual(), "frequency").channel_data["A"],
-        -frequency_result.tdi_signal_contribution["A"],
+        -frequency_result.template["A"],
         atol=1e-12,
     )

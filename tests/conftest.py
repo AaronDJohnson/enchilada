@@ -33,8 +33,8 @@ def observed(rng):
     return make_observed(rng)
 
 
-def const_block_result(residual, value):
-    """A block result holding `value` in every sample of every channel."""
-    return residual.block_result(
+def const_block_state(residual, value):
+    """A block state holding `value` in every sample of every channel."""
+    return residual.block_state(
         {ch: np.full_like(arr, value) for ch, arr in residual.channel_data.items()}
     )

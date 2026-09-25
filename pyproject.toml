@@ -78,12 +78,6 @@ source-include = [
     "examples/**/*.ipynb",
     "examples/**/*.txt",
     "benchmarks/**/*.py",
-    "docs/performance.md",
-    "docs/domain-translation.md",
-    "specs/**/*.md",
-    ".specify/templates/**/*.md",
-    "openspec/**/*.md",
-    "openspec/config.yaml",
     ".github/workflows/*.yml",
     "CHANGELOG.md",
 ]

@@ -45,7 +45,6 @@ def transform_channels(
     """Transform validated channel grids, returning independently owned arrays.
 
     WDM uses the local backend's normalized edges and supported double precision.
-    No model state or noise interpretation belongs in this array-only boundary.
     """
     if source_domain not in ("time", "frequency", "wdm") or target_domain not in (
         "time",

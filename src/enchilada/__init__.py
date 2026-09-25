@@ -1,8 +1,8 @@
-from dataclasses import replace  # convenience for frozen data/result snapshots
+from dataclasses import replace  # convenience for frozen data/state snapshots
 from importlib.metadata import PackageNotFoundError, version
 
 from enchilada.block import Block
-from enchilada.block_result import BlockResult
+from enchilada.block_state import BlockState
 from enchilada.covariance import DataCovariance
 from enchilada.data import L1Data
 from enchilada.domains import WDMGrid
@@ -25,7 +25,7 @@ __all__ = [
     "NumericOrbit",
     "Orbit",
     "L1Data",
-    "BlockResult",
+    "BlockState",
     "Wheel",
     "WDMGrid",
     "TranslatedCovariance",

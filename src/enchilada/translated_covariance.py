@@ -49,10 +49,12 @@ class TranslatedCovariance:
     through the change of basis, including nonlocal excluded directions.
     WDM structural edge positions are described separately by ``wdm_grid``.
 
-    ``apply`` and ``solve`` act on real time/WDM coordinates or sqrt(2)-weighted
-    real Fourier quadratures. ``solve`` is precision on the retained subspace;
-    excluded data are ignored. Determinants are pseudodeterminants in those
-    same coordinates. No covariance information or native mask is discarded.
+    Array operations accept channel dictionaries of real time/WDM arrays or
+    complex rFFT arrays. Fourier normalization corresponds mathematically to
+    sqrt(2)-weighted real/imaginary interior quadratures and real endpoints;
+    callers keep the complex arrays. ``solve`` is precision on the retained
+    subspace, ignoring excluded directions. Determinants are pseudodeterminants
+    in those coordinates. No covariance information or native mask is discarded.
 
     Only transforms and per-point channel operations are evaluated. The native
     covariance, not a dense transformed matrix or live backend object, is stored.

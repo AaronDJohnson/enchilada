@@ -96,6 +96,8 @@ jobs:
 
   wdm:
     uses: ./.github/workflows/wdm.yml
+    secrets:
+      WDM_DEPLOY_KEY: ${{ secrets.WDM_DEPLOY_KEY }}
 
   build:
     needs: [gate, core-only, core-minimum, floors, wdm]

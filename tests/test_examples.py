@@ -68,45 +68,41 @@ def test_all_notebooks_contain_valid_python(notebook_path):
         compile("".join(cell["source"]), f"{notebook_path}:cell-{index}", "exec")
 
 
-def test_toy_prior_is_random_and_campaigns_share_configuration_only():
+def test_toy_prior_is_random_and_separate_campaigns_are_reproducible():
     from enchilada import Wheel
 
     toy = load_example("toy_fit")
-    signal = toy.SineBlock(name="slow", freq=0.004)
-    noise = toy.WhiteNoiseBlock(name="noise")
     observed = toy.make_observed()
     campaigns = [Wheel(observed, random_seed=seed) for seed in (42, 42, 43)]
     for wheel, initialization_seed in zip(campaigns, (42, 42, 43), strict=True):
+        signal = toy.SineBlock(name="slow", freq=0.004)
+        noise = toy.WhiteNoiseBlock(name="noise")
         initialization_rng = np.random.default_rng(initialization_seed)
         wheel.add(
             signal,
-            initial_block_result=toy.draw_sine_prior(
+            initial_block_state=toy.draw_sine_prior(
                 signal, observed, rng=initialization_rng
             ),
         )
         wheel.add(
             noise,
-            initial_block_result=toy.draw_white_noise_prior(
+            initial_block_state=toy.draw_white_noise_prior(
                 noise, observed, rng=initialization_rng
             ),
         )
-    priors = [w.ledger["slow"].model_parameters["amplitude"] for w in campaigns]
+    priors = [w.ledger["slow"].parameters["amplitude"] for w in campaigns]
     assert priors[0] == priors[1]
     assert priors[0] != priors[2]
     assert priors[0] != 0.0
-    a_before, n_before = vars(signal).copy(), vars(noise).copy()
     campaigns[0].run(3)
     campaigns[1].run(3)
     assert (
-        campaigns[0].ledger["slow"].model_parameters
-        == campaigns[1].ledger["slow"].model_parameters
+        campaigns[0].ledger["slow"].parameters == campaigns[1].ledger["slow"].parameters
     )
     assert (
-        campaigns[0].ledger["noise"].model_parameters
-        == campaigns[1].ledger["noise"].model_parameters
+        campaigns[0].ledger["noise"].parameters
+        == campaigns[1].ledger["noise"].parameters
     )
-    assert vars(signal) == a_before
-    assert vars(noise) == n_before
 
 
 def test_sine_conditional_includes_declared_amplitude_prior():
@@ -127,7 +123,7 @@ def test_sine_conditional_includes_declared_amplitude_prior():
         [
             signal.sample(
                 data, noise, prior, rng=np.random.default_rng(seed)
-            ).model_parameters["amplitude"]
+            ).parameters["amplitude"]
             for seed in range(4000)
         ]
     )
@@ -278,30 +274,35 @@ def test_gb_eryn_restart_and_global_rng_isolation(gb_model_with_eryn):
     )
     short = gb.GBBlock(**settings, steps_per_cycle=2)
     long = gb.GBBlock(**settings, steps_per_cycle=4)
-    original_config = deepcopy(vars(short))
     prior = gb.draw_gb_prior(short, data, noise, rng=np.random.default_rng(2))
-    prior_copy = deepcopy(prior.sampler_state["coords"])
+    initial_internal_state = deepcopy(short.state)
+    prior_copy = deepcopy(prior.template)
+    long.state = deepcopy(initial_internal_state)
     global_rng_before = np.random.get_state()
     first = short.sample(data, noise, prior, rng=np.random.default_rng(3))
-    # A fresh block must continue from the BlockResult without retained resources.
-    restarted = gb.GBBlock(**settings, steps_per_cycle=2).sample(
+    # A restart explicitly restores the model's own continuation snapshot.
+    restarted_block = gb.GBBlock(**settings, steps_per_cycle=2)
+    restarted_block.state = deepcopy(short.state)
+    restarted = restarted_block.sample(
         data, noise, first, rng=np.random.default_rng(999)
     )
     uninterrupted = long.sample(data, noise, prior, rng=np.random.default_rng(3))
     np.testing.assert_array_equal(
-        restarted.sampler_state["coords"]["model_0"],
-        uninterrupted.sampler_state["coords"]["model_0"],
+        restarted_block.state.coords["model_0"],
+        long.state.coords["model_0"],
     )
-    np.testing.assert_array_equal(
-        prior.sampler_state["coords"]["model_0"], prior_copy["model_0"]
-    )
-    assert vars(short) == original_config
-    assert restarted.sampler_state["samples"].shape == (24, 4)
+    np.testing.assert_array_equal(prior.template["A"], prior_copy["A"])
+    assert restarted.parameters == uninterrupted.parameters
+    assert restarted_block.state.samples.shape == (24, 4)
+    assert restarted_block.state.updates == 2
+    assert initial_internal_state.updates == 0
+    assert short.state.updates == 1
     np.testing.assert_array_equal(np.random.get_state()[1], global_rng_before[1])
     assert np.random.get_state()[2:] == global_rng_before[2:]
 
 
 def test_gb_recomputes_likelihood_for_changed_residual(gb_model_with_eryn):
+    from copy import deepcopy
     from dataclasses import replace
 
     gb = gb_model_with_eryn
@@ -315,12 +316,15 @@ def test_gb_recomputes_likelihood_for_changed_residual(gb_model_with_eryn):
     )
     prior = gb.draw_gb_prior(block, data, noise, rng=np.random.default_rng(4))
     first = block.sample(data, noise, prior, rng=np.random.default_rng(5))
+    internal_snapshot = deepcopy(block.state)
     changed = replace(data, channel_data={"A": 1e5 * data.channel_data["A"]})
-    updated = block.sample(changed, noise, first, rng=np.random.default_rng(6))
-    same = block.sample(data, noise, first, rng=np.random.default_rng(6))
+    block.sample(changed, noise, first, rng=np.random.default_rng(6))
+    updated_coords = block.state.coords["model_0"].copy()
+    block.state = deepcopy(internal_snapshot)
+    block.sample(data, noise, first, rng=np.random.default_rng(6))
     assert not np.array_equal(
-        updated.sampler_state["coords"]["model_0"],
-        same.sampler_state["coords"]["model_0"],
+        updated_coords,
+        block.state.coords["model_0"],
     )
 
 

@@ -11,7 +11,7 @@ See examples/demo.ipynb for the same walkthrough with commentary.
 
 import numpy as np
 
-from enchilada import BlockResult, L1Data, Wheel
+from enchilada import BlockState, L1Data, Wheel
 from enchilada.testing import EchoBlock
 
 # One frozen object holds the TDI arrays and the run settings everyone
@@ -21,32 +21,30 @@ n_samples = 1024
 channels = ("A", "E", "T")
 
 observed = L1Data(
-    channel_data={ch: rng.standard_normal(n_samples) for ch in channels},
+    {ch: rng.standard_normal(n_samples) for ch in channels},
     sample_rate_hz=0.1,
-    channel_names=channels,  # num_time_samples is inferred from time-domain arrays
     tdi_generation="2.0",
     physical_observable="fractional_frequency",
     start_time_gps=0.0,
-)
+)  # Channel order and num_time_samples are inferred from the dictionary and arrays.
 
 print(f"observed: N={observed.N}, fs={observed.fs} Hz, Tobs={observed.Tobs:.0f} s\n")
 
-# Each EchoBlock prints what the Wheel hands it and returns a state-only BlockResult,
-# so the residuals every block sees are just the observed data. The Wheel keeps
-# each block's changing state in its ledger.
+# Each EchoBlock keeps its call counter on the block and returns an empty
+# physical BlockState, so every residual is just the observed data.
 ucb = EchoBlock(name="ucb")
 mbhb = EchoBlock(name="mbhb")
 
 wheel = Wheel(observed, random_seed=0)
-wheel.add(ucb, initial_block_result=BlockResult(sampler_state={"num_sample_calls": 0}))
-wheel.add(mbhb, initial_block_result=BlockResult(sampler_state={"num_sample_calls": 0}))
+wheel.add(ucb, initial_block_state=BlockState())
+wheel.add(mbhb, initial_block_state=BlockState())
 
 wheel.run(num_cycles=3)
 
 print(
-    f"\nucb took {wheel.ledger['ucb'].sampler_state['num_sample_calls']} "
+    f"\nucb took {ucb.state.num_sample_calls} "
     "sampling calls; "
-    f"mbhb took {wheel.ledger['mbhb'].sampler_state['num_sample_calls']} sampling calls"
+    f"mbhb took {mbhb.state.num_sample_calls} sampling calls"
 )
 print(
     "full residual RMS:",

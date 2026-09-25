@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from conftest import make_observed
-from enchilada import BlockResult, DataCovariance
+from enchilada import BlockState, DataCovariance
 from enchilada.testing import EchoBlock, check_block
 
 
@@ -13,7 +13,7 @@ class TestCheckBlock:
         check_block(
             block_under_test=EchoBlock(name="echo"),
             observed_data=observed,
-            initial_block_result=BlockResult(sampler_state={"num_sample_calls": 0}),
+            initial_block_state=BlockState(),
             num_cycles=2,
             initial_noise_covariance=DataCovariance.from_variance(observed, 1.0),
             random_seed=0,
@@ -31,43 +31,43 @@ class TestCheckBlock:
         check_block(
             EchoBlock(name="echo"),
             obs,
-            initial_block_result=BlockResult(sampler_state={"num_sample_calls": 0}),
+            initial_block_state=BlockState(),
         )
 
-    def test_non_block_result_return_caught(self, observed):
+    def test_non_block_state_return_caught(self, observed):
         class Bad(EchoBlock):
             def sample(
                 self,
                 conditional_residual,
                 noise_covariance,
-                current_block_result,
+                current_block_state,
                 *,
                 rng,
             ):
-                return {"A": np.zeros(1)}  # not a BlockResult
+                return {"A": np.zeros(1)}  # not a BlockState
 
-        with pytest.raises(TypeError, match="must return a BlockResult"):
-            check_block(Bad(name="bad"), observed, initial_block_result=BlockResult())
+        with pytest.raises(TypeError, match="must return a BlockState"):
+            check_block(Bad(name="bad"), observed, initial_block_state=BlockState())
 
-    def test_off_grid_block_result_caught(self, observed):
+    def test_off_grid_block_state_caught(self, observed):
         class Drifter(EchoBlock):
             def sample(
                 self,
                 conditional_residual,
                 noise_covariance,
-                current_block_result,
+                current_block_state,
                 *,
                 rng,
             ):
-                return BlockResult(
-                    tdi_signal_contribution={
+                return BlockState(
+                    template={
                         ch: np.zeros(3) for ch in conditional_residual.channel_names
                     }
                 )
 
         with pytest.raises(ValueError, match="length 3, expected"):
             check_block(
-                Drifter(name="drift"), observed, initial_block_result=BlockResult()
+                Drifter(name="drift"), observed, initial_block_state=BlockState()
             )
 
     def test_conforming_noise_block_passes(self, observed):
@@ -80,18 +80,18 @@ class TestCheckBlock:
                 self,
                 conditional_residual,
                 noise_covariance,
-                current_block_result,
+                current_block_state,
                 *,
                 rng,
             ):
                 from enchilada import DataCovariance
 
-                return conditional_residual.block_result().with_noise_covariance(
+                return conditional_residual.block_state().with_covariance_matrix(
                     DataCovariance.from_psd(conditional_residual, FlatPSD())
                 )
 
         check_block(
-            FlatNoiseBlock(name="noise"), observed, initial_block_result=BlockResult()
+            FlatNoiseBlock(name="noise"), observed, initial_block_state=BlockState()
         )
 
     def test_noise_model_violating_contract_caught(self, observed):
@@ -100,42 +100,46 @@ class TestCheckBlock:
                 self,
                 conditional_residual,
                 noise_covariance,
-                current_block_result,
+                current_block_state,
                 *,
                 rng,
             ):
-                return conditional_residual.block_result().with_noise_covariance(
+                return conditional_residual.block_state().with_covariance_matrix(
                     object()
                 )
 
         with pytest.raises(TypeError, match="DataCovariance"):
             check_block(
-                BadNoise(name="bad"), observed, initial_block_result=BlockResult()
+                BadNoise(name="bad"), observed, initial_block_state=BlockState()
             )
 
-    def test_initial_block_result_is_required(self, observed):
-        with pytest.raises(TypeError, match="initial_block_result"):
+    def test_initial_block_state_is_required(self, observed):
+        with pytest.raises(TypeError, match="initial_block_state"):
             check_block(EchoBlock(name="echo"), observed)
 
     @pytest.mark.parametrize("invalid", [None, object()])
-    def test_initial_block_result_must_be_a_block_result(self, observed, invalid):
-        with pytest.raises(TypeError, match="initial_block_result.*BlockResult"):
-            check_block(EchoBlock(name="echo"), observed, initial_block_result=invalid)
+    def test_initial_block_state_must_be_a_block_state(self, observed, invalid):
+        with pytest.raises(TypeError, match="initial_block_state.*BlockState"):
+            check_block(EchoBlock(name="echo"), observed, initial_block_state=invalid)
 
 
 class TestEchoBlock:
-    def test_keeps_sampling_counter_in_block_result(self, observed):
+    def test_keeps_sampling_counter_in_local_state(self, observed):
         from enchilada import Wheel
 
         echo = EchoBlock(name="echo")
         wheel = Wheel(observed)
         wheel.add(
             echo,
-            initial_block_result=BlockResult(sampler_state={"num_sample_calls": 0}),
+            initial_block_state=BlockState(),
         )
         wheel.run(3)
-        assert wheel.ledger["echo"].sampler_state["num_sample_calls"] == 3
-        assert vars(echo) == {"name": "echo"}
+        assert echo.state.num_sample_calls == 3
+        published = wheel.ledger["echo"]
+        assert published.template is None
+        assert published.covariance_matrix is None
+        assert published.parameters == {}
+        assert echo.state.metadata == {}
 
     def test_contributes_a_zero_signal(self, observed):
         from enchilada import Wheel
@@ -143,7 +147,7 @@ class TestEchoBlock:
         wheel = Wheel(observed)
         wheel.add(
             EchoBlock(name="echo"),
-            initial_block_result=BlockResult(sampler_state={"num_sample_calls": 0}),
+            initial_block_state=BlockState(),
         )
         wheel.run(1)
         for ch in observed.channel_names:
@@ -152,20 +156,31 @@ class TestEchoBlock:
             )
 
 
-def test_echo_initial_state_is_independent_of_other_campaigns(observed, rng):
+def test_echo_continuation_belongs_to_each_block_instance(observed, rng):
     echo = EchoBlock(name="echo")
-    initial = BlockResult(sampler_state={"num_sample_calls": 0})
+    initial = BlockState()
     updated = echo.sample(
         conditional_residual=observed,
         noise_covariance=None,
-        current_block_result=initial,
+        current_block_state=initial,
         rng=rng,
     )
-    assert initial.sampler_state["num_sample_calls"] == 0
-    assert updated.sampler_state["num_sample_calls"] == 1
-    fresh = BlockResult(sampler_state={"num_sample_calls": 0})
-    restarted = echo.sample(observed, None, fresh, rng=rng)
-    assert fresh.sampler_state["num_sample_calls"] == 0
-    assert restarted.sampler_state["num_sample_calls"] == 1
+    for published in (initial, updated):
+        assert published.template is None
+        assert published.covariance_matrix is None
+        assert published.parameters == {}
+    assert echo.state.num_sample_calls == 1
+    echo.sample(observed, None, BlockState(), rng=rng)
+    assert echo.state.num_sample_calls == 2
+
+    fresh = EchoBlock(name="echo")
+    assert fresh.state.num_sample_calls == 0
+    restarted = fresh.sample(observed, None, initial, rng=rng)
+    assert restarted.template is None
+    assert restarted.covariance_matrix is None
+    assert restarted.parameters == {}
+    assert fresh.state.num_sample_calls == 1
+    assert echo.state.num_sample_calls == 2
+    echo.state.metadata["diagnostic"] = 1
+    assert fresh.state.metadata == {}
     assert not hasattr(echo, "draw_prior")
-    assert vars(echo) == {"name": "echo"}

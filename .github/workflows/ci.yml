@@ -120,6 +120,8 @@ jobs:
 
   wdm:
     uses: ./.github/workflows/wdm.yml
+    secrets:
+      WDM_DEPLOY_KEY: ${{ secrets.WDM_DEPLOY_KEY }}
 
   # The sdist claims to be self-testing (source-include ships tests/ and
   # examples/). Downstream packagers build from it, so prove the claim: unpack

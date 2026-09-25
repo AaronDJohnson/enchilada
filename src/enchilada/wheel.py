@@ -1,4 +1,4 @@
-"""Orchestrator-owned data, covariance, sampler state, and signal accounting."""
+"""Orchestrator-owned data, accepted physical estimates, and signal accounting."""
 
 import warnings
 from collections.abc import Callable
@@ -9,7 +9,7 @@ import numpy as np
 
 from enchilada._signal_sum import Signal, SignalSum
 from enchilada.block import Block
-from enchilada.block_result import BlockResult, check_on_grid
+from enchilada.block_state import BlockState, check_on_grid
 from enchilada.covariance import DataCovariance
 from enchilada.data import L1Data
 from enchilada.domains import WDMGrid
@@ -30,25 +30,28 @@ class NoiseOverwrittenWarning(RuntimeWarning):
 
 
 class Wheel:
-    """Run stateless blocks with an explicit, complete state owned by the Wheel.
+    """Run blocks while owning their accepted physical estimates and shared data.
 
     The pristine observation is copied at construction. A second L1Data stores
     the full working residual, rebuilt after every accepted update. For block i,
     the input is d - sum(j != i, T_j); the block's own signal remains in its input.
     An absent TDI signal contributes zero, including when a block previously
-    returned a signal. Ledger holds complete BlockResults. Public data, covariance,
-    and ledger access returns copies. Orbit resources must be treated as immutable.
+    returned a signal. Ledger holds complete BlockState snapshots. Public data and
+    covariance access returns copies. The ledger property returns a live handle;
+    indexing and snapshot() copy its contents. Treat orbit resources as immutable.
 
-    Registration requires and adopts an explicit initial_block_result. It never
+    Registration requires and adopts an explicit initial_block_state. It never
     calls model initialization or consumes random draws.
-    Each cycle calls sample with those inputs and the current_block_result from
+    Each cycle calls sample with those inputs and the current_block_state from
     the ledger. Sampling receives the supplied RNG and independent input snapshots.
-    Failed calls/validation/copying leave that block's state and the RNG unchanged.
+    Failed calls/validation/copying leave the ledger and Wheel RNG unchanged.
+    Blocks own their sampler state and diagnostics; Wheel does not roll back
+    changes to those internals. Use separate block instances for separate campaigns.
     Earlier successful updates in a failed cycle remain committed. Exceptions in
     on_cycle_complete occur after that entire cycle has committed.
 
-    `initial_noise_covariance` supplies the starting DataCovariance. If omitted,
-    covariance stays unset until a block supplies it. Blocks receive covariance
+    `initial_noise_covariance` supplies a DataCovariance or TranslatedCovariance.
+    If omitted, covariance stays unset until a block supplies it. Blocks receive it
     separately from L1Data. The original data domain stays canonical. Register
     a block with data_domain to translate its inputs and returned estimates.
     The block that owns the current covariance must return it on every call;
@@ -67,8 +70,8 @@ class Wheel:
         Args:
             observed_data: L1 observations and shared run settings. The Wheel
                 makes independent pristine and working copies.
-            initial_noise_covariance: Starting covariance. None leaves covariance
-                unset until a block supplies it.
+            initial_noise_covariance: Starting DataCovariance or
+                TranslatedCovariance. None leaves it unset until a block supplies it.
             random_seed: Seed for the campaign's NumPy generator. None requests
                 nondeterministic initialization.
         """
@@ -105,6 +108,8 @@ class Wheel:
     @staticmethod
     def _copy_data(data_to_copy: L1Data) -> L1Data:
         """Copy channel arrays, preserving immutable orbit data."""
+        if data_to_copy.data_domain == "wdm":
+            data_to_copy._validate_channel_data_lengths()
         return replace(
             data_to_copy,
             channel_data={
@@ -133,40 +138,41 @@ class Wheel:
 
     @property
     def ledger(self) -> Ledger:
-        """Store of complete results; use ledger.snapshot() for a copied dictionary."""
+        """Live state store; indexing copies entries, snapshot() copies all entries."""
         return self._ledger
 
     def add(
         self,
         block_to_register: Block,
         *,
-        initial_block_result: BlockResult,
+        initial_block_state: BlockState,
         data_domain: str | None = None,
         num_frequency_divisions: int | None = None,
         num_time_divisions: int | None = None,
     ) -> None:
-        """Register a block from a complete, explicitly prepared starting result.
+        """Register a block from a complete, explicitly prepared starting state.
 
         block_to_register must have a unique name and implement sample.
         Failed registration leaves the campaign unchanged.
 
-        initial_block_result supplies a complete starting estimate, parameters,
-        and sampler continuation state, for example at an injected signal.
+        initial_block_state supplies a starting template, covariance, and physical
+        parameters, for example at an injected signal. Sampler continuation state
+        is managed inside the block.
         Wheel copies and validates it without calling an initialization method or
-        consuming random draws. The result is required and cannot be None.
+        consuming random draws. The state is required and cannot be None.
         Its signal uses the selected block domain/grid, or the observation grid when no
         data_domain is selected. Covariance carries its own source grid metadata.
-        The caller must keep estimates, parameters, and sampler state consistent.
+        The caller must keep published estimates and block-local state consistent.
         This sets the starting state only; sample still runs normally.
 
         data_domain selects time, frequency or wdm for this block's residual,
-        covariance and current result. None preserves their current domains.
+        covariance and current state. None preserves their current domains.
         For WDM, specify either division count; the other follows from the
         observation length. Both counts must be even. An existing observation
         WDM grid is reused if neither count is supplied.
         """
-        if not isinstance(initial_block_result, BlockResult):
-            raise TypeError("initial_block_result must be a BlockResult")
+        if not isinstance(initial_block_state, BlockState):
+            raise TypeError("initial_block_state must be a BlockState")
         domain_selection: DomainSelection = None
         if data_domain is None:
             if num_frequency_divisions is not None or num_time_divisions is not None:
@@ -193,31 +199,33 @@ class Wheel:
             raise TypeError(
                 f"block {block_name!r} does not implement sample; "
                 "a Block needs name and sample(conditional_residual, "
-                "noise_covariance, current_block_result, *, rng)."
+                "noise_covariance, current_block_state, *, rng)."
             )
-        new_block_result: object = initial_block_result
+        new_block_state: object = initial_block_state
         source_reference = self._observed_data
-        if (
-            domain_selection is not None
-            and initial_block_result.tdi_signal_contribution is not None
-        ):
+        if domain_selection is not None and initial_block_state.template is not None:
             domain, grid = domain_selection
             # Only the seed's grid is needed. Transforming observation
             # values here wastes work and can overflow independently of it.
             source_reference = replace(
                 self._observed_data,
-                channel_data=initial_block_result.tdi_signal_contribution,
+                channel_data=initial_block_state.template,
+                data_domain=domain,
+            )
+            check_on_grid(
+                initial_block_state.template,
+                channel_names=self._observed_data.channel_names,
+                num_time_samples=self._observed_data.num_time_samples,
                 data_domain=domain,
                 wdm_grid=grid,
+                context_label="initial_block_state.template",
             )
         if domain_selection is not None:
-            new_block_result = self._canonical_result(
-                new_block_result, source_reference
-            )
+            new_block_state = self._canonical_state(new_block_state, source_reference)
         self._adopt(
             block_name,
-            new_block_result,
-            "initial_block_result",
+            new_block_state,
+            "initial_block_state",
             self._rng,
             block_to_register=block_to_register,
             domain_selection=domain_selection,
@@ -249,11 +257,11 @@ class Wheel:
                 )
         return conditional_residual, noise_covariance
 
-    def _canonical_result(self, result: object, source_reference: L1Data) -> object:
-        if not isinstance(result, BlockResult):
-            return result  # _adopt supplies the block/method-specific error.
+    def _canonical_state(self, state: object, source_reference: L1Data) -> object:
+        if not isinstance(state, BlockState):
+            return state  # _adopt supplies the block/method-specific error.
         return transform(
-            result,
+            state,
             self._observed_data.data_domain,
             reference_data=source_reference,
             num_frequency_divisions=(
@@ -276,7 +284,7 @@ class Wheel:
         Args:
             num_cycles: Non-negative number of complete Gibbs cycles to attempt.
             on_cycle_complete: Optional callback receiving (cycle_index, wheel)
-                after every block in a cycle has returned an accepted result.
+                after every block in a cycle has returned an accepted state.
                 Indices start at zero for each run call. Partial cycles do not
                 invoke the callback.
         """
@@ -295,28 +303,28 @@ class Wheel:
                 conditional_residual, noise_covariance = self._block_inputs(
                     domain_selection, block_name
                 )
-                current_block_result = self._ledger[block_name]
+                current_block_state = self._ledger[block_name]
                 if domain_selection is not None:
                     domain, grid = domain_selection
-                    current_block_result = transform(
-                        current_block_result,
+                    current_block_state = transform(
+                        current_block_state,
                         domain,
                         reference_data=self._observed_data,
                         num_frequency_divisions=None
                         if grid is None
                         else grid.num_frequency_divisions,
                     )
-                new_block_result: object = block.sample(
+                new_block_state: object = block.sample(
                     conditional_residual=conditional_residual,
                     noise_covariance=noise_covariance,
-                    current_block_result=current_block_result,
+                    current_block_state=current_block_state,
                     rng=candidate_rng,
                 )
                 if domain_selection is not None:
-                    new_block_result = self._canonical_result(
-                        new_block_result, conditional_residual
+                    new_block_state = self._canonical_state(
+                        new_block_state, conditional_residual
                     )
-                self._adopt(block_name, new_block_result, "sample", candidate_rng)
+                self._adopt(block_name, new_block_state, "sample", candidate_rng)
             if on_cycle_complete is not None:
                 on_cycle_complete(cycle_index, self)
 
@@ -354,7 +362,7 @@ class Wheel:
         returns fresh zero arrays on the observation grid.
         """
         self._require_block_name(block_name)
-        signal = self._ledger._results_by_block_name[block_name].tdi_signal_contribution
+        signal = self._ledger._states_by_block_name[block_name].template
         if signal is None:
             return {
                 ch: np.zeros_like(arr)
@@ -371,27 +379,27 @@ class Wheel:
     def _adopt(
         self,
         block_name: str,
-        new_block_result: object,
+        new_block_state: object,
         source_method_name: str,
         candidate_rng: np.random.Generator,
         *,
         block_to_register: Block | None = None,
         domain_selection: DomainSelection = None,
     ) -> None:
-        """Validate a candidate result and RNG before committing campaign state.
+        """Validate a candidate state and RNG before committing campaign state.
 
-        source_method_name identifies the block call or initial result in diagnostics.
-        block_to_register is supplied only when adopting a new block's initial result.
+        source_method_name identifies the block call or initial state in diagnostics.
+        block_to_register is supplied only when adopting a new block's initial state.
         """
-        if not isinstance(new_block_result, BlockResult):
+        if not isinstance(new_block_state, BlockState):
             raise TypeError(
-                f"{block_name}.{source_method_name} must return a BlockResult, got "
-                f"{type(new_block_result).__name__}"
+                f"{block_name}.{source_method_name} must return a BlockState, got "
+                f"{type(new_block_state).__name__}"
             )
         # Snapshot BEFORE validation so subsequent use only touches owned state.
-        candidate_block_result = deepcopy(new_block_result)
-        candidate_block_result.__post_init__()
-        signal = candidate_block_result.tdi_signal_contribution
+        candidate_block_state = deepcopy(new_block_state)
+        candidate_block_state.__post_init__()
+        signal = candidate_block_state.template
         if signal is not None:
             check_on_grid(
                 signal,
@@ -399,9 +407,7 @@ class Wheel:
                 num_time_samples=self._observed_data.num_time_samples,
                 data_domain=self._observed_data.data_domain,
                 wdm_grid=self._observed_data.wdm_grid,
-                context_label=(
-                    f"{block_name}.{source_method_name} tdi_signal_contribution"
-                ),
+                context_label=f"{block_name}.{source_method_name} template",
             )
             for ch, arr in signal.items():
                 if not np.isfinite(arr).all():
@@ -413,27 +419,27 @@ class Wheel:
         candidate_noise_owner_block_name = self._noise_owner_block_name
         if (
             block_name == candidate_noise_owner_block_name
-            and candidate_block_result.noise_covariance is None
+            and candidate_block_state.covariance_matrix is None
         ):
             raise ValueError(
                 f"{block_name}.{source_method_name} must return its complete "
-                "noise_covariance "
+                "covariance_matrix "
                 "because it owns the current covariance"
             )
-        if candidate_block_result.noise_covariance is not None:
+        if candidate_block_state.covariance_matrix is not None:
             # Revalidate: callers can edit arrays inside a frozen dataclass.
             candidate_noise_covariance = copy_covariance(
-                candidate_block_result.noise_covariance
+                candidate_block_state.covariance_matrix
             )
             candidate_noise_covariance.check_compatible(self._observed_data)
-            candidate_block_result = replace(
-                candidate_block_result,
-                noise_covariance=candidate_noise_covariance,
+            candidate_block_state = replace(
+                candidate_block_state,
+                covariance_matrix=candidate_noise_covariance,
             )
             candidate_noise_owner_block_name = block_name
-        candidate_block_results = {
-            **self._ledger._results_by_block_name,
-            block_name: candidate_block_result,
+        candidate_block_states = {
+            **self._ledger._states_by_block_name,
+            block_name: candidate_block_state,
         }
         block_index = (
             len(self._blocks)
@@ -471,7 +477,7 @@ class Wheel:
                 stacklevel=3,
             )
         # All potentially failing work, including warnings-as-errors, is done.
-        self._ledger._results_by_block_name = candidate_block_results
+        self._ledger._states_by_block_name = candidate_block_states
         self._working_residual = candidate_residual
         self._signal_sum = candidate_signal_sum
         self._block_indices = candidate_block_indices

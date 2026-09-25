@@ -1,33 +1,17 @@
 """LISA constellation ephemerides carried on `L1Data.orbit_ephemeris`.
 
-The orbit is a *fixed property of the dataset* -- the spacecraft positions the
-data was produced with -- that every block must share to build its response.
-enchilada carries an orbit object opaquely on `L1Data.orbit_ephemeris`
-and never interprets it; this module defines the contract (`Orbit`) and the
-concrete forms a dataset can supply.
+Blocks share an orbit by reference and must treat it as immutable. `L1Data`
+checks its declared time bounds; response calculations belong to the blocks.
+`Orbit` defines the interface for custom implementations. `NumericOrbit`
+interpolates tabulated positions with cubic splines.
 
-Two shapes, per the user's data:
+`NumericOrbit.from_lisaorbits` samples a supplied analytic or numerical model's
+``compute_position()`` method. `from_hdf5` reads an ephemeris file; `from_arrays`
+accepts in-memory tables. Positions use ecliptic Cartesian metres; loaders rotate
+equatorial input when ``coordinate_frame="equatorial"``.
 
-* **Analytic** -- a closed-form constellation a block generates itself (each
-  piece's own `AnalyticOrbit` in `global_fit_pieces`); used for self-consistent
-  synthetic tests. enchilada does not implement one; it only defines the
-  protocol such an object satisfies.
-* **Numerical** -- :class:`NumericOrbit`, a tabulated ephemeris (spacecraft
-  positions on a coarse time grid) cubic-spline-interpolated to any requested
-  time. This is what real / LDC / Mojito data ships, and the analogue of
-  GLASS's ``interpolate_orbits`` (numerical orbit files + GSL cubic splines).
-
-Both *analytic* and *numerical* ephemerides produced by the **lisaorbits**
-package are ingested through :meth:`NumericOrbit.from_lisaorbits` (an analytic
-lisaorbits orbit is sampled onto a grid; a numerical one is read from its file),
-so a single tabulated type covers every dataset.
-
-Frame: the response works in **ecliptic** Cartesian metres. Ephemerides given in
-equatorial / ICRS (e.g. Mojito spacecraft positions) are rotated on load
-(``coordinate_frame="equatorial"``).
-
-The heavy dependencies (`scipy`, `h5py`, `lisaorbits`) are imported lazily so
-enchilada's core stays dependency-free.
+The core requires only NumPy. NumericOrbit loads SciPy for interpolation and
+its HDF5 loader imports h5py on demand.
 """
 
 from __future__ import annotations
@@ -55,17 +39,13 @@ class Orbit(Protocol):
     Method:
         positions(times_gps): spacecraft positions at absolute GPS times on the
             same clock as the data. Returns ``(x, y, z)`` in ecliptic metres,
-            each shaped ``(3, num_query_times)`` (spacecraft, time).
+            with spacecraft on the first axis and query dimensions following.
 
-    An implementation must cover every sample time, ``start_time_gps + n*dt`` for n in
-    ``[0, num_time_samples-1]`` -- up to ``start_time_gps + (num_time_samples-1)*dt``,
-    one sample interval short of ``start_time_gps + Tobs`` -- and in practice
-    should carry margin beyond that, since a block applying TDI light-travel
-    delays evaluates retarded times slightly outside the sample span. It should
-    raise rather than extrapolate outside its domain of validity, as
-    :class:`NumericOrbit` does. Tabulated implementations should also expose
-    ``time_range_gps``. When present, `L1Data` checks it covers the sample span, so
-    an epoch mismatch fails before any sampling starts.
+    Implementations must cover ``start_time_gps + n*dt`` for
+    ``n = 0, ..., num_time_samples - 1`` and reject out-of-domain queries.
+    Blocks using retarded times need additional coverage for their delays.
+    Tabulated implementations should expose inclusive ``time_range_gps`` bounds,
+    which `L1Data` checks against the sample span.
     """
 
     nominal_arm_length_m: float
@@ -79,19 +59,16 @@ class Orbit(Protocol):
         Args:
             times_gps: GPS times in seconds on the same clock as
                 `L1Data.start_time_gps`. These are absolute mission times,
-                not offsets from the data's start. Any shape; implementations
-                broadcast over it.
+                not offsets from the data's start. Any shape; scalars are
+                treated as a one-element query array.
 
         Returns:
-            `(x, y, z)` -- one array per *coordinate*, not per spacecraft --
-            each of shape `(3, num_query_times)` in metres, indexed
-            `[spacecraft, time]`. Ecliptic frame, so an implementation
-            holding equatorial/ICRS tables must rotate before returning
-            (see `NumericOrbit.from_arrays(coordinate_frame="equatorial")`).
+            `(x, y, z)` in ecliptic metres. Each coordinate array has shape
+            ``(3, *np.atleast_1d(times_gps).shape)``: spacecraft first, followed
+            by the query dimensions. A scalar query returns shape ``(3, 1)``.
 
-        Implementations must raise rather than extrapolate outside their
-        domain of validity: a silently wrong constellation shifts every
-        block's response and is near-impossible to diagnose downstream.
+        Implementations must reject nonfinite times and queries outside their
+        domain of validity.
         """
         ...
 
@@ -114,20 +91,18 @@ def _equatorial_to_ecliptic(
 class NumericOrbit:
     """Tabulated LISA ephemeris, cubic-spline-interpolated in time.
 
-    The numerical-orbit analogue of GLASS's ``interpolate_orbits``: store
-    spacecraft positions on a (typically coarse) time grid and interpolate them
-    to whatever times a waveform needs. Satisfies :class:`Orbit`.
-    Tabulated arrays are copied into read-only storage, so callers may reuse
-    their input buffers without changing the ephemeris.
+    Satisfies :class:`Orbit`. Copies tabulated arrays into read-only storage,
+    so callers may reuse their input buffers without changing the ephemeris.
 
     Args:
-        sample_times_gps: Ascending sample times in GPS seconds, shaped
-            ``(num_time_samples,)`` and on the same clock as the data.
+        sample_times_gps: Finite, strictly increasing GPS times, shaped
+            ``(num_time_samples,)`` with at least two entries, on the data's clock.
         spacecraft_positions_m: Positions in ecliptic metres, shaped
             ``(3, num_time_samples, 3)`` (spacecraft, time, xyz). Use the loaders
             for other coordinate frames.
         nominal_arm_length_m: Nominal arm length in metres; defaults to the
-            mean of the three arms over the tabulated times.
+            mean of the three arms over the tabulated times. Falls back to
+            2.5e9 metres if the computed mean is nonfinite or nonpositive.
         transfer_frequency_hz: Transfer frequency in Hz; defaults to
             ``c / (2 pi nominal_arm_length_m)``.
     """
@@ -140,7 +115,7 @@ class NumericOrbit:
         nominal_arm_length_m: float | None = None,
         transfer_frequency_hz: float | None = None,
     ) -> None:
-        from scipy.interpolate import CubicSpline  # lazy: keep enchilada dep-free
+        from scipy.interpolate import CubicSpline  # optional orbit dependency
 
         self._sample_times_gps = np.array(
             sample_times_gps, dtype=float, order="C", copy=True
@@ -218,13 +193,9 @@ class NumericOrbit:
     ) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
         """Interpolate at ``times_gps``, returning ``(x, y, z)`` in metres.
 
-        Each coordinate array has shape ``(3, num_query_times)``.
-
-        Raises ValueError for nonfinite times or times outside the tabulated
-        grid (`time_range_gps`):
-        cubic splines extrapolate polynomially and silently drift off the
-        real orbit, so out-of-span queries -- typically an epoch mismatch
-        between data and ephemeris -- fail loudly instead.
+        Each coordinate array has shape ``(3, *np.atleast_1d(times_gps).shape)``;
+        scalars give ``(3, 1)``, and multidimensional queries retain their shape.
+        Raises ValueError for nonfinite times or queries outside `time_range_gps`.
         """
         times_gps = np.atleast_1d(np.asarray(times_gps, dtype=float))
         if not np.isfinite(times_gps).all():
@@ -240,7 +211,7 @@ class NumericOrbit:
                 f"refusing to extrapolate "
                 f"(mismatched epoch conventions? GPS vs zero-based times?)"
             )
-        # Shape: (spacecraft, query time, xyz coordinate).
+        # Shape: (spacecraft, *query_shape, xyz coordinate).
         interpolated_positions_m = self._position_spline(times_gps)
         return (
             interpolated_positions_m[..., 0],

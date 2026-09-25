@@ -5,7 +5,7 @@ from dataclasses import replace
 from typing import overload
 
 from enchilada._transforms import transform_channels
-from enchilada.block_result import BlockResult, check_on_grid
+from enchilada.block_state import BlockState, check_on_grid
 from enchilada.covariance import DataCovariance
 from enchilada.data import L1Data
 from enchilada.domains import WDMGrid, resolve_wdm_grid
@@ -63,27 +63,27 @@ def transform(
 
 @overload
 def transform(
-    value: BlockResult,
+    value: BlockState,
     target_domain: str,
     *,
     num_frequency_divisions: int | None = None,
     num_time_divisions: int | None = None,
     reference_data: L1Data | None = None,
-) -> BlockResult: ...
+) -> BlockState: ...
 
 
 def transform(
-    value: L1Data | DataCovariance | TranslatedCovariance | BlockResult,
+    value: L1Data | DataCovariance | TranslatedCovariance | BlockState,
     target_domain: str,
     *,
     num_frequency_divisions: int | None = None,
     num_time_divisions: int | None = None,
     reference_data: L1Data | None = None,
-) -> L1Data | DataCovariance | TranslatedCovariance | BlockResult:
-    """Return an independent representation of data, covariance or a block result.
+) -> L1Data | DataCovariance | TranslatedCovariance | BlockState:
+    """Return an independent representation of data, covariance or a block state.
 
     Args:
-        value: Object to translate. A BlockResult with a signal needs
+        value: Object to translate. A BlockState with a signal needs
             reference_data because its observation grid is intentionally external.
         target_domain: "time", "frequency", or "wdm".
         num_frequency_divisions: WDM frequency divisions (Nf, yielding Nf+1 rows).
@@ -91,14 +91,16 @@ def transform(
         num_time_divisions: WDM time divisions. The other count is derived from
             num_time_samples; both counts must be positive even integers. Both
             may be supplied if consistent. WDM-to-WDM defaults to its current grid.
-        reference_data: Source signal grid for a BlockResult. If supplied for a
+        reference_data: Source signal grid for a BlockState. If supplied for a
             covariance, its channel names, sampling grid and epoch must agree.
 
-    Preserves physical metadata, orbit, model parameters and sampler state.
+    Preserves observation metadata, orbit, and published physical parameters.
     Signal arrays follow dt*rfft and the WDM backend's normalized-edge convention.
     Covariance conversion preserves correlations and statistical exclusions;
     a TranslatedCovariance provides exact operators instead of a diagonal grid.
-    WDM requires the separately installed local backend and Python >=3.13.
+    WDM coefficient transforms require the separately installed local backend
+    and Python >=3.13. Same-grid copies and covariance construction do not;
+    covariance operations load the backend when they transform WDM coefficients.
     """
     if target_domain not in L1Data.DOMAINS:
         raise ValueError(f"target_domain must be one of {L1Data.DOMAINS}")
@@ -109,6 +111,9 @@ def transform(
     if reference_data is not None and not isinstance(reference_data, L1Data):
         raise TypeError("reference_data must be L1Data")
     if isinstance(value, L1Data):
+        if value.data_domain == "wdm":
+            # Validate against the stored grid before construction derives it anew.
+            value._validate_channel_data_lengths()
         source = replace(value)  # Revalidate potentially edited input buffers.
         grid = _target_grid(
             target_domain,
@@ -126,9 +131,7 @@ def transform(
             source_wdm_grid=source.wdm_grid,
             target_wdm_grid=grid,
         )
-        return replace(
-            source, channel_data=converted, data_domain=target_domain, wdm_grid=grid
-        )
+        return replace(source, channel_data=converted, data_domain=target_domain)
     if isinstance(value, (DataCovariance, TranslatedCovariance)):
         value = copy_covariance(value)
         if reference_data is not None:
@@ -141,15 +144,17 @@ def transform(
             num_time_divisions,
         )
         return translate_covariance(value, target_domain, target_wdm_grid=grid)
-    if isinstance(value, BlockResult):
-        source_result = deepcopy(value)
-        source_result.__post_init__()
-        signal = source_result.tdi_signal_contribution
+    if isinstance(value, BlockState):
+        source_state = deepcopy(value)
+        source_state.__post_init__()
+        signal = source_state.template
         if signal is not None:
             if reference_data is None:
                 raise ValueError(
-                    "a BlockResult signal requires its source reference_data"
+                    "a BlockState signal requires its source reference_data"
                 )
+            if reference_data.data_domain == "wdm":
+                reference_data._validate_channel_data_lengths()
             source_reference = replace(reference_data)
             check_on_grid(
                 signal,
@@ -157,7 +162,7 @@ def transform(
                 num_time_samples=source_reference.num_time_samples,
                 data_domain=source_reference.data_domain,
                 wdm_grid=source_reference.wdm_grid,
-                context_label="BlockResult.tdi_signal_contribution",
+                context_label="BlockState.template",
             )
             grid = _target_grid(
                 target_domain,
@@ -175,7 +180,7 @@ def transform(
                 source_wdm_grid=source_reference.wdm_grid,
                 target_wdm_grid=grid,
             )
-        covariance = source_result.noise_covariance
+        covariance = source_state.covariance_matrix
         if covariance is not None:
             # A covariance carries its own source representation, which can
             # differ from the signal's. Share the chosen target grid instead.
@@ -201,7 +206,5 @@ def transform(
                 num_time_divisions=num_time_divisions,
                 reference_data=reference_data,
             )
-        return replace(
-            source_result, tdi_signal_contribution=signal, noise_covariance=covariance
-        )
-    raise TypeError("transform expects L1Data, a covariance, or BlockResult")
+        return replace(source_state, template=signal, covariance_matrix=covariance)
+    raise TypeError("transform expects L1Data, a covariance, or BlockState")

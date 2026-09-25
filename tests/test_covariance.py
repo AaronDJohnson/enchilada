@@ -512,7 +512,7 @@ class TestNoisePsdSanity:
             DataCovariance.from_psd(r, BrokenNoise())
 
     def test_a_finite_positive_psd_passes_through_untouched(self, rng):
-        """The guard must not reject the DC bin it sets to +inf itself."""
+        """Export inactive DC as infinity after validating positive-frequency PSDs."""
 
         class GoodNoise:
             def psd(self, freqs, channel=None):

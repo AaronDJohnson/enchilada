@@ -1,14 +1,8 @@
-"""The README is the first code a new user copies, and nothing else in the
-suite touches it.
+"""Check README Python examples and references to public exports.
 
-Three levels of check, weakest to strongest:
-
-* every fenced ``python`` block must parse -- catches syntax rot;
-* every call to a enchilada API in any block must use keyword arguments that
-  actually exist -- catches the rename class of rot (``n_iterations`` ->
-  ``num_cycles``) even in illustrative fragments that cannot be executed;
-* blocks tagged ``<!-- runnable -->`` must run to completion in a fresh
-  interpreter -- the full check, for blocks that are self-contained.
+All fenced Python blocks must parse. Calls recognized by ``_keyword_targets``
+are checked for valid keyword names; this covers selected APIs, not every export.
+Blocks tagged ``<!-- runnable -->`` execute in a fresh interpreter.
 """
 
 import ast
@@ -22,7 +16,7 @@ from pathlib import Path
 import pytest
 
 import enchilada
-from enchilada import L1Data, Wheel
+from enchilada import BlockState, L1Data, Wheel
 
 README = Path(__file__).resolve().parent.parent / "README.md"
 
@@ -55,6 +49,7 @@ def test_every_block_parses(index):
 
 # Public callables a README block may invoke, by the name it is called under.
 _CALLABLES = {
+    "BlockState": BlockState,
     "L1Data": L1Data,
     "Wheel": Wheel,
     "check_block": None,  # filled below; testing imports lazily
@@ -66,8 +61,8 @@ def _keyword_targets():
 
     targets = dict(_CALLABLES)
     targets["check_block"] = check_block
-    # bound-method names are unambiguous across the two public classes
-    for cls in (Wheel, L1Data):
+    # Bound-method names are unambiguous across these public classes.
+    for cls in (Wheel, L1Data, BlockState):
         for name, member in vars(cls).items():
             if not name.startswith("_") and callable(member):
                 targets.setdefault(name, member)

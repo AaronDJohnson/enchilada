@@ -2,13 +2,18 @@ name: WDM integration
 
 on:
   workflow_call:
+    secrets:
+      WDM_DEPLOY_KEY:
+        description: Read-only SSH deploy key for the private WDM backend
+        # Public WDM checkouts will no longer need this credential.
+        required: false
 
 permissions:
   contents: read
 
 env:
   UV_VERSION: "0.12.1"
-  # Update the tested backend and docs/domain-translation.md together.
+  # Update the tested backend and README.md WDM installation instructions together.
   WDM_REVISION: "6f145b4076862ea4786150a54d5a1f28af3c7055"
   WDM_VERSION: "0.2.0"
 
@@ -25,6 +30,7 @@ jobs:
           repository: AaronDJohnson/wdm
           ref: ${{ env.WDM_REVISION }}
           path: .wdm-backend
+          ssh-key: ${{ secrets.WDM_DEPLOY_KEY }}
           persist-credentials: false
       - uses: astral-sh/setup-uv@v9.0.0
         with:

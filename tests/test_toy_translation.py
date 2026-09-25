@@ -31,7 +31,7 @@ def test_sine_rejects_translated_statistical_mask_with_likelihood_error(toy):
     block = toy.SineBlock("slow", 0.004)
     wheel.add(
         block,
-        initial_block_result=toy.draw_sine_prior(
+        initial_block_state=toy.draw_sine_prior(
             block, data, rng=np.random.default_rng(0)
         ),
         data_domain="time",
@@ -39,10 +39,10 @@ def test_sine_rejects_translated_statistical_mask_with_likelihood_error(toy):
     previous = wheel.ledger["slow"]
     with pytest.raises(ValueError, match="time-domain.*all samples active"):
         wheel.run(1)
-    assert wheel.ledger["slow"].model_parameters == previous.model_parameters
+    assert wheel.ledger["slow"].parameters == previous.parameters
     np.testing.assert_array_equal(
-        wheel.ledger["slow"].tdi_signal_contribution["A"],
-        previous.tdi_signal_contribution["A"],
+        wheel.ledger["slow"].template["A"],
+        previous.template["A"],
     )
 
 
@@ -64,7 +64,7 @@ def test_toy_time_blocks_preserve_draws_on_translated_observations(
             block = toy.SineBlock(name, frequency)
             wheel.add(
                 block,
-                initial_block_result=toy.draw_sine_prior(
+                initial_block_state=toy.draw_sine_prior(
                     block, data, rng=initialization_rng
                 ),
                 data_domain="time",
@@ -72,7 +72,7 @@ def test_toy_time_blocks_preserve_draws_on_translated_observations(
         noise_block = toy.WhiteNoiseBlock("noise")
         wheel.add(
             noise_block,
-            initial_block_result=toy.draw_white_noise_prior(
+            initial_block_state=toy.draw_white_noise_prior(
                 noise_block, data, rng=initialization_rng
             ),
             data_domain="time",
@@ -82,9 +82,9 @@ def test_toy_time_blocks_preserve_draws_on_translated_observations(
         def collect(cycle, campaign, samples=chain):
             samples.append(
                 [
-                    campaign.ledger["slow"].model_parameters["amplitude"],
-                    campaign.ledger["fast"].model_parameters["amplitude"],
-                    campaign.ledger["noise"].model_parameters["sigma"],
+                    campaign.ledger["slow"].parameters["amplitude"],
+                    campaign.ledger["fast"].parameters["amplitude"],
+                    campaign.ledger["noise"].parameters["sigma"],
                 ]
             )
 

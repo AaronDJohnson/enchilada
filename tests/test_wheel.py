@@ -1,13 +1,13 @@
-"""Wheel: the block-result ledger, the data-minus-others handoff, and its guards."""
+"""Wheel: the block-state ledger, the data-minus-others handoff, and its guards."""
 
 import warnings
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 import pytest
 
-from conftest import const_block_result, make_observed
-from enchilada import BlockResult, DataCovariance, NoiseOverwrittenWarning, Wheel
+from conftest import const_block_state, make_observed
+from enchilada import BlockState, DataCovariance, NoiseOverwrittenWarning, Wheel
 from enchilada.testing import EchoBlock
 
 
@@ -16,48 +16,47 @@ def constant_initial_result(observed, value, *, dtype=None):
         ch: np.full_like(samples, value, dtype=dtype)
         for ch, samples in observed.channel_data.items()
     }
-    return observed.block_result(
+    return observed.block_state(
         signal,
-        model_parameters={"value": value},
-        sampler_state={"updates": 0},
-        metadata={"model": "constant"},
+        parameters={"value": value},
     )
 
 
 def noise_initial_result(observed, level=1.0):
-    return BlockResult(
-        sampler_state={"updates": 0},
-        noise_covariance=DataCovariance.from_variance(observed, level),
+    return BlockState(
+        covariance_matrix=DataCovariance.from_variance(observed, level),
     )
 
 
 class ConstBlock:
-    """Returns a block result with the same signal value in every sample.
+    """Returns a block state with the same signal value in every sample.
 
     The residual it is handed is already the data minus every other block; a
     real block would fit it. This one ignores it and returns its (constant)
     template, so its ledger entry carries that constant signal.
     """
 
+    @dataclass
+    class State:
+        updates: int = 0
+        metadata: dict = field(default_factory=lambda: {"model": "constant"})
+
     def __init__(self, name, value):
         self.name = name
         self.value = value
+        self.state = self.State()
 
     def sample(
-        self, conditional_residual, noise_covariance, current_block_result, *, rng
+        self, conditional_residual, noise_covariance, current_block_state, *, rng
     ):
+        self.state.updates += 1
         return replace(
-            current_block_result,
-            tdi_signal_contribution=self._block_result(
-                conditional_residual
-            ).tdi_signal_contribution,
-            sampler_state={
-                "updates": current_block_result.sampler_state["updates"] + 1
-            },
+            current_block_state,
+            template=self._block_state(conditional_residual).template,
         )
 
-    def _block_result(self, residual):
-        return const_block_result(residual, self.value)
+    def _block_state(self, residual):
+        return const_block_state(residual, self.value)
 
 
 class FlatPSD:
@@ -71,17 +70,22 @@ class FlatPSD:
 class LevelNoiseBlock:
     """A covariance level driven by a sampling-call counter."""
 
+    @dataclass
+    class State:
+        updates: int = 0
+
     def __init__(self, name):
         self.name = name
+        self.state = self.State()
 
     def sample(
-        self, conditional_residual, noise_covariance, current_block_result, *, rng
+        self, conditional_residual, noise_covariance, current_block_state, *, rng
     ):
-        updates = current_block_result.sampler_state["updates"] + 1
-        return conditional_residual.block_result(
-            sampler_state={"updates": updates}
-        ).with_noise_covariance(
-            DataCovariance.from_variance(conditional_residual, float(updates + 1))
+        self.state.updates += 1
+        return conditional_residual.block_state().with_covariance_matrix(
+            DataCovariance.from_variance(
+                conditional_residual, float(self.state.updates + 1)
+            )
         )
 
 
@@ -91,15 +95,15 @@ class TestLedger:
         wheel = Wheel(observed_data=obs)
         wheel.add(
             block_to_register=ConstBlock("a", 1.0),
-            initial_block_result=constant_initial_result(obs, 1.0),
+            initial_block_state=constant_initial_result(obs, 1.0),
         )
         wheel.add(
             ConstBlock("b", 10.0),
-            initial_block_result=constant_initial_result(obs, 10.0),
+            initial_block_state=constant_initial_result(obs, 10.0),
         )
         wheel.add(
             ConstBlock("c", 100.0),
-            initial_block_result=constant_initial_result(obs, 100.0),
+            initial_block_state=constant_initial_result(obs, 100.0),
         )
         wheel.run(num_cycles=3)
         full = wheel.residual()
@@ -112,15 +116,15 @@ class TestLedger:
         obs = make_observed(rng)
         wheel = Wheel(obs)
         wheel.add(
-            ConstBlock("a", 1.0), initial_block_result=constant_initial_result(obs, 1.0)
+            ConstBlock("a", 1.0), initial_block_state=constant_initial_result(obs, 1.0)
         )
         wheel.add(
             ConstBlock("b", 10.0),
-            initial_block_result=constant_initial_result(obs, 10.0),
+            initial_block_state=constant_initial_result(obs, 10.0),
         )
         wheel.add(
             ConstBlock("c", 100.0),
-            initial_block_result=constant_initial_result(obs, 100.0),
+            initial_block_state=constant_initial_result(obs, 100.0),
         )
         wheel.run(2)
         # residual(exclude_block_name=b) = data minus a and c (110), b left in
@@ -134,7 +138,7 @@ class TestLedger:
         obs = make_observed(rng)
         wheel = Wheel(obs)
         wheel.add(
-            ConstBlock("a", 7.0), initial_block_result=constant_initial_result(obs, 7.0)
+            ConstBlock("a", 7.0), initial_block_state=constant_initial_result(obs, 7.0)
         )
         wheel.run(2)
         for ch in obs.channel_names:
@@ -153,7 +157,7 @@ class TestLedger:
                 self,
                 conditional_residual,
                 noise_covariance,
-                current_block_result,
+                current_block_state,
                 *,
                 rng,
             ):
@@ -161,12 +165,12 @@ class TestLedger:
                     conditional_residual.channel_data[ch][:] = (
                         3.0  # overwrite the handed arrays
                     )
-                return conditional_residual.block_result(
+                return conditional_residual.block_state(
                     conditional_residual.channel_data
                 )  # ...and claim them
 
         wheel = Wheel(obs)
-        wheel.add(InPlace(), initial_block_result=BlockResult())
+        wheel.add(InPlace(), initial_block_state=BlockState())
         wheel.run(2)
         for ch in obs.channel_names:
             np.testing.assert_allclose(wheel.contribution("ip")[ch], 3.0)
@@ -178,7 +182,7 @@ class TestLedger:
         wheel = Wheel(observed)
         wheel.add(
             ConstBlock("a", 1.0),
-            initial_block_result=constant_initial_result(observed, 1.0),
+            initial_block_state=constant_initial_result(observed, 1.0),
         )
         with pytest.raises(ValueError, match="unknown block"):
             wheel.residual(exclude_block_name="ghost")
@@ -194,7 +198,7 @@ class TestLedger:
                 self,
                 conditional_residual,
                 noise_covariance,
-                current_block_result,
+                current_block_state,
                 *,
                 rng,
             ):
@@ -205,13 +209,13 @@ class TestLedger:
                 return super().sample(
                     conditional_residual,
                     noise_covariance,
-                    current_block_result,
+                    current_block_state,
                     rng=rng,
                 )
 
         wheel = Wheel(obs)
         wheel.add(
-            Mutator("mut", 0.0), initial_block_result=constant_initial_result(obs, 0.0)
+            Mutator("mut", 0.0), initial_block_state=constant_initial_result(obs, 0.0)
         )
         wheel.run(2)
         for ch, arr in snapshot.items():
@@ -219,21 +223,25 @@ class TestLedger:
                 obs.channel_data[ch], arr
             )  # observed untouched
 
-    def test_sampler_state_lives_in_complete_ledger_block_results(self, observed):
+    def test_sampler_continuation_lives_on_block_and_estimates_live_in_ledger(
+        self, observed
+    ):
         block = ConstBlock("a", 1.0)
-        config = vars(block).copy()
+        state = block.state
         wheel = Wheel(observed)
         wheel.add(
-            block, initial_block_result=constant_initial_result(observed, block.value)
+            block, initial_block_state=constant_initial_result(observed, block.value)
         )
-        assert wheel.ledger["a"].sampler_state == {"updates": 0}
+        assert block.state.updates == 0
         wheel.run(4)
         accepted = wheel.ledger["a"]
-        assert isinstance(accepted, BlockResult)
-        assert accepted.model_parameters == {"value": 1.0}
-        assert accepted.sampler_state == {"updates": 4}
-        assert accepted.metadata == {"model": "constant"}
-        assert vars(block) == config
+        assert isinstance(accepted, BlockState)
+        assert accepted.parameters == {"value": 1.0}
+        assert block.state is state
+        assert block.state.updates == 4
+        assert block.state.metadata == {"model": "constant"}
+        assert block.name == "a"
+        assert block.value == 1.0
 
     def test_zero_blocks_is_a_noop(self, observed):
         wheel = Wheel(observed)
@@ -254,7 +262,7 @@ class TestLedger:
         wheel = Wheel(observed)
         wheel.add(
             ConstBlock("a", 1.0),
-            initial_block_result=constant_initial_result(observed, 1.0),
+            initial_block_state=constant_initial_result(observed, 1.0),
         )
         wheel.run(np.int64(2))
 
@@ -271,7 +279,7 @@ class TestNoAddBack:
                 self,
                 conditional_residual,
                 noise_covariance,
-                current_block_result,
+                current_block_state,
                 *,
                 rng,
             ):
@@ -282,16 +290,16 @@ class TestNoAddBack:
                 return super().sample(
                     conditional_residual,
                     noise_covariance,
-                    current_block_result,
+                    current_block_state,
                     rng=rng,
                 )
 
         wheel = Wheel(obs)
         wheel.add(
-            Recorder("a", 2.0), initial_block_result=constant_initial_result(obs, 2.0)
+            Recorder("a", 2.0), initial_block_state=constant_initial_result(obs, 2.0)
         )
         wheel.add(
-            Recorder("b", 5.0), initial_block_result=constant_initial_result(obs, 5.0)
+            Recorder("b", 5.0), initial_block_state=constant_initial_result(obs, 5.0)
         )
         wheel.run(1)
         # a sees data minus b (5); b sees data minus a (2)
@@ -307,28 +315,28 @@ class TestNoAddBack:
                 self,
                 conditional_residual,
                 noise_covariance,
-                current_block_result,
+                current_block_state,
                 *,
                 rng,
             ):
                 seen.append((self.name, conditional_residual.channel_data["A"].copy()))
-                updates = current_block_result.sampler_state["updates"] + 1
+                self.state.updates += 1
+                updates = self.state.updates
                 return replace(
-                    current_block_result,
-                    tdi_signal_contribution=const_block_result(
+                    current_block_state,
+                    template=const_block_state(
                         conditional_residual, self.value + updates
-                    ).tdi_signal_contribution,
-                    sampler_state={"updates": updates},
+                    ).template,
                 )
 
         wheel = Wheel(observed)
         wheel.add(
             Growing("a", 2.0),
-            initial_block_result=constant_initial_result(observed, 2.0),
+            initial_block_state=constant_initial_result(observed, 2.0),
         )
         wheel.add(
             Growing("b", 5.0),
-            initial_block_result=constant_initial_result(observed, 5.0),
+            initial_block_state=constant_initial_result(observed, 5.0),
         )
         wheel.run(2)
         assert [name for name, _ in seen] == ["a", "b", "a", "b"]
@@ -349,7 +357,7 @@ class TestAtomicRegistration:
                 self,
                 conditional_residual,
                 noise_covariance,
-                current_block_result,
+                current_block_state,
                 *,
                 rng,
             ):
@@ -357,17 +365,18 @@ class TestAtomicRegistration:
                 return super().sample(
                     conditional_residual,
                     noise_covariance,
-                    current_block_result,
+                    current_block_state,
                     rng=rng,
                 )
 
         wheel = Wheel(observed)
+        block = PriorRecorder("prior", 2.0)
         wheel.add(
-            PriorRecorder("prior", 2.0),
-            initial_block_result=constant_initial_result(observed, 2.0),
+            block,
+            initial_block_state=constant_initial_result(observed, 2.0),
         )
         assert calls == []
-        assert wheel.ledger["prior"].sampler_state == {"updates": 0}
+        assert block.state.updates == 0
         np.testing.assert_array_equal(wheel.contribution("prior")["A"], 2.0)
         wheel.run(2)
         assert calls == ["sample", "sample"]
@@ -376,44 +385,44 @@ class TestAtomicRegistration:
         wheel = Wheel(observed)
         wheel.add(
             EchoBlock(name="x"),
-            initial_block_result=BlockResult(sampler_state={"num_sample_calls": 0}),
+            initial_block_state=BlockState(),
         )
         with pytest.raises(ValueError, match="already registered"):
             wheel.add(
                 EchoBlock(name="x"),
-                initial_block_result=BlockResult(sampler_state={"num_sample_calls": 0}),
+                initial_block_state=BlockState(),
             )
 
     def test_empty_name_rejected(self, observed):
         with pytest.raises(ValueError, match="non-empty"):
             Wheel(observed).add(
                 EchoBlock(name=""),
-                initial_block_result=BlockResult(sampler_state={"num_sample_calls": 0}),
+                initial_block_state=BlockState(),
             )
 
     def test_invalid_initial_result_leaves_wheel_untouched(self, observed):
         wheel = Wheel(observed)
         wheel.add(
             ConstBlock("ok", 1.0),
-            initial_block_result=constant_initial_result(observed, 1.0),
+            initial_block_state=constant_initial_result(observed, 1.0),
         )
-        with pytest.raises(TypeError, match="initial_block_result.*BlockResult"):
-            wheel.add(ConstBlock("bad", 0.0), initial_block_result="not a result")
+        with pytest.raises(TypeError, match="initial_block_state.*BlockState"):
+            wheel.add(ConstBlock("bad", 0.0), initial_block_state="not a result")
         with pytest.raises(ValueError, match="unknown block"):
             wheel.contribution("bad")  # not registered
         wheel.contribution("ok")  # the good one still is
         wheel.run(1)  # still healthy
 
 
-class TestReturnedBlockResultValidation:
+class TestReturnedBlockStateValidation:
     @pytest.mark.parametrize("return_input_data", [False, True])
-    def test_non_block_result_return_named(self, observed, return_input_data):
+    def test_non_block_state_return_named(self, observed, return_input_data):
         class Bad(ConstBlock):
             def sample(
                 self,
                 conditional_residual,
                 noise_covariance,
-                current_block_result,
+                current_block_state,
                 *,
                 rng,
             ):
@@ -421,9 +430,9 @@ class TestReturnedBlockResultValidation:
 
         wheel = Wheel(observed)
         wheel.add(
-            Bad("bad", 0.0), initial_block_result=constant_initial_result(observed, 0.0)
+            Bad("bad", 0.0), initial_block_state=constant_initial_result(observed, 0.0)
         )
-        with pytest.raises(TypeError, match="bad.sample must return a BlockResult"):
+        with pytest.raises(TypeError, match="bad.sample must return a BlockState"):
             wheel.run(1)
 
     def test_bad_tdi_shape_rejected(self, observed):
@@ -432,12 +441,12 @@ class TestReturnedBlockResultValidation:
                 self,
                 conditional_residual,
                 noise_covariance,
-                current_block_result,
+                current_block_state,
                 *,
                 rng,
             ):
-                return BlockResult(
-                    tdi_signal_contribution={
+                return BlockState(
+                    template={
                         ch: np.zeros(2) for ch in conditional_residual.channel_names
                     }
                 )
@@ -445,7 +454,7 @@ class TestReturnedBlockResultValidation:
         wheel = Wheel(observed)
         wheel.add(
             Drifter("drift", 0.0),
-            initial_block_result=constant_initial_result(observed, 0.0),
+            initial_block_state=constant_initial_result(observed, 0.0),
         )
         with pytest.raises(ValueError, match="length 2, expected"):
             wheel.run(1)
@@ -456,20 +465,18 @@ class TestReturnedBlockResultValidation:
                 self,
                 conditional_residual,
                 noise_covariance,
-                current_block_result,
+                current_block_state,
                 *,
                 rng,
             ):
-                return BlockResult(
-                    tdi_signal_contribution={
-                        "A": np.zeros(conditional_residual.num_time_samples)
-                    }
+                return BlockState(
+                    template={"A": np.zeros(conditional_residual.num_time_samples)}
                 )
 
         wheel = Wheel(observed)
         wheel.add(
             Partial("partial", 0.0),
-            initial_block_result=constant_initial_result(observed, 0.0),
+            initial_block_state=constant_initial_result(observed, 0.0),
         )
         with pytest.raises(ValueError, match="must match the run's channels"):
             wheel.run(1)
@@ -480,21 +487,21 @@ class TestExplicitNoise:
         wheel = Wheel(observed)
         wheel.add(
             LevelNoiseBlock("noise"),
-            initial_block_result=noise_initial_result(observed),
+            initial_block_state=noise_initial_result(observed),
         )
         assert wheel.noise_covariance.noise_variance() == 1.0
         wheel.run(2)
         assert wheel.noise_covariance.noise_variance() == 3.0
-        assert wheel.ledger["noise"].noise_covariance.noise_variance() == 3.0
+        assert wheel.ledger["noise"].covariance_matrix.noise_variance() == 3.0
 
     def test_noise_block_contributes_zero_without_signal(self, observed):
         wheel = Wheel(observed)
         wheel.add(
             LevelNoiseBlock("noise"),
-            initial_block_result=noise_initial_result(observed),
+            initial_block_state=noise_initial_result(observed),
         )
         wheel.run(1)
-        assert wheel.ledger["noise"].tdi_signal_contribution is None
+        assert wheel.ledger["noise"].template is None
         for ch in observed.channel_names:
             np.testing.assert_array_equal(
                 wheel.contribution("noise")[ch],
@@ -505,12 +512,12 @@ class TestExplicitNoise:
         wheel = Wheel(observed)
         wheel.add(
             LevelNoiseBlock("noise"),
-            initial_block_result=noise_initial_result(observed),
+            initial_block_state=noise_initial_result(observed),
         )
         covariance = wheel.noise_covariance
         initial = constant_initial_result(observed, covariance.noise_variance())
         wheel.add(
-            ConstBlock("rec", covariance.noise_variance()), initial_block_result=initial
+            ConstBlock("rec", covariance.noise_variance()), initial_block_state=initial
         )
         assert isinstance(covariance, DataCovariance)
         assert covariance.noise_variance() == 1.0
@@ -524,7 +531,7 @@ class TestExplicitNoise:
                 self,
                 conditional_residual,
                 noise_covariance,
-                current_block_result,
+                current_block_state,
                 *,
                 rng,
             ):
@@ -532,18 +539,18 @@ class TestExplicitNoise:
                 return super().sample(
                     conditional_residual,
                     noise_covariance,
-                    current_block_result,
+                    current_block_state,
                     rng=rng,
                 )
 
         wheel = Wheel(observed)
         wheel.add(
             LevelNoiseBlock("noise"),
-            initial_block_result=noise_initial_result(observed),
+            initial_block_state=noise_initial_result(observed),
         )  # samples first each cycle
         wheel.add(
             Recorder("rec", 0.0),
-            initial_block_result=constant_initial_result(observed, 0.0),
+            initial_block_state=constant_initial_result(observed, 0.0),
         )
         wheel.run(3)
         assert levels == [2.0, 3.0, 4.0]
@@ -556,7 +563,7 @@ class TestExplicitNoise:
         wheel = Wheel(observed, initial_noise_covariance=covariance)
         wheel.add(
             EchoBlock("echo"),
-            initial_block_result=BlockResult(sampler_state={"num_sample_calls": 0}),
+            initial_block_state=BlockState(),
         )
         wheel.run(2)
         np.testing.assert_array_equal(
@@ -568,7 +575,7 @@ class TestExplicitNoise:
         wheel = Wheel(observed_data=observed, initial_noise_covariance=covariance)
         wheel.add(
             EchoBlock("echo"),
-            initial_block_result=BlockResult(sampler_state={"num_sample_calls": 0}),
+            initial_block_state=BlockState(),
         )
         wheel.run(2)
         np.testing.assert_array_equal(
@@ -582,7 +589,7 @@ class TestOnCycle:
         wheel = Wheel(observed)
         wheel.add(
             ConstBlock("a", 1.0),
-            initial_block_result=constant_initial_result(observed, 1.0),
+            initial_block_state=constant_initial_result(observed, 1.0),
         )
         wheel.run(
             num_cycles=3, on_cycle_complete=lambda i, w: calls.append((i, w is wheel))
@@ -601,7 +608,7 @@ class TestBoundaryGuards:
         expected = wheel.noise_covariance.covariance_matrix.copy()
         wheel.add(
             ConstBlock("signal", 1.0),
-            initial_block_result=constant_initial_result(obs, 1.0),
+            initial_block_state=constant_initial_result(obs, 1.0),
         )
         wheel.run(2)
         np.testing.assert_array_equal(
@@ -614,11 +621,11 @@ class TestBoundaryGuards:
                 self,
                 conditional_residual,
                 noise_covariance,
-                current_block_result,
+                current_block_state,
                 *,
                 rng,
             ):
-                return conditional_residual.block_result(
+                return conditional_residual.block_state(
                     {
                         ch: arr * np.nan
                         for ch, arr in conditional_residual.channel_data.items()
@@ -628,7 +635,7 @@ class TestBoundaryGuards:
         wheel = Wheel(observed)
         wheel.add(
             Blowup("boom", 0.0),
-            initial_block_result=constant_initial_result(observed, 0.0),
+            initial_block_state=constant_initial_result(observed, 0.0),
         )
         with pytest.raises(ValueError, match="non-finite sample"):
             wheel.run(1)
@@ -638,7 +645,7 @@ class TestBoundaryGuards:
             name = "nosample"
 
         with pytest.raises(TypeError, match="does not implement sample"):
-            Wheel(observed).add(NoSample(), initial_block_result=BlockResult())
+            Wheel(observed).add(NoSample(), initial_block_state=BlockState())
 
     def test_block_with_only_name_and_sample_can_register(self, observed):
         class NoPrior:
@@ -648,14 +655,14 @@ class TestBoundaryGuards:
                 self,
                 conditional_residual,
                 noise_covariance,
-                current_block_result,
+                current_block_state,
                 *,
                 rng,
             ):
-                return current_block_result
+                return current_block_state
 
         wheel = Wheel(observed)
-        wheel.add(NoPrior(), initial_block_result=BlockResult())
+        wheel.add(NoPrior(), initial_block_state=BlockState())
         wheel.run(1)
         assert list(wheel.ledger) == ["no_prior"]
 
@@ -669,18 +676,16 @@ class TestBoundaryGuards:
                 self,
                 conditional_residual,
                 noise_covariance,
-                current_block_result,
+                current_block_state,
                 *,
                 rng,
             ):
-                return conditional_residual.zero_block_result(
-                    model_parameters={"value": 0.0}
-                )
+                return conditional_residual.zero_block_state(parameters={"value": 0.0})
 
         wheel = Wheel(observed)
         wheel.add(
             Death("rj", 1.0),
-            initial_block_result=constant_initial_result(observed, 1.0),
+            initial_block_state=constant_initial_result(observed, 1.0),
         )
         with _w.catch_warnings():
             _w.simplefilter("error")
@@ -694,7 +699,7 @@ class TestBoundaryGuards:
         wheel = Wheel(observed)
         wheel.add(
             EchoBlock("echo"),
-            initial_block_result=BlockResult(sampler_state={"num_sample_calls": 0}),
+            initial_block_state=BlockState(),
         )
         with _w.catch_warnings():
             _w.simplefilter("error")  # any warning becomes a failure
@@ -723,11 +728,11 @@ class TestBoundaryGuards:
                 self,
                 conditional_residual,
                 noise_covariance,
-                current_block_result,
+                current_block_state,
                 *,
                 rng,
             ):
-                return conditional_residual.block_result(
+                return conditional_residual.block_state(
                     {
                         ch: np.ones(64, np.float64)
                         for ch in conditional_residual.channel_data
@@ -736,7 +741,7 @@ class TestBoundaryGuards:
 
         wheel = Wheel(obs)
         wheel.add(
-            Wider("w", 0.0), initial_block_result=constant_initial_result(obs, 0.0)
+            Wider("w", 0.0), initial_block_state=constant_initial_result(obs, 0.0)
         )
         wheel.run(1)
         assert wheel.residual().channel_data["A"].dtype == np.float64
@@ -750,11 +755,11 @@ def test_cancelling_signals_do_not_erase_the_observation(rng):
     wheel = Wheel(observed)
     wheel.add(
         ConstBlock("positive", 1e16),
-        initial_block_result=constant_initial_result(observed, 1e16),
+        initial_block_state=constant_initial_result(observed, 1e16),
     )
     wheel.add(
         ConstBlock("negative", -1e16),
-        initial_block_result=constant_initial_result(observed, -1e16),
+        initial_block_state=constant_initial_result(observed, -1e16),
     )
     np.testing.assert_array_equal(wheel.residual().channel_data["A"], np.ones(64))
     wheel.run(2)
@@ -768,26 +773,26 @@ def test_cached_signal_sums_follow_updates_withdrawals_and_failures(rng):
 
     class Changing(ConstBlock):
         def sample(
-            self, conditional_residual, noise_covariance, current_block_result, *, rng
+            self, conditional_residual, noise_covariance, current_block_state, *, rng
         ):
-            count = current_block_result.sampler_state["updates"] + 1
+            self.state.updates += 1
+            count = self.state.updates
             if count == 2 and self.name == "4":
                 # Signal leaves are finite individually, but their sum overflows.
-                return conditional_residual.block_result(
+                return conditional_residual.block_state(
                     {name: np.full(64, np.finfo(float).max) for name in ("A", "E", "T")}
                 )
             if count == 2:
-                return BlockResult(sampler_state={"updates": count})
-            return conditional_residual.block_result(
+                return BlockState()
+            return conditional_residual.block_state(
                 {name: np.full(64, self.value + count) for name in ("A", "E", "T")},
-                sampler_state={"updates": count},
             )
 
     wheel = Wheel(observed)
     for index in range(9):
         wheel.add(
             Changing(str(index), float(index + 1)),
-            initial_block_result=constant_initial_result(observed, float(index + 1)),
+            initial_block_state=constant_initial_result(observed, float(index + 1)),
         )
     np.testing.assert_array_equal(wheel.residual().channel_data["A"], 55.0)
     wheel.run(1)
@@ -800,7 +805,7 @@ def test_cached_signal_sums_follow_updates_withdrawals_and_failures(rng):
     # Force an overflow in the candidate tree after its leaves pass validation.
     wheel.add(
         ConstBlock("overflow_guard", np.finfo(float).max),
-        initial_block_result=constant_initial_result(observed, np.finfo(float).max),
+        initial_block_state=constant_initial_result(observed, np.finfo(float).max),
     )
     before_failed_block = wheel.contribution("4")["A"]
     with pytest.raises(ValueError, match="non-finite"):
@@ -819,8 +824,8 @@ def test_signal_aggregation_preserves_small_float32_contributions(rng):
     )
 
     class NarrowSignal(ConstBlock):
-        def _block_result(self, residual):
-            return residual.block_result(
+        def _block_state(self, residual):
+            return residual.block_state(
                 {
                     name: np.full(64, self.value, dtype=np.float32)
                     for name in residual.channel_names
@@ -831,7 +836,7 @@ def test_signal_aggregation_preserves_small_float32_contributions(rng):
     for index, value in enumerate((1e8, 1.0, -1e8)):
         wheel.add(
             NarrowSignal(str(index), value),
-            initial_block_result=constant_initial_result(
+            initial_block_state=constant_initial_result(
                 observed, value, dtype=np.float32
             ),
         )
@@ -852,7 +857,7 @@ class TestDocumentedContracts:
             seen[name] = residual.channel_data["A"].copy()
             wheel.add(
                 ConstBlock(name, value),
-                initial_block_result=constant_initial_result(residual, value),
+                initial_block_state=constant_initial_result(residual, value),
             )
         # the first joiner sees raw data; the second sees it minus the first
         np.testing.assert_allclose(seen["first"], obs.channel_data["A"])
@@ -866,7 +871,7 @@ class TestDocumentedContracts:
         wheel.residual().channel_data["A"][0] = -999.0
         np.testing.assert_array_equal(obs.channel_data["A"], snapshot)
         wheel.add(
-            ConstBlock("a", 1.0), initial_block_result=constant_initial_result(obs, 1.0)
+            ConstBlock("a", 1.0), initial_block_state=constant_initial_result(obs, 1.0)
         )
         wheel.residual(exclude_block_name="a").channel_data["A"][0] = -999.0
         np.testing.assert_array_equal(obs.channel_data["A"], snapshot)
@@ -875,7 +880,7 @@ class TestDocumentedContracts:
         wheel = Wheel(observed)
         wheel.add(
             ConstBlock("a", 2.0),
-            initial_block_result=constant_initial_result(observed, 2.0),
+            initial_block_state=constant_initial_result(observed, 2.0),
         )
         got = wheel.contribution("a")
         got["A"][:] = 100.0
@@ -891,7 +896,7 @@ class TestDocumentedContracts:
                 self,
                 conditional_residual,
                 noise_covariance,
-                current_block_result,
+                current_block_state,
                 *,
                 rng,
             ):
@@ -900,11 +905,11 @@ class TestDocumentedContracts:
                     for ch, arr in conditional_residual.channel_data.items()
                 }
                 tdi[channel][3] = bad
-                return conditional_residual.block_result(tdi)
+                return conditional_residual.block_state(tdi)
 
         wheel = Wheel(obs)
         wheel.add(
-            Blowup("b", 0.0), initial_block_result=constant_initial_result(obs, 0.0)
+            Blowup("b", 0.0), initial_block_state=constant_initial_result(obs, 0.0)
         )
         with pytest.raises(ValueError, match="non-finite sample"):
             wheel.run(1)
@@ -914,7 +919,7 @@ class TestDocumentedContracts:
 
         def partly_zero_result(residual):
             # non-zero in A and E, zero in T
-            return residual.block_result(
+            return residual.block_state(
                 {
                     ch: np.full_like(arr, 0.0 if ch == "T" else 1.0)
                     for ch, arr in residual.channel_data.items()
@@ -928,14 +933,14 @@ class TestDocumentedContracts:
                 self,
                 conditional_residual,
                 noise_covariance,
-                current_block_result,
+                current_block_state,
                 *,
                 rng,
             ):
                 return partly_zero_result(conditional_residual)
 
         wheel = Wheel(obs)
-        wheel.add(PartlyZero(), initial_block_result=partly_zero_result(obs))
+        wheel.add(PartlyZero(), initial_block_state=partly_zero_result(obs))
         wheel.run(2)
         np.testing.assert_allclose(wheel.contribution("p")["T"], 0.0)
         np.testing.assert_allclose(wheel.contribution("p")["A"], 1.0)
@@ -949,7 +954,7 @@ class TestDocumentedContracts:
         with pytest.raises(ValueError, match="non-empty string"):
             Wheel(observed).add(
                 block,
-                initial_block_result=constant_initial_result(observed, block.value),
+                initial_block_state=constant_initial_result(observed, block.value),
             )
 
     def test_missing_name_gets_the_protocol_message(self, observed):
@@ -958,14 +963,14 @@ class TestDocumentedContracts:
                 self,
                 conditional_residual,
                 noise_covariance,
-                current_block_result,
+                current_block_state,
                 *,
                 rng,
             ):
-                return conditional_residual.zero_block_result()
+                return conditional_residual.zero_block_state()
 
         with pytest.raises((ValueError, TypeError), match="name"):
-            Wheel(observed).add(Anonymous(), initial_block_result=BlockResult())
+            Wheel(observed).add(Anonymous(), initial_block_state=BlockState())
 
 
 class TestObservedDataIsChecked:
@@ -1018,13 +1023,13 @@ class TestNoiseOwnership:
                 self,
                 conditional_residual,
                 noise_covariance,
-                current_block_result,
+                current_block_state,
                 *,
                 rng,
             ):
                 # a real noise block re-estimates, so it publishes a NEW object
                 # every cycle -- that must not read as an overwrite
-                return conditional_residual.block_result().with_noise_covariance(
+                return conditional_residual.block_state().with_covariance_matrix(
                     DataCovariance.from_variance(conditional_residual, level)
                 )
 
@@ -1034,19 +1039,19 @@ class TestNoiseOwnership:
         wheel = Wheel(observed)
         wheel.add(
             self._noise_block("instrument", 1.0),
-            initial_block_result=noise_initial_result(observed, 1.0),
+            initial_block_state=noise_initial_result(observed, 1.0),
         )
         with pytest.warns(NoiseOverwrittenWarning, match="'instrument' owns"):
             wheel.add(
                 self._noise_block("confusion", 2.0),
-                initial_block_result=noise_initial_result(observed, 2.0),
+                initial_block_state=noise_initial_result(observed, 2.0),
             )
 
     def test_warning_as_error_rolls_back_registration(self, observed):
         wheel = Wheel(observed)
         wheel.add(
             self._noise_block("instrument", 1.0),
-            initial_block_result=noise_initial_result(observed, 1.0),
+            initial_block_state=noise_initial_result(observed, 1.0),
         )
         before = wheel.working_residual.channel_data["A"].copy()
         with warnings.catch_warnings():
@@ -1054,7 +1059,7 @@ class TestNoiseOwnership:
             with pytest.raises(NoiseOverwrittenWarning, match="'instrument' owns"):
                 wheel.add(
                     self._noise_block("confusion", 2.0),
-                    initial_block_result=noise_initial_result(observed, 2.0),
+                    initial_block_state=noise_initial_result(observed, 2.0),
                 )
             # Failed membership or owner adoption would break this next cycle.
             wheel.run(1)
@@ -1068,27 +1073,26 @@ class TestNoiseOwnership:
                 self,
                 conditional_residual,
                 noise_covariance,
-                current_block_result,
+                current_block_state,
                 *,
                 rng,
             ):
-                return conditional_residual.block_result(
-                    const_block_result(
-                        conditional_residual, 9.0
-                    ).tdi_signal_contribution,
-                    sampler_state={"updates": 1},
-                ).with_noise_covariance(
+                self.state.updates += 1
+                return conditional_residual.block_state(
+                    const_block_state(conditional_residual, 9.0).template,
+                ).with_covariance_matrix(
                     DataCovariance.from_variance(conditional_residual, 2.0)
                 )
 
         wheel = Wheel(observed)
         wheel.add(
             self._noise_block("instrument", 1.0),
-            initial_block_result=noise_initial_result(observed, 1.0),
+            initial_block_state=noise_initial_result(observed, 1.0),
         )
+        takeover = Takeover("takeover", 0.5)
         wheel.add(
-            Takeover("takeover", 0.5),
-            initial_block_result=constant_initial_result(observed, 0.5),
+            takeover,
+            initial_block_state=constant_initial_result(observed, 0.5),
         )
         before = wheel.working_residual.channel_data["A"].copy()
         with warnings.catch_warnings():
@@ -1098,8 +1102,9 @@ class TestNoiseOwnership:
                     wheel.run(1)
         assert list(wheel.ledger) == ["instrument", "takeover"]
         assert wheel.noise_covariance.noise_variance() == 1.0
-        assert wheel.ledger["takeover"].sampler_state == {"updates": 0}
-        assert wheel.ledger["takeover"].noise_covariance is None
+        assert wheel.ledger["takeover"].parameters == {"value": 0.5}
+        assert takeover.state.updates == 2
+        assert wheel.ledger["takeover"].covariance_matrix is None
         np.testing.assert_array_equal(wheel.contribution("takeover")["A"], 0.5)
         np.testing.assert_array_equal(wheel.working_residual.channel_data["A"], before)
 
@@ -1107,15 +1112,15 @@ class TestNoiseOwnership:
         wheel = Wheel(observed)
         wheel.add(
             self._noise_block("a", 1.0),
-            initial_block_result=noise_initial_result(observed, 1.0),
+            initial_block_state=noise_initial_result(observed, 1.0),
         )
         with pytest.warns(NoiseOverwrittenWarning) as rec:
             wheel.add(
                 self._noise_block("b", 2.0),
-                initial_block_result=noise_initial_result(observed, 2.0),
+                initial_block_state=noise_initial_result(observed, 2.0),
             )
         msg = str(rec[0].message)
-        assert "b.initial_block_result" in msg and "'a'" in msg
+        assert "b.initial_block_state" in msg and "'a'" in msg
         assert "single" in msg and "combined model" in msg
 
     def test_one_noise_block_re_estimating_every_cycle_is_silent(self, observed):
@@ -1123,11 +1128,11 @@ class TestNoiseOwnership:
         wheel = Wheel(observed)
         wheel.add(
             self._noise_block("noise", 1.0),
-            initial_block_result=noise_initial_result(observed, 1.0),
+            initial_block_state=noise_initial_result(observed, 1.0),
         )
         wheel.add(
             ConstBlock("signal", 0.5),
-            initial_block_result=constant_initial_result(observed, 0.5),
+            initial_block_state=constant_initial_result(observed, 0.5),
         )
         with warnings.catch_warnings():
             warnings.simplefilter("error")  # any warning fails this test
@@ -1141,7 +1146,7 @@ class TestNoiseOwnership:
             warnings.simplefilter("error")
             wheel.add(
                 self._noise_block("noise", 1.0),
-                initial_block_result=noise_initial_result(observed, 1.0),
+                initial_block_state=noise_initial_result(observed, 1.0),
             )
         assert wheel.noise_covariance.noise_variance() == 1.0
 
@@ -1150,12 +1155,12 @@ class TestNoiseOwnership:
         wheel = Wheel(observed)
         wheel.add(
             ConstBlock("signal", 0.5),
-            initial_block_result=constant_initial_result(observed, 0.5),
+            initial_block_state=constant_initial_result(observed, 0.5),
         )
         with warnings.catch_warnings():
             warnings.simplefilter("error")
             wheel.add(
                 self._noise_block("noise", 1.0),
-                initial_block_result=noise_initial_result(observed, 1.0),
+                initial_block_state=noise_initial_result(observed, 1.0),
             )
             wheel.run(2)

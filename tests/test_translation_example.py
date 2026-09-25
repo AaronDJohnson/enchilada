@@ -31,7 +31,7 @@ def test_translation_example_preserves_data_and_noise_weight_across_domains():
     assert report["frequency_roundtrip_max_error"] < 1e-12
     assert report["wdm_roundtrip_max_error"] < 1e-12
     assert report["result_roundtrip_max_error"] < 1e-12
-    assert report["result_model_parameters"] == {"amplitude": 0.1}
+    assert report["result_parameters"] == {"amplitude": 0.1}
     np.testing.assert_allclose(
         list(report["quadratic_forms"].values()),
         report["quadratic_forms"]["time"],
