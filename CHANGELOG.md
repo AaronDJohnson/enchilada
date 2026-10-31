@@ -4,7 +4,7 @@ All notable changes to enchilada are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow
 [SemVer](https://semver.org/) once tagged.
 
-## [0.2.0] — Unreleased
+## [0.3.0] — Unreleased
 
 ### Added
 

@@ -668,7 +668,7 @@ for a reproducible workload, cycle timings, and process peak memory usage.
 
 ## Status
 
-0.2.0 — in development, with block-owned samplers and
+0.3.0 — in development, with block-owned samplers and
 Wheel-owned accepted physical estimates. This is still an alpha; pin a version for
 a running campaign. Copyright (c) 2026 Aaron Johnson. Licensed under the
 [Apache License, Version 2.0](LICENSE). Issues and questions welcome.
