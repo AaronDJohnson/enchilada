@@ -1,0 +1,45 @@
+# Hook configuration for prek (https://github.com/j178/prek), a drop-in
+# replacement for pre-commit that reads this same .pre-commit-config.yaml.
+# See https://pre-commit.com/hooks.html for the available hooks.
+repos:
+- repo: https://github.com/pre-commit/pre-commit-hooks
+  rev: v6.0.0
+  hooks:
+  - id: trailing-whitespace
+  - id: end-of-file-fixer
+  - id: check-yaml
+  - id: check-added-large-files
+    args: [--maxkb=2000]
+  - id: check-case-conflict
+  - id: check-docstring-first
+  - id: check-json
+  - id: check-toml
+  - id: check-xml
+  - id: check-ast
+  - id: check-symlinks
+  - id: check-vcs-permalinks
+  - id: debug-statements
+  - id: detect-aws-credentials
+    args: [--allow-missing-credentials]
+  - id: detect-private-key
+  - id: mixed-line-ending
+  - id: check-merge-conflict
+  - id: check-builtin-literals
+  - id: check-illegal-windows-names
+  - id: check-executables-have-shebangs
+  - id: check-shebang-scripts-are-executable
+  - id: destroyed-symlinks
+  - id: forbid-submodules
+  - id: fix-byte-order-marker
+
+- repo: https://github.com/zizmorcore/zizmor-pre-commit
+  rev: v1.31.1
+  hooks:
+  - id: zizmor
+
+- repo: https://github.com/rhysd/actionlint
+  rev: v1.7.12
+  hooks:
+  - id: actionlint
+    # remove ignore once actionlint recognizes this syntax
+    args: ['-ignore', 'reusable workflow call "\$/.+" at "uses" is not following the format']
