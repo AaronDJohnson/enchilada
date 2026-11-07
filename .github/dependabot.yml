@@ -6,9 +6,20 @@ updates:
     directory: /
     schedule:
       interval: monthly
+    cooldown:
+      default-days: 7
   # uv.lock is committed and enforced with --locked in CI, so it rots silently
   # without this; refreshes become PRs the existing matrix validates.
   - package-ecosystem: uv
     directory: /
     schedule:
       interval: monthly
+    cooldown:
+      default-days: 7
+  # Keep the hook revisions in .pre-commit-config.yaml current.
+  - package-ecosystem: pre-commit
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
