@@ -137,12 +137,14 @@ class Covariance:
 
     def _validated_channel_names(self) -> tuple[str, ...]:
         names = self.channel_names
-        if not isinstance(names, (tuple, list)) or not names:
+        if not isinstance(names, (tuple, list)) or any(
+            not isinstance(ch, str) for ch in names
+        ):
+            raise TypeError("channel_names must be a tuple of channel-name strings")
+        if not names:
             raise ValueError("channel_names must be a non-empty tuple of channel names")
         channels = tuple(names)
-        if any(not isinstance(ch, str) or not ch for ch in channels) or len(
-            set(channels)
-        ) != len(channels):
+        if any(not ch for ch in channels) or len(set(channels)) != len(channels):
             raise ValueError("channel_names must contain unique non-empty strings")
         reserved = set(dir(type(self))) | _FIELD_NAMES
         clashing = [ch for ch in channels if ch in reserved]
@@ -185,9 +187,12 @@ class Covariance:
                 f"pair {pair_key!r} must have a floating or complex dtype, "
                 f"got {value.dtype}"
             )
-        if not np.isfinite(value).all():
+        # Convert first: a masked array's isfinite ignores masked entries, and
+        # the conversion below drops the mask but keeps the values beneath it.
+        array = np.array(value, copy=True)
+        if not np.isfinite(array).all():
             raise ValueError(f"pair {pair_key!r} must be finite")
-        return np.array(value, copy=True)
+        return array
 
     def _conjugate_transpose(self, array: np.ndarray) -> np.ndarray:
         if self.form == "diagonal":
@@ -239,19 +244,30 @@ class Covariance:
                     "a channel with zero variance at a point must have zero "
                     "cross-covariance there"
                 )
-        for pattern in np.unique(inactive, axis=0):
-            keep = ~pattern
-            if not keep.any():
+        if not inactive.any():
+            Covariance._require_positive_definite(matrices)
+            return
+        width = inactive.shape[1]
+        if width < 64:
+            codes = inactive @ (1 << np.arange(width))
+        else:  # too wide for one integer code (e.g. full form): group whole rows
+            codes = np.unique(inactive, axis=0, return_inverse=True)[1].reshape(-1)
+        for code in np.unique(codes):
+            keep = np.flatnonzero(~inactive[np.argmax(codes == code)])
+            if keep.size == 0:
                 continue
-            selected = matrices[np.all(inactive == pattern, axis=1)][:, keep][
-                :, :, keep
-            ]
-            try:
-                np.linalg.cholesky(selected)
-            except np.linalg.LinAlgError as exc:
-                raise ValueError(
-                    "covariance must be positive definite at every active point"
-                ) from exc
+            Covariance._require_positive_definite(
+                matrices[codes == code][:, keep[:, None], keep]
+            )
+
+    @staticmethod
+    def _require_positive_definite(matrices: np.ndarray) -> None:
+        try:
+            np.linalg.cholesky(matrices)
+        except np.linalg.LinAlgError as exc:
+            raise ValueError(
+                "covariance must be positive definite at every active point"
+            ) from exc
 
     def _assembled_full_matrix(
         self, stored: Mapping[tuple[str, str], np.ndarray]

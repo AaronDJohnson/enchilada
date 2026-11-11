@@ -1,5 +1,8 @@
 """Covariance: one array per channel pair, read through channel attributes."""
 
+import copy
+import pickle
+
 import numpy as np
 import pytest
 
@@ -38,6 +41,18 @@ class TestConstruction:
         np.testing.assert_array_equal(cov.pairs[("A", "E")], 0.5 - 0.25j)
         np.testing.assert_array_equal(cov.EA, 0.5 + 0.25j)
 
+    def test_canonical_orientation_follows_channel_order_not_alphabet(self):
+        pairs = diagonal_pairs()
+        pairs[("A", "E")] = np.full(8, 0.5 + 0.25j)
+        cov = Covariance(pairs, channel_names=("E", "A"))
+        assert set(cov.pairs) == {("E", "E"), ("A", "A"), ("E", "A")}
+        np.testing.assert_array_equal(cov.pairs[("E", "A")], 0.5 - 0.25j)
+        np.testing.assert_array_equal(cov.AE, 0.5 + 0.25j)
+
+    def test_pairs_must_be_a_mapping(self):
+        with pytest.raises(TypeError, match="dict of"):
+            Covariance([("A", "A")], channel_names=("A",))
+
     def test_both_orientations_are_rejected(self):
         pairs = diagonal_pairs()
         pairs[("A", "E")] = np.zeros(8)
@@ -73,6 +88,13 @@ class TestConstruction:
             ),
             (lambda p: p.update({("A", "A"): -np.ones(8)}), ValueError, "nonnegative"),
             (lambda p: p.update({("A", "E"): np.zeros(7)}), ValueError, "one shape"),
+            (
+                lambda p: p.update(
+                    {("A", "A"): np.ma.masked_invalid([1.0, np.nan] + [1.0] * 6)}
+                ),
+                ValueError,
+                "finite",
+            ),
         ],
     )
     def test_structural_rules(self, mutate, error, match):
@@ -133,6 +155,50 @@ class TestConstruction:
             Covariance({("A", "A"): np.ones(4)}, channel_names=("A", "A"))
         with pytest.raises(ValueError, match="non-empty tuple"):
             Covariance({}, channel_names=())
+        with pytest.raises(TypeError, match="tuple of channel-name strings"):
+            Covariance({("A", "A"): np.ones(4)}, channel_names="AE")
+        with pytest.raises(TypeError, match="tuple of channel-name strings"):
+            Covariance({("A", "A"): np.ones(4)}, channel_names=("A", 1))
+
+
+def edge_pixel_pairs():
+    """A (5, 6) WDM-like diagonal: row 0 is an edge band in every channel, row 4
+    is zero in A only, and the A-E cross term lives where both are active."""
+    a = np.ones((5, 6))
+    a[[0, 4]] = 0.0
+    e = np.full((5, 6), 2.0)
+    e[0] = 0.0
+    t = np.full((5, 6), 3.0)
+    t[0] = 0.0
+    ae = np.zeros((5, 6))
+    ae[1:4] = 0.3
+    return {("A", "A"): a, ("E", "E"): e, ("T", "T"): t, ("A", "E"): ae}
+
+
+class TestInactivePoints:
+    def test_structural_zeros_construct(self):
+        cov = Covariance(edge_pixel_pairs(), channel_names=("A", "E", "T"))
+        np.testing.assert_array_equal(cov.AE[cov.A == 0], 0.0)
+        np.testing.assert_array_equal(cov.AE[1:4], 0.3)
+        np.testing.assert_array_equal(cov.T[0], 0.0)
+
+    def test_active_pixels_must_still_be_positive_definite(self):
+        pairs = edge_pixel_pairs()
+        pairs[("A", "E")][2, 3] = 1.5  # > sqrt(C_AA C_EE) = sqrt(2) there
+        with pytest.raises(ValueError, match="positive definite"):
+            Covariance(pairs, channel_names=("A", "E", "T"))
+
+    def test_more_than_64_channels_group_inactive_points_exactly(self):
+        # Bit codes would collide past 64 channels and skip point 1's check.
+        names = tuple(f"c{i}" for i in range(65))
+        pairs = {(ch, ch): np.ones(2) for ch in names}
+        pairs[("c64", "c64")] = np.array([0.0, 1.0])  # inactive at point 0 only
+        pairs[("c0", "c64")] = np.array([0.0, 1.5])  # not PD at point 1
+        with pytest.raises(ValueError, match="positive definite"):
+            Covariance(pairs, channel_names=names)
+        pairs[("c0", "c64")] = np.array([0.0, 0.5])
+        cov = Covariance(pairs, channel_names=names)
+        assert cov.c64[0] == 0.0
 
 
 class TestAccess:
@@ -198,6 +264,9 @@ class TestAccess:
         assert not hasattr(cov, "T")
         assert hasattr(cov, "AE")
 
+    def test_uninitialised_instance_has_no_channel_attributes(self):
+        assert not hasattr(object.__new__(Covariance), "A")
+
     def test_pair_rejects_unknown_channels(self):
         cov = Covariance(diagonal_pairs(), channel_names=AE)
         with pytest.raises(ValueError, match="unknown channel 'T'"):
@@ -226,3 +295,14 @@ class TestCopy:
         assert not np.shares_memory(snapshot.A, cov.A)
         assert not snapshot.A.flags.writeable
         np.testing.assert_array_equal(snapshot.A, cov.A)
+
+    def test_deepcopy_and_pickle_round_trip(self):
+        pairs = diagonal_pairs()
+        pairs[("A", "E")] = np.full(8, 0.5 + 0.25j)
+        cov = Covariance(pairs, channel_names=AE)
+        for restored in (copy.deepcopy(cov), pickle.loads(pickle.dumps(cov))):
+            assert restored.channel_names == cov.channel_names
+            assert restored.form == cov.form
+            assert set(restored.pairs) == set(cov.pairs)
+            for key, arr in cov.pairs.items():
+                np.testing.assert_array_equal(restored.pairs[key], arr)
