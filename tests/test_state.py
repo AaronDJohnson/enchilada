@@ -175,7 +175,9 @@ def test_failed_adoption_preserves_rng_and_published_state(observed, failure):
     assert actual.ledger["counter"].parameters == expected.ledger["counter"].parameters
 
 
-def test_covariance_input_and_output_snapshots_are_isolated(observed):
+# "time" on time observations takes the Wheel's same-grid short-circuit.
+@pytest.mark.parametrize("data_domain", [None, "time"])
+def test_covariance_input_and_output_snapshots_are_isolated(observed, data_domain):
     covariance = Covariance.from_variance(observed, 1)
     wheel = Wheel(observed, initial_covariance=covariance)
     covariance.pairs[("A", "A")].setflags(write=True)
@@ -190,7 +192,11 @@ def test_covariance_input_and_output_snapshots_are_isolated(observed):
             covariance.pairs[("A", "A")][:] *= 4
             return current_block_state
 
-    wheel.add(EditsNoise(), initial_block_state=counter_initial_result(observed))
+    wheel.add(
+        EditsNoise(),
+        initial_block_state=counter_initial_result(observed),
+        data_domain=data_domain,
+    )
     wheel.run(1)
     assert wheel.covariance.noise_variance("A", observed) == 1
 

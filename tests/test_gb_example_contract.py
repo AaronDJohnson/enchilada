@@ -79,7 +79,9 @@ def test_gb_prior_keeps_continuation_on_its_block(gb_model, spectral_context):
 def test_gb_rejects_covariance_without_native_frequency_psd(gb_model, spectral_context):
     data, _ = spectral_context
     time_noise = Covariance.from_variance(transform(data, "time"), 1.0)
-    with pytest.raises(ValueError, match="native frequency.*covariance"):
+    with pytest.raises(
+        ValueError, match="frequency-domain covariance on the data grid"
+    ):
         gb_model.draw_gb_prior(
             make_block(gb_model), data, time_noise, rng=np.random.default_rng(0)
         )
@@ -100,10 +102,35 @@ def test_gb_rejects_covariance_on_a_different_grid(gb_model, spectral_context):
             return np.ones_like(frequencies)
 
     noise = Covariance.from_psd(transform(shorter, "frequency"), UnitPSD())
-    with pytest.raises(ValueError, match="native frequency.*covariance"):
+    with pytest.raises(
+        ValueError, match="frequency-domain covariance on the data grid"
+    ):
         gb_model.draw_gb_prior(
             make_block(gb_model), data, noise, rng=np.random.default_rng(0)
         )
+
+
+def test_gb_context_requires_independent_channels_and_one_psd_value_per_bin(gb_model):
+    data = L1Data(
+        channel_data={ch: np.zeros(33, dtype=complex) for ch in ("A", "E")},
+        sample_rate_hz=1.0,
+        num_time_samples=64,
+        channel_names=("A", "E"),
+        tdi_generation="1.5",
+        physical_observable="fractional_frequency",
+        data_domain="frequency",
+    )
+    block = make_block(gb_model)
+    ones = np.ones(33)
+    correlated = Covariance.like(data, {"A": ones, "E": ones, "AE": np.full(33, 0.5)})
+    with pytest.raises(ValueError, match="uncorrelated channels"):
+        block._context(data, correlated)
+    full = Covariance.like(data, {"A": np.eye(33), "E": np.eye(33)})
+    with pytest.raises(ValueError, match="one PSD value per bin"):
+        block._context(data, full)
+    _, psds = block._context(data, Covariance.like(data, {"A": ones, "E": ones}))
+    assert set(psds) == {"A", "E"}
+    np.testing.assert_allclose(psds["A"], 2.0 * ones / data.Tobs)
 
 
 @pytest.mark.parametrize("storage_domain", ["time", "wdm"])

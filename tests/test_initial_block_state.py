@@ -209,9 +209,18 @@ def test_invalid_seed_leaves_registration_and_rng_unchanged(
         )
     else:
         invalid = replace(invalid, parameters={"amplitude": CannotCopy()})
+    # Each kind has its own error, so the seam's NotImplementedError (a
+    # RuntimeError) cannot pass for an invalid seed being rejected.
+    expected, message = {
+        "type": (TypeError, "initial_block_state must be a BlockState"),
+        "shape": (ValueError, "length 3, expected"),
+        "nonfinite": (ValueError, "finite"),
+        "covariance": (ValueError, "shape"),
+        "copy": (RuntimeError, "seed state cannot be copied"),
+    }[failure]
     wheel = Wheel(observed, random_seed=7)
     before = deepcopy(wheel._rng.bit_generator.state)
-    with pytest.raises((ValueError, TypeError, RuntimeError)):
+    with pytest.raises(expected, match=message):
         wheel.add(SeededBlock(), initial_block_state=invalid, data_domain=block_domain)
     assert len(wheel.ledger) == 0
     assert wheel._blocks == []
@@ -273,6 +282,7 @@ def test_seed_without_signal_can_sample_in_selected_domain(observed, with_noise)
             if with_noise:
                 current_block_state.covariance.check_compatible(conditional_residual)
                 covariance.check_compatible(conditional_residual)
+                np.testing.assert_allclose(covariance.A, 100.0)
             self.state.counter += 1
             return current_block_state
 
@@ -294,6 +304,8 @@ def test_seed_without_signal_can_sample_in_selected_domain(observed, with_noise)
     assert block.state.counter == 1
     assert initial.parameters == {"variance": 0.25}
     np.testing.assert_array_equal(wheel.residual().channel_data["A"], 5)
+    if with_noise:
+        assert wheel.covariance.noise_variance("A", observed) == pytest.approx(0.25)
 
 
 def test_seed_translation_does_not_transform_unrelated_observations(observed):

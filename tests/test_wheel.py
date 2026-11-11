@@ -1019,9 +1019,31 @@ class TestObservedDataIsChecked:
         wheel.add(PublishesUnchecked("noise"), initial_block_state=BlockState())
         with pytest.raises(ValueError, match="shape"):
             wheel.run(1)
-        assert type(wheel._covariance) is Covariance
         assert wheel.covariance.A.shape == observed.channel_data["A"].shape
         assert wheel.covariance.noise_variance("A", observed) == 1.0
+
+        # On the right grid, validation passes; only the copy keeps the stored
+        # object a plain Covariance rather than the caller's subclass.
+        compatible = UncheckedCovariance(
+            dict(Covariance.from_variance(observed, 2.0).pairs),
+            channel_names=observed.channel_names,
+        )
+        wheel = Wheel(observed, initial_covariance=compatible)
+        assert type(wheel._covariance) is Covariance
+        assert wheel._covariance is not compatible
+
+        class PublishesCompatible(EchoBlock):
+            def sample(
+                self, conditional_residual, covariance, current_block_state, *, rng
+            ):
+                return BlockState(covariance=compatible)
+
+        wheel = Wheel(observed)
+        wheel.add(PublishesCompatible("noise"), initial_block_state=BlockState())
+        wheel.run(1)
+        assert type(wheel._covariance) is Covariance
+        assert wheel._covariance is not compatible
+        assert type(wheel.ledger["noise"].covariance) is Covariance
 
 
 class TestNoiseOwnership:

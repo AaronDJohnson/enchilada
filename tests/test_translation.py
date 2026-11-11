@@ -100,7 +100,9 @@ def test_result_conversion_preserves_state_without_aliasing():
 def test_noise_only_state_needs_reference_data_and_parameters_only_does_not():
     data = observations()
     result = BlockState(covariance=Covariance.from_variance(data, 1.0))
-    with pytest.raises(ValueError, match="reference_data"):
+    with pytest.raises(
+        ValueError, match="covariance requires its source reference_data"
+    ):
         transform(result, "frequency")
     with pytest.raises(NotImplementedError, match="section 6"):
         transform(result, "frequency", reference_data=data)

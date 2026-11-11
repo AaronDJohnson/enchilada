@@ -341,6 +341,27 @@ def test_sine_requires_time_white_noise_on_the_data_grid():
         block.sample(data, noise, prior, rng=np.random.default_rng(1))
 
 
+def test_sine_rejects_full_form_covariance():
+    from enchilada import Covariance, L1Data
+
+    toy = load_example("toy_fit")
+    # A small grid keeps the (points, points) full-form block cheap.
+    data = L1Data(
+        {"A": np.zeros(16)},
+        sample_rate_hz=0.1,
+        tdi_generation="2.0",
+        physical_observable="fractional_frequency",
+    )
+    block = toy.SineBlock("slow", 0.004)
+    prior = toy.draw_sine_prior(block, data, rng=np.random.default_rng(0))
+    noise = Covariance.like(data, {"A": np.eye(16)})
+    assert noise.form == "full"
+    with pytest.raises(
+        ValueError, match="one constant white-noise variance per channel"
+    ):
+        block.sample(data, noise, prior, rng=np.random.default_rng(1))
+
+
 def test_white_noise_prior_requires_time_data():
     toy = load_example("toy_fit")
     block = toy.WhiteNoiseBlock("noise")

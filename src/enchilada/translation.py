@@ -78,8 +78,8 @@ def transform(
     """Return an independent representation of data, covariance or a block state.
 
     Args:
-        value: Object to translate. A BlockState with a signal needs
-            reference_data because its observation grid is intentionally external.
+        value: Object to translate. A BlockState with a signal or covariance
+            needs reference_data because its grid is intentionally external.
         target_domain: "time", "frequency", or "wdm".
         num_frequency_divisions: WDM frequency divisions (Nf, yielding Nf+1 rows).
             Specify this or num_time_divisions on first conversion into WDM.
@@ -87,8 +87,8 @@ def transform(
             num_time_samples; both counts must be positive even integers. Both
             may be supplied if consistent. WDM-to-WDM defaults to its current grid.
         reference_data: Required for a Covariance, as the L1Data on its current
-            grid, and for a BlockState with a signal, as that signal's source
-            grid.
+            grid, and for a BlockState with a signal or covariance, as their
+            source grid.
 
     Preserves observation metadata, orbit, and published physical parameters.
     Signal arrays follow dt*rfft and the WDM backend's normalized-edge convention.
@@ -194,23 +194,10 @@ def transform(
             )
         covariance = source_state.covariance
         if covariance is not None:
-            # The covariance is on reference_data's grid, like the signal.
-            # Pass the resolved target grid so both land on the same one.
-            if (
-                signal is not None
-                and reference_data is not None
-                and target_domain == "wdm"
-            ):
-                grid = _target_grid(
-                    target_domain,
-                    reference_data.num_time_samples,
-                    reference_data.wdm_grid,
-                    num_frequency_divisions,
-                    num_time_divisions,
+            if reference_data is None:
+                raise ValueError(
+                    "a BlockState covariance requires its source reference_data"
                 )
-                assert grid is not None  # target_domain is WDM here.
-                num_frequency_divisions = grid.num_frequency_divisions
-                num_time_divisions = grid.num_time_divisions
             covariance = transform(
                 covariance,
                 target_domain,

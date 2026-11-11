@@ -6,7 +6,8 @@ complete initial results using a separate RNG; an on_cycle_complete callback col
 posterior chains outside the blocks. These blocks request time-domain inputs;
 Wheel can also run them on Fourier or WDM observations using data_domain="time"
 once covariance translation lands (design spec section 6). Their likelihood
-requires white time noise with one variance per sample. Run with:
+requires time-domain noise with one constant white-noise variance per channel.
+Run with:
 
     uv run --no-sync python examples/toy_fit.py
 """
@@ -56,8 +57,8 @@ class SineBlock:
             raise ValueError("SineBlock requires a white-noise covariance")
         if conditional_residual.data_domain != "time" or covariance.form != "diagonal":
             raise ValueError(
-                "SineBlock requires time-domain white noise "
-                "with one variance per sample"
+                "SineBlock requires time-domain noise with one constant "
+                "white-noise variance per channel"
             )
         try:
             covariance.check_compatible(conditional_residual)

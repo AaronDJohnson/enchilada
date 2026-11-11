@@ -131,9 +131,9 @@ class GBBlock:
     moves or tempering would require carrying their additional evolving state.
 
     Register with ``wheel.add(block, initial_block_state=initial,
-    data_domain="frequency")``. This narrowband likelihood requires native
-    frequency covariance with independent channels.
-    The covariance must be on the frequency grid of the data it accompanies.
+    data_domain="frequency")``. This narrowband likelihood requires a
+    frequency-domain covariance on the data grid, with one PSD value per bin and
+    independent channels.
     """
 
     SUPPORTED_CHANNELS = ("A", "E")
@@ -194,7 +194,7 @@ class GBBlock:
             covariance.check_compatible(conditional_residual)
         except ValueError as exc:
             raise ValueError(
-                f"{self.name}: this narrowband likelihood requires a native "
+                f"{self.name}: this narrowband likelihood requires a "
                 "frequency-domain covariance on the data grid"
             ) from exc
         if covariance.form != "diagonal":
@@ -339,8 +339,9 @@ def draw_gb_prior(
 ) -> BlockState:
     """Initialize block-owned walkers and return the initial physical publication.
 
-    Call this example helper with frequency-domain data and native frequency
-    covariance, using an initialization RNG separate from Wheel's sampling RNG.
+    Call this example helper with frequency-domain data and a frequency-domain
+    covariance on the data grid, using an initialization RNG separate from
+    Wheel's sampling RNG.
     This resets ``block.state``. Wheel never calls the helper or draws initial
     parameters itself. A fresh block instance belongs to each independent campaign.
     """

@@ -70,7 +70,14 @@ def test_toy_time_blocks_preserve_draws_on_translated_observations(
         wheels.append(wheel)
 
     np.testing.assert_allclose(chains[1], chains[0], rtol=1e-12, atol=1e-12)
-    assert wheels[1].covariance is not None
+    # Read the translated wheel's covariance back on the time grid of the
+    # time-domain reference wheel, so WDM storage is comparable too.
+    restored_covariance = transform(
+        wheels[1].covariance, "time", reference_data=translated_data
+    )
+    assert restored_covariance.noise_variance("A", data) == pytest.approx(
+        wheels[0].covariance.noise_variance("A", data), rel=1e-12
+    )
     restored_residual = transform(wheels[1].working_residual, "time")
     np.testing.assert_allclose(
         restored_residual.channel_data["A"],

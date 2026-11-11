@@ -30,6 +30,7 @@ def test_noise_only_wdm_result_can_reuse_grid_with_compatible_time_reference(obs
     assert converted.parameters == original.parameters
     assert converted.template is None
     assert converted.covariance is not covariance
+    np.testing.assert_array_equal(converted.covariance.A, covariance.A)
 
 
 def test_omitted_domain_and_explicit_same_domain_both_receive_the_covariance(observed):
@@ -53,6 +54,37 @@ def test_omitted_domain_and_explicit_same_domain_both_receive_the_covariance(obs
     wheel.run(1)
     assert received == [("sample", "default", "time"), ("sample", "explicit", "time")]
     assert wheel.covariance.noise_variance("A", observed) == 2.0
+
+
+def test_same_grid_block_receives_the_covariance_without_the_seam(
+    observed, monkeypatch
+):
+    """An explicit domain equal to the observations' skips transform() for the
+    covariance: the Wheel already validated it on that grid."""
+    import enchilada.wheel
+
+    delegate = enchilada.wheel.transform
+
+    def transform_without_covariance(value, *args, **kwargs):
+        if isinstance(value, Covariance):
+            raise AssertionError("a same-grid covariance went through transform()")
+        return delegate(value, *args, **kwargs)
+
+    monkeypatch.setattr(enchilada.wheel, "transform", transform_without_covariance)
+    received = []
+
+    class RecordCovariance:
+        name = "explicit"
+
+        def sample(self, conditional_residual, covariance, current_block_state, *, rng):
+            covariance.check_compatible(conditional_residual)
+            received.append(covariance.noise_variance("A", conditional_residual))
+            return current_block_state
+
+    wheel = Wheel(observed, Covariance.from_variance(observed, 2.0))
+    wheel.add(RecordCovariance(), initial_block_state=BlockState(), data_domain="time")
+    wheel.run(2)
+    assert received == [2.0, 2.0]
 
 
 @pytest.mark.parametrize(

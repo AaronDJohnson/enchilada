@@ -66,7 +66,10 @@ class Wheel:
     separately from L1Data. The original data domain stays canonical. Register
     a block with data_domain to translate its inputs and returned estimates.
     The block that owns the current covariance must return it on every call;
-    other blocks can omit covariance without changing it.
+    other blocks can omit covariance without changing it. Until the covariance
+    translation layer lands (design spec section 6), a block whose domain or
+    grid differs from the observations raises NotImplementedError at run while
+    a covariance is set, or at add if its seed carries one.
     """
 
     def __init__(
@@ -178,7 +181,10 @@ class Wheel:
         covariance and current state. None preserves their current domains.
         For WDM, specify either division count; the other follows from the
         observation length. Both counts must be even. An existing observation
-        WDM grid is reused if neither count is supplied.
+        WDM grid is reused if neither count is supplied. Until the covariance
+        translation layer lands (design spec section 6), a seed covariance for a
+        block whose domain or grid differs from the observations raises
+        NotImplementedError here.
         """
         if not isinstance(initial_block_state, BlockState):
             raise TypeError("initial_block_state must be a BlockState")
