@@ -25,6 +25,7 @@
 - `Wheel.add` with a block domain and a noise-only initial state treats the covariance as being on the block's grid (a reference in that domain is built from the observations), so the seam applies uniformly.
 - Six tests, not four, exercise covariance translation through the Wheel and get the strict `xfail`; `examples/domain_translation.py` loses its covariance part instead of being xfailed, so its test keeps passing on the data and state parts.
 - `FixedLISANoise.psd` in the GB example floors its frequencies because `from_psd` now evaluates f = 0.
+- Full-form diagonal blocks may be complex Hermitian (frequency-domain `E[Z_k Z_l*]`); only the diagonal form requires real diagonal pairs. Found during Task 2; spec 4.1 and 1.4 amended to match.
 
 ---
 

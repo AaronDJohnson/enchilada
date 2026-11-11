@@ -133,7 +133,8 @@ For XYZ to AET with matrix `M` (section 3.5), every derived pair is
 over all ordered `(i, j)`, using `pair()` so that reversed orientations and
 absent pairs are handled. The sum is elementwise in the point indices, so the
 same expression serves both forms. AET to XYZ uses the transpose, which is the
-inverse because `M` is orthogonal.
+inverse because `M` is orthogonal. In the diagonal form the derived diagonals
+take `.real`; in the full form the derived diagonal blocks stay Hermitian.
 
 ### 1.5 Methods kept
 
@@ -237,9 +238,10 @@ is white and equal in A, E, T.
   Keys are normalised to canonical orientation; both orientations of one pair
   raise `ValueError`. Every `(ch, ch)` must be present.
 - Values: `np.ndarray` of floating or complex floating dtype (`TypeError`
-  otherwise), all finite, all of one shape (`ValueError`). Diagonal pairs have
-  real dtype and are nonnegative. Stored arrays are independent read-only
-  copies.
+  otherwise), all finite, all of one shape (`ValueError`). Diagonal form: each
+  channel's own pair is real and nonnegative; full form: each channel's own
+  block is Hermitian (complex allowed) with a real nonnegative point-diagonal,
+  stored exactly Hermitian. Stored arrays are independent read-only copies.
 - `form` is `"diagonal"` or `"full"`. For `"full"` the shape must be `S + S`,
   each diagonal pair must be Hermitian under the axis swap within roundoff and
   is stored exactly symmetrised, as today.

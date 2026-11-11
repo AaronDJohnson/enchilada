@@ -73,9 +73,10 @@ class Covariance:
 
     Construction checks what needs no grid: required diagonals, known
     channels, one orientation per pair, finite floating arrays of one shape,
-    real nonnegative diagonals, Hermitian full-form diagonal blocks, and
-    positive definiteness over the channels with nonzero variance at each
-    point. Stored arrays are independent read-only copies. Equality is
+    real nonnegative diagonals in the diagonal form, Hermitian (possibly
+    complex) diagonal blocks with real nonnegative point-diagonal in the full
+    form, and positive definiteness over the channels with nonzero variance at
+    each point. Stored arrays are independent read-only copies. Equality is
     identity; compare arrays explicitly.
     """
 
@@ -120,10 +121,10 @@ class Covariance:
                     "form='full' arrays need shape S + S for one grid shape S, "
                     f"got {shape}"
                 )
-        for ch in channels:
-            if np.iscomplexobj(stored[(ch, ch)]):
-                raise ValueError(f"diagonal pair {(ch, ch)!r} must be real")
         if self.form == "diagonal":
+            for ch in channels:
+                if np.iscomplexobj(stored[(ch, ch)]):
+                    raise ValueError(f"diagonal pair {(ch, ch)!r} must be real")
             for ch in channels:
                 if np.any(stored[(ch, ch)] < 0):
                     raise ValueError(f"diagonal pair {(ch, ch)!r} must be nonnegative")
@@ -290,7 +291,7 @@ class Covariance:
     def _symmetrised_full_form(
         self, stored: dict[tuple[str, str], np.ndarray]
     ) -> dict[tuple[str, str], np.ndarray]:
-        """Require Hermitian diagonal blocks and store them exactly symmetric."""
+        """Require Hermitian diagonal blocks and store them exactly Hermitian."""
         result = dict(stored)
         for ch in self.channel_names:
             values = stored[(ch, ch)]
@@ -306,7 +307,7 @@ class Covariance:
                 raise ValueError(f"diagonal pair {(ch, ch)!r} must be Hermitian")
             with np.errstate(under="ignore"):
                 symmetric = 0.5 * (matrix + matrix.conj().T)
-            result[(ch, ch)] = symmetric.real.reshape(values.shape)
+            result[(ch, ch)] = symmetric.reshape(values.shape)
         return result
 
     # ---- access -----------------------------------------------------------
@@ -433,7 +434,8 @@ class Covariance:
                                 source_first, source_second
                             )
                 assert isinstance(total, np.ndarray)
-                pairs[(first, second)] = total.real if first == second else total
+                real_diagonal = first == second and self.form == "diagonal"
+                pairs[(first, second)] = total.real if real_diagonal else total
         return Covariance(pairs, channel_names=target, form=self.form)
 
 

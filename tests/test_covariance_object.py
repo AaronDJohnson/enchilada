@@ -123,6 +123,30 @@ class TestConstruction:
         cov = Covariance(pairs, channel_names=AE, form="full")
         np.testing.assert_array_equal(cov.A, cov.A.T)
 
+    def test_full_form_accepts_complex_hermitian_diagonal_blocks(self):
+        pairs = full_pairs()
+        block = np.diag(np.full(4, 5.0)) + 0.5j * (np.eye(4, k=1) - np.eye(4, k=-1))
+        block[0, 1] += 1e-15  # roundoff asymmetry, symmetrised on storage
+        block[2, 2] += 1e-15j  # roundoff on the point-diagonal
+        pairs[("A", "A")] = block
+        cov = Covariance(pairs, channel_names=AE, form="full")
+        assert np.iscomplexobj(cov.A)
+        np.testing.assert_array_equal(cov.A, cov.A.conj().T)
+        np.testing.assert_array_equal(np.diagonal(cov.A).imag, 0.0)
+
+    @pytest.mark.parametrize(
+        "imaginary",
+        [
+            0.5j * (np.eye(4, k=1) + np.eye(4, k=-1)),  # not conjugate-symmetric
+            0.5j * np.eye(4),  # imaginary point-diagonal
+        ],
+    )
+    def test_full_form_rejects_non_hermitian_complex_blocks(self, imaginary):
+        pairs = full_pairs()
+        pairs[("A", "A")] = np.diag(np.full(4, 5.0)) + imaginary
+        with pytest.raises(ValueError, match="Hermitian"):
+            Covariance(pairs, channel_names=AE, form="full")
+
     def test_zero_variance_point_must_have_zero_cross_terms(self):
         pairs = diagonal_pairs()
         pairs[("A", "A")] = pairs[("A", "A")].copy()
@@ -334,6 +358,40 @@ def explicit_aet(cov):
     return out
 
 
+def full_xyz_pairs(n=3, complex_blocks=False):
+    rng = np.random.default_rng(11)
+    base = np.diag(np.full(n, 5.0)) + 0.5 * np.eye(n, k=1) + 0.5 * np.eye(n, k=-1)
+    pairs = {
+        ("X", "X"): base,
+        ("Y", "Y"): 2 * base,
+        ("Z", "Z"): 3 * base,
+        ("X", "Y"): 0.2 * rng.standard_normal((n, n)),
+        ("X", "Z"): 0.1 * np.eye(n),
+        ("Y", "Z"): 0.2 * rng.standard_normal((n, n)),
+    }
+    if complex_blocks:
+        twist = 0.3j * (np.eye(n, k=1) - np.eye(n, k=-1))  # Hermitian
+        pairs[("X", "X")] = pairs[("X", "X")] + twist
+        pairs[("Y", "Y")] = pairs[("Y", "Y")] - twist
+        pairs[("Z", "Z")] = pairs[("Z", "Z")] + 2 * twist
+        pairs[("X", "Y")] = pairs[("X", "Y")] + 0.2j * rng.standard_normal((n, n))
+        pairs[("Y", "Z")] = pairs[("Y", "Z")] + 0.2j * rng.standard_normal((n, n))
+    return pairs
+
+
+def block_product_aet(cov):
+    """Reference for the full form: (M kron I) C (M kron I)^T on the 3n x 3n C."""
+    n = cov.X.shape[0]
+    assembled = np.block([[cov.pair(i, j) for j in XYZ] for i in XYZ])
+    rotation = np.kron(AET_FROM_XYZ, np.eye(n))
+    product = rotation @ assembled @ rotation.T
+    return {
+        (first, second): product[a * n : (a + 1) * n, b * n : (b + 1) * n]
+        for a, first in enumerate(AET)
+        for b, second in enumerate(AET)
+    }
+
+
 class TestDerivedBasis:
     def test_aet_matches_explicit_matrix_product(self):
         cov = Covariance(xyz_pairs(), channel_names=XYZ)
@@ -369,6 +427,27 @@ class TestDerivedBasis:
             for j in range(3)
         )
         np.testing.assert_allclose(aet.A, expected_aa, atol=1e-14)
+
+    def test_full_form_attributes_match_block_product(self):
+        cov = Covariance(full_xyz_pairs(), channel_names=XYZ, form="full")
+        reference = block_product_aet(cov)
+        assert not np.iscomplexobj(cov.in_basis("AET").A)  # real stays real
+        for name in ("A", "E", "T", "AE", "AT", "ET", "EA"):
+            key = (name, name) if len(name) == 1 else (name[0], name[1])
+            np.testing.assert_allclose(getattr(cov, name), reference[key], atol=1e-14)
+
+    def test_complex_full_form_keeps_hermitian_diagonal_blocks(self):
+        cov = Covariance(
+            full_xyz_pairs(complex_blocks=True), channel_names=XYZ, form="full"
+        )
+        reference = block_product_aet(cov)
+        aet = cov.in_basis("AET")
+        assert np.iscomplexobj(aet.A)
+        for first in AET:
+            for second in AET:
+                np.testing.assert_allclose(
+                    aet.pair(first, second), reference[(first, second)], atol=1e-14
+                )
 
     def test_round_trip_and_caching(self):
         cov = Covariance(xyz_pairs(), channel_names=XYZ)
