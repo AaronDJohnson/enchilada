@@ -102,8 +102,10 @@ def transform(
         num_time_divisions: WDM time divisions. The other count is derived from
             num_time_samples; both counts must be positive even integers. Both
             may be supplied if consistent. WDM-to-WDM defaults to its current grid.
-        reference_data: Source signal grid for a BlockState. If supplied for a
-            covariance, its channel names, sampling grid and epoch must agree.
+        reference_data: Required for a Covariance, as the L1Data on its current
+            grid, and for a BlockState with a signal, as that signal's source
+            grid. If supplied for a DataCovariance or TranslatedCovariance, its
+            channel names, sampling grid and epoch must agree.
 
     Preserves observation metadata, orbit, and published physical parameters.
     Signal arrays follow dt*rfft and the WDM backend's normalized-edge convention.
@@ -151,16 +153,19 @@ def transform(
                 "its current grid"
             )
         value.check_compatible(reference_data)
-        if target_domain == reference_data.data_domain:
-            grid = _target_grid(
-                target_domain,
-                reference_data.num_time_samples,
-                reference_data.wdm_grid,
-                num_frequency_divisions,
-                num_time_divisions,
-            )
-            if target_domain != "wdm" or grid == reference_data.wdm_grid:
-                return value.copy()
+        grid = _target_grid(
+            target_domain,
+            reference_data.num_time_samples,
+            reference_data.wdm_grid,
+            num_frequency_divisions,
+            num_time_divisions,
+        )
+        # A time or frequency target and reference both have grid None.
+        if (
+            target_domain == reference_data.data_domain
+            and grid == reference_data.wdm_grid
+        ):
+            return value.copy()
         raise NotImplementedError(
             "covariance translation between domains is not implemented; see "
             "docs/superpowers/specs/2026-11-10-covariance-object-design.md section 6"

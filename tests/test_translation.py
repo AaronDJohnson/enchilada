@@ -291,6 +291,36 @@ def test_covariance_cross_domain_transform_is_the_seam():
         transform(cov, "time")
     with pytest.raises(ValueError, match="shape"):
         transform(cov, "time", reference_data=observations(32))
+    # Validation precedes the domain decision, so a cross-domain target with an
+    # incompatible reference is still a ValueError.
+    with pytest.raises(ValueError, match="shape"):
+        transform(cov, "frequency", reference_data=observations(32))
+    # The target grid is resolved first, so a bad count fails as ValueError.
+    with pytest.raises(ValueError, match="positive even integer"):
+        transform(cov, "wdm", num_frequency_divisions=7, reference_data=data)
+
+
+def test_covariance_wdm_same_grid_copies_and_regrid_is_the_seam_without_backend():
+    grid = WDMGrid(num_frequency_divisions=8, num_time_divisions=8)
+    active = np.where(grid.active_mask, 1.0, 0.0)
+    wdm = L1Data(
+        channel_data={name: active.copy() for name in ("A", "E")},
+        channel_names=("A", "E"),
+        sample_rate_hz=4.0,
+        tdi_generation="2.0",
+        physical_observable="fractional_frequency",
+        data_domain="wdm",
+    )
+    assert wdm.wdm_grid == grid
+    cov = Covariance.like(wdm, {name: active for name in ("A", "E")})
+    for counts in ({}, {"num_frequency_divisions": 8}, {"num_time_divisions": 8}):
+        same = transform(cov, "wdm", reference_data=wdm, **counts)
+        np.testing.assert_array_equal(same.A, cov.A)
+        assert not np.shares_memory(same.A, cov.A)
+    with pytest.raises(NotImplementedError, match="section 6"):
+        transform(cov, "wdm", num_frequency_divisions=4, reference_data=wdm)
+    with pytest.raises(NotImplementedError, match="section 6"):
+        transform(cov, "time", reference_data=wdm)
 
 
 @requires_wdm
@@ -301,5 +331,6 @@ def test_covariance_wdm_regrid_is_the_seam_but_same_grid_copies():
     cov = Covariance.like(wdm, {name: variances for name in wdm.channel_names})
     same = transform(cov, "wdm", num_frequency_divisions=8, reference_data=wdm)
     np.testing.assert_array_equal(same.A, cov.A)
+    assert not np.shares_memory(same.A, cov.A)
     with pytest.raises(NotImplementedError):
         transform(cov, "wdm", num_frequency_divisions=4, reference_data=wdm)
