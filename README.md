@@ -18,6 +18,11 @@ the data minus all other blocks' signals and the block's accepted physical state
 then validates and records the returned estimate.
 Waveforms, likelihoods, and prior/conditional sampling remain model code.
 
+![The enchilada Wheel: blocks take turns around a hub that owns the data, residual, noise covariance, and ledger](docs/wheel.svg)
+
+*Blocks take turns clockwise, in registration order. enchilada owns the hub, the
+spokes, and the translation ring; everything on the ring is model code.*
+
 ## Install
 
 Requires Python ≥ 3.12 (floor set by lisaorbits).

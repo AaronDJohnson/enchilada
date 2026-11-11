@@ -1,0 +1,143 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1010" width="1000" height="1010" role="img" aria-label="The enchilada Wheel: blocks take turns around a hub that owns the data, residual, noise covariance and ledger. Each block receives the data minus every other block's signal and returns a BlockState that the Wheel validates and adopts atomically.">
+<title>enchilada: one Gibbs cycle around the Wheel</title>
+<defs>
+<marker id="m-in" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#5c5550"/></marker>
+<marker id="m-cycle" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#aaa197"/></marker>
+<marker id="m-mbhb" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c4521a"/></marker>
+<marker id="m-ucb" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#156a9e"/></marker>
+<marker id="m-emri" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#86307f"/></marker>
+<marker id="m-noise" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#b31d4c"/></marker>
+<marker id="m-sgwb" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#1d5b6f"/></marker>
+<marker id="m-your-block" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#6e655d"/></marker>
+<marker id="m-cycle-big" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="4.2" markerHeight="4.2" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#aaa197"/></marker>
+<path id="tp-trans" d="M362.4,358.6 A177,177 0 0 1 460.2,297.5" fill="none"/>
+<path id="tp-trans2" d="M530.7,295.7 A177,177 0 0 1 641.4,363.5" fill="none"/>
+<path id="tp-enchilada" d="M316.4,576.0 A212,212 0 0 0 500.0,682.0" fill="none"/>
+<path id="tp-boundary" d="M500.0,682.0 A212,212 0 0 0 683.6,576.0" fill="none"/>
+</defs>
+<rect x="0.5" y="0.5" width="999" height="1009" rx="18" fill="#fffdf9" stroke="#e6ddd0"/>
+<text x="32" y="46" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="22" font-weight="700" fill="#2a2522">The enchilada Wheel</text>
+<text x="32" y="70" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13.5" fill="#6e655d">one blocked-Gibbs cycle: each block takes a turn, in registration order</text>
+<circle cx="500" cy="470" r="222" fill="#f6e7cd" stroke="#d4b383" stroke-width="1.5"/>
+<circle cx="500" cy="470" r="170" fill="none" stroke="#d4b383" stroke-width="1.6" stroke-dasharray="5 4"/>
+<text font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" font-weight="600" fill="#8a5a1e"><textPath href="#tp-trans" startOffset="50%" text-anchor="middle">transform()</textPath></text>
+<text font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#8a5a1e"><textPath href="#tp-trans2" startOffset="50%" text-anchor="middle">time ⇄ freq ⇄ wdm</textPath></text>
+<text font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="700" letter-spacing="2" fill="#8a5a1e"><textPath href="#tp-enchilada" startOffset="50%" text-anchor="middle">ENCHILADA</textPath></text>
+<text font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" fill="#8a5a1e"><textPath href="#tp-boundary" startOffset="50%" text-anchor="middle">Block protocol boundary</textPath></text>
+<path d="M602.0,154.1 A332,332 0 0 1 752.1,253.9" fill="none" stroke="#aaa197" stroke-width="4" stroke-linecap="round" marker-end="url(#m-cycle-big)"/>
+<path d="M811.2,354.3 A332,332 0 0 1 811.2,585.7" fill="none" stroke="#aaa197" stroke-width="4" stroke-linecap="round" marker-end="url(#m-cycle-big)"/>
+<path d="M752.1,686.1 A332,332 0 0 1 602.0,785.9" fill="none" stroke="#aaa197" stroke-width="4" stroke-linecap="round" marker-end="url(#m-cycle-big)"/>
+<path d="M398.0,785.9 A332,332 0 0 1 247.9,686.1" fill="none" stroke="#aaa197" stroke-width="4" stroke-linecap="round" marker-end="url(#m-cycle-big)"/>
+<path d="M188.8,585.7 A332,332 0 0 1 188.8,354.3" fill="none" stroke="#aaa197" stroke-width="4" stroke-linecap="round" marker-end="url(#m-cycle-big)"/>
+<path d="M247.9,253.9 A332,332 0 0 1 398.0,154.1" fill="none" stroke="#aaa197" stroke-width="4" stroke-linecap="round" stroke-dasharray="2 7" marker-end="url(#m-cycle-big)"/>
+<text x="317.0" y="143.4" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#6e655d" text-anchor="end">cycle k done →</text>
+<text x="317.0" y="159.4" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" fill="#6e655d" text-anchor="end">on_cycle_complete(k, wheel)</text>
+<line x1="493.0" y1="337.2" x2="493.0" y2="183.0" stroke="#5c5550" stroke-width="2" marker-end="url(#m-in)"/>
+<line x1="507.0" y1="183.0" x2="507.0" y2="337.2" stroke="#c4521a" stroke-width="2" marker-end="url(#m-mbhb)"/>
+<rect x="463.1" y="290.5" width="73.8" height="19" rx="9.5" fill="#fffdf9" stroke="#d4b383" stroke-width="1.4"/>
+<text x="500.0" y="304.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#8a5a1e" text-anchor="middle">frequency</text>
+<line x1="611.5" y1="397.5" x2="699.9" y2="346.5" stroke="#5c5550" stroke-width="2" marker-end="url(#m-in)"/>
+<line x1="727.9" y1="346.5" x2="618.5" y2="409.7" stroke="#156a9e" stroke-width="2" marker-end="url(#m-ucb)"/>
+<rect x="631.9" y="375.5" width="30.6" height="19" rx="9.5" fill="#fffdf9" stroke="#d4b383" stroke-width="1.4"/>
+<text x="647.2" y="389.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#8a5a1e" text-anchor="middle">wdm</text>
+<line x1="618.5" y1="530.3" x2="727.9" y2="593.5" stroke="#5c5550" stroke-width="2" marker-end="url(#m-in)"/>
+<line x1="699.9" y1="593.5" x2="611.5" y2="542.5" stroke="#86307f" stroke-width="2" marker-end="url(#m-emri)"/>
+<line x1="507.0" y1="602.8" x2="507.0" y2="757.0" stroke="#5c5550" stroke-width="2" marker-end="url(#m-in)"/>
+<line x1="493.0" y1="757.0" x2="493.0" y2="602.8" stroke="#b31d4c" stroke-width="2" marker-end="url(#m-noise)"/>
+<rect x="463.1" y="630.5" width="73.8" height="19" rx="9.5" fill="#fffdf9" stroke="#d4b383" stroke-width="1.4"/>
+<text x="500.0" y="644.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#8a5a1e" text-anchor="middle">frequency</text>
+<line x1="388.5" y1="542.5" x2="300.1" y2="593.5" stroke="#5c5550" stroke-width="2" marker-end="url(#m-in)"/>
+<line x1="272.1" y1="593.5" x2="381.5" y2="530.3" stroke="#1d5b6f" stroke-width="2" marker-end="url(#m-sgwb)"/>
+<rect x="337.5" y="545.5" width="30.6" height="19" rx="9.5" fill="#fffdf9" stroke="#d4b383" stroke-width="1.4"/>
+<text x="352.8" y="559.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#8a5a1e" text-anchor="middle">wdm</text>
+<line x1="381.5" y1="409.7" x2="272.1" y2="346.5" stroke="#5c5550" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#m-in)"/>
+<line x1="300.1" y1="346.5" x2="388.5" y2="397.5" stroke="#6e655d" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#m-your-block)"/>
+<text x="484" y="201.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#5c5550" text-anchor="end">sample(</text>
+<text x="484" y="217.0" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#5c5550" text-anchor="end" font-style="italic">d − Σ<tspan dy="4" font-size="9">j≠i</tspan><tspan dy="-4"> T</tspan><tspan dy="4" font-size="9">j</tspan><tspan dy="-4" font-style="normal">, C, s</tspan><tspan dy="4" font-size="9">i</tspan><tspan dy="-4" font-style="normal">, rng)</tspan></text>
+<text x="516" y="201.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#c4521a">BlockState(</text>
+<text x="516" y="217.0" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#c4521a" font-style="italic">T<tspan dy="4" font-size="9">i</tspan><tspan dy="-4" font-style="normal">, </tspan>C<tspan font-style="normal">?, </tspan>θ<tspan dy="4" font-size="9">i</tspan><tspan dy="-4" font-style="normal">)</tspan></text>
+<circle cx="500" cy="470" r="128" fill="#ffffff" stroke="#2a2522" stroke-width="2"/>
+<text x="500" y="398" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="21" font-weight="700" fill="#2a2522" text-anchor="middle">Wheel</text>
+<text x="500" y="415" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#6e655d" text-anchor="middle">wheel.py</text>
+<text x="500" y="448" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" fill="#2a2522" text-anchor="middle"><tspan font-style="italic" font-weight="700">d</tspan>  observed data</text>
+<text x="500" y="470" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" fill="#2a2522" text-anchor="middle"><tspan font-style="italic" font-weight="700">r</tspan> = <tspan font-style="italic">d</tspan> − Σ<tspan dy="4" font-size="9">j</tspan><tspan dy="-4" font-style="italic"> T</tspan><tspan dy="4" font-size="9">j</tspan><tspan dy="-4">  residual</tspan></text>
+<text x="500" y="492" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" fill="#2a2522" text-anchor="middle"><tspan font-style="italic" font-weight="700">C</tspan>  noise covariance</text>
+<text x="500" y="514" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" fill="#2a2522" text-anchor="middle"><tspan font-weight="700">Ledger</tspan>  name → BlockState</text>
+<text x="500" y="544" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" fill="#6e655d" text-anchor="middle" font-style="italic">validate, then commit all or nothing</text>
+<rect x="408.0" y="98.0" width="184" height="80" rx="12" fill="#c4521a"/>
+<text x="500.0" y="125.0" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" font-weight="700" fill="#ffffff" text-anchor="middle">mbhb</text>
+<text x="500.0" y="144.0" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#ffffff" text-anchor="middle" fill-opacity="0.92">massive black hole binaries</text>
+<rect x="475.0" y="152.0" width="50" height="17" rx="8.5" fill="#ffffff" fill-opacity="0.2" stroke="#ffffff" stroke-opacity="0.75" stroke-width="1"/>
+<text x="500.0" y="164.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#ffffff" text-anchor="middle">State</text>
+<circle cx="412.0" cy="102.0" r="11.5" fill="#ffffff" stroke="#c4521a" stroke-width="2"/>
+<text x="412.0" y="106.3" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="700" fill="#c4521a" text-anchor="middle">1</text>
+<rect x="695.5" y="264.0" width="184" height="80" rx="12" fill="#156a9e"/>
+<text x="787.5" y="291.0" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" font-weight="700" fill="#ffffff" text-anchor="middle">ucb</text>
+<text x="787.5" y="310.0" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#ffffff" text-anchor="middle" fill-opacity="0.92">Galactic binaries</text>
+<rect x="762.5" y="318.0" width="50" height="17" rx="8.5" fill="#ffffff" fill-opacity="0.2" stroke="#ffffff" stroke-opacity="0.75" stroke-width="1"/>
+<text x="787.5" y="330.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#ffffff" text-anchor="middle">State</text>
+<circle cx="699.5" cy="268.0" r="11.5" fill="#ffffff" stroke="#156a9e" stroke-width="2"/>
+<text x="699.5" y="272.3" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="700" fill="#156a9e" text-anchor="middle">2</text>
+<rect x="695.5" y="596.0" width="184" height="80" rx="12" fill="#86307f"/>
+<text x="787.5" y="623.0" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" font-weight="700" fill="#ffffff" text-anchor="middle">emri</text>
+<text x="787.5" y="642.0" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#ffffff" text-anchor="middle" fill-opacity="0.92">extreme mass ratio inspirals</text>
+<rect x="762.5" y="650.0" width="50" height="17" rx="8.5" fill="#ffffff" fill-opacity="0.2" stroke="#ffffff" stroke-opacity="0.75" stroke-width="1"/>
+<text x="787.5" y="662.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#ffffff" text-anchor="middle">State</text>
+<circle cx="699.5" cy="600.0" r="11.5" fill="#ffffff" stroke="#86307f" stroke-width="2"/>
+<text x="699.5" y="604.3" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="700" fill="#86307f" text-anchor="middle">3</text>
+<rect x="408.0" y="762.0" width="184" height="80" rx="12" fill="#b31d4c"/>
+<text x="500.0" y="789.0" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" font-weight="700" fill="#ffffff" text-anchor="middle">noise</text>
+<text x="500.0" y="808.0" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#ffffff" text-anchor="middle" fill-opacity="0.92">publishes covariance C</text>
+<rect x="475.0" y="816.0" width="50" height="17" rx="8.5" fill="#ffffff" fill-opacity="0.2" stroke="#ffffff" stroke-opacity="0.75" stroke-width="1"/>
+<text x="500.0" y="828.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#ffffff" text-anchor="middle">State</text>
+<circle cx="412.0" cy="766.0" r="11.5" fill="#ffffff" stroke="#b31d4c" stroke-width="2"/>
+<text x="412.0" y="770.3" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="700" fill="#b31d4c" text-anchor="middle">4</text>
+<rect x="120.5" y="596.0" width="184" height="80" rx="12" fill="#1d5b6f"/>
+<text x="212.5" y="623.0" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" font-weight="700" fill="#ffffff" text-anchor="middle">sgwb</text>
+<text x="212.5" y="642.0" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#ffffff" text-anchor="middle" fill-opacity="0.92">stochastic backgrounds</text>
+<rect x="187.5" y="650.0" width="50" height="17" rx="8.5" fill="#ffffff" fill-opacity="0.2" stroke="#ffffff" stroke-opacity="0.75" stroke-width="1"/>
+<text x="212.5" y="662.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#ffffff" text-anchor="middle">State</text>
+<circle cx="124.5" cy="600.0" r="11.5" fill="#ffffff" stroke="#1d5b6f" stroke-width="2"/>
+<text x="124.5" y="604.3" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="700" fill="#1d5b6f" text-anchor="middle">5</text>
+<rect x="120.5" y="264.0" width="184" height="80" rx="12" fill="#ffffff" stroke="#6e655d" stroke-width="1.8" stroke-dasharray="6 4"/>
+<text x="212.5" y="291.0" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" font-weight="700" fill="#2a2522" text-anchor="middle">+ your block</text>
+<text x="212.5" y="310.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" fill="#2a2522" text-anchor="middle">wheel.add(block, …)</text>
+<rect x="187.5" y="318.0" width="50" height="17" rx="8.5" fill="#6e655d" fill-opacity="0.12" stroke="#6e655d" stroke-opacity="0.75" stroke-width="1"/>
+<text x="212.5" y="330.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#2a2522" text-anchor="middle">State</text>
+<circle cx="124.5" cy="268.0" r="11.5" fill="#ffffff" stroke="#6e655d" stroke-width="2"/>
+<text x="124.5" y="272.3" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="700" fill="#6e655d" text-anchor="middle">6</text>
+<text x="752" y="40" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13.5" font-weight="700" fill="#2a2522">Reading the wheel</text>
+<line x1="752" y1="58" x2="784" y2="58" stroke="#5c5550" stroke-width="2" marker-end="url(#m-in)"/>
+<line x1="784" y1="68" x2="752" y2="68" stroke="#156a9e" stroke-width="2" marker-end="url(#m-ucb)"/>
+<text x="798" y="67" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#2a2522">sample(…) in, BlockState out</text>
+<text x="798" y="82" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#6e655d">one pair per block, per turn</text>
+<rect x="752" y="91" width="34" height="18" rx="9" fill="#fffdf9" stroke="#d4b383" stroke-width="1.4"/>
+<text x="769" y="104" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10.5" fill="#8a5a1e" text-anchor="middle">wdm</text>
+<text x="798" y="104" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#2a2522">the block's data_domain</text>
+<text x="798" y="119" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#6e655d">none: the observation's own</text>
+<rect x="749" y="128" width="40" height="17" rx="8.5" fill="#6e655d" fill-opacity="0.12" stroke="#6e655d" stroke-opacity="0.75"/>
+<text x="769" y="141" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10.5" fill="#2a2522" text-anchor="middle">State</text>
+<text x="798" y="141" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#2a2522">block-private sampler state</text>
+<text x="798" y="156" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#6e655d">never enters the Ledger</text>
+<rect x="752" y="165" width="34" height="18" rx="4" fill="#f6e7cd" stroke="#d4b383"/>
+<text x="798" y="178" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" fill="#2a2522">enchilada</text>
+<text x="798" y="193" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#6e655d">the ring is your model code</text>
+<line x1="32" y1="852" x2="968" y2="852" stroke="#e6ddd0"/>
+<text x="32" y="878" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="700" letter-spacing="0.6" fill="#2a2522">HUB</text>
+<text x="32" y="900" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" fill="#2a2522">wheel.py<tspan font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" fill="#6e655d">  turns, adoption</tspan></text>
+<text x="32" y="919" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" fill="#2a2522">ledger.py<tspan font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" fill="#6e655d">  accepted states</tspan></text>
+<text x="32" y="938" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" fill="#2a2522">_signal_sum.py<tspan font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" fill="#6e655d">  Σ T tree</tspan></text>
+<text x="250" y="878" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="700" letter-spacing="0.6" fill="#2a2522">DATA AND NOISE</text>
+<text x="250" y="900" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" fill="#2a2522">data.py<tspan font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" fill="#6e655d">  L1Data: d, r</tspan></text>
+<text x="250" y="919" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" fill="#2a2522">covariance.py<tspan font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" fill="#6e655d">  C</tspan></text>
+<text x="250" y="938" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" fill="#2a2522">translated_covariance.py<tspan font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" fill="#6e655d">  C, translated</tspan></text>
+<text x="250" y="957" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" fill="#2a2522">orbits.py<tspan font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" fill="#6e655d">  ephemeris</tspan></text>
+<text x="548" y="878" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="700" letter-spacing="0.6" fill="#8a5a1e">TRANSLATION RING</text>
+<text x="548" y="900" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" fill="#2a2522">translation.py<tspan font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" fill="#6e655d">  transform()</tspan></text>
+<text x="548" y="919" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" fill="#2a2522">_transforms.py<tspan font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" fill="#6e655d">  FFT, WDM</tspan></text>
+<text x="548" y="938" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" fill="#2a2522">domains.py<tspan font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" fill="#6e655d">  WDMGrid</tspan></text>
+<text x="778" y="878" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="700" letter-spacing="0.6" fill="#2a2522">BLOCK CONTRACT</text>
+<text x="778" y="900" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" fill="#2a2522">block.py<tspan font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" fill="#6e655d">  Block protocol</tspan></text>
+<text x="778" y="919" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" fill="#2a2522">block_state.py<tspan font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" fill="#6e655d">  BlockState</tspan></text>
+<text x="778" y="938" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" fill="#2a2522">testing.py<tspan font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" fill="#6e655d">  check_block</tspan></text>
+</svg>

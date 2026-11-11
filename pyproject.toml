@@ -77,6 +77,7 @@ source-include = [
     "examples/**/*.py",
     "examples/**/*.ipynb",
     "examples/**/*.txt",
+    "docs/**/*.svg",
     "benchmarks/**/*.py",
     ".github/workflows/*.yml",
     "CHANGELOG.md",
