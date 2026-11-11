@@ -282,7 +282,12 @@ def test_seed_without_signal_can_sample_in_selected_domain(observed, with_noise)
             if with_noise:
                 current_block_state.covariance.check_compatible(conditional_residual)
                 covariance.check_compatible(conditional_residual)
-                np.testing.assert_allclose(covariance.A, 100.0)
+                # White noise has PSD 2 sigma^2 / fs = 1.25 at every bin. noise_psd
+                # reads the point variances, so this holds whether the translation
+                # layer returns the diagonal or the full form (spec 6, item 6).
+                np.testing.assert_allclose(
+                    covariance.noise_psd("A", conditional_residual), 2 * 0.25 / 0.4
+                )
             self.state.counter += 1
             return current_block_state
 
