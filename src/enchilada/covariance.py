@@ -64,7 +64,10 @@ class Covariance:
     Read it through channel attributes: ``cov.X`` is ``pair("X", "X")``,
     ``cov.XY`` is ``pair("X", "Y")`` and ``cov.YX`` its conjugate transpose.
     With channels exactly X, Y, Z the names A, E, T and their pairs are
-    derived on demand, and the reverse; see :meth:`in_basis`.
+    derived on demand, and the reverse; see :meth:`in_basis`. A derivation that
+    is not numerically positive definite raises ``ValueError``, so
+    ``hasattr(cov, "X")`` can raise ``ValueError`` for such an object; this is
+    deliberate so the numerical failure is not hidden.
 
     The object carries no grid. Everything that depends on the domain takes
     the ``L1Data`` the covariance accompanies: :meth:`check_compatible`,
@@ -403,6 +406,13 @@ class Covariance:
         Asking for the current basis returns ``self``. Derived full-form diagonal
         blocks are symmetrised exactly, because the summation order differs
         between an entry and its mirror.
+
+        Derivation needs the rotated covariance to be numerically positive
+        definite; when one channel's variance is below float64 roundoff of the
+        others (T << A at the lowest LISA frequencies) ``in_basis`` and the
+        derived attributes raise ``ValueError`` with that explanation.
+        ``hasattr(cov, "X")`` can therefore raise ``ValueError`` for such an
+        object; this is deliberate so the numerical failure is not hidden.
         """
         if basis not in BASES:
             raise ValueError(f"basis must be one of {tuple(BASES)}, got {basis!r}")
@@ -415,7 +425,15 @@ class Covariance:
         if basis == current:
             return self
         if self._derived is None:
-            derived = self._derive(current, basis)
+            try:
+                derived = self._derive(current, basis)
+            except ValueError as exc:
+                raise ValueError(
+                    f"cannot derive the {basis} basis from {current}: the rotated "
+                    "covariance is not numerically positive definite (one channel's "
+                    "variance is below the roundoff of the others, e.g. T << A at "
+                    f"low frequency): {exc}"
+                ) from exc
             object.__setattr__(derived, "_derived", self)
             object.__setattr__(self, "_derived", derived)
         assert self._derived is not None

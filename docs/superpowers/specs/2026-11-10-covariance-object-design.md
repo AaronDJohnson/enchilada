@@ -136,6 +136,13 @@ same expression serves both forms. AET to XYZ uses the transpose, which is the
 inverse because `M` is orthogonal. In the diagonal form the derived diagonals
 take `.real`; in the full form the derived diagonal blocks stay Hermitian.
 
+Derivation needs the rotated covariance to be numerically positive definite;
+when one channel's variance is below float64 roundoff of the others (T ≪ A at
+the lowest LISA frequencies) `in_basis` and the derived attributes raise
+`ValueError` with that explanation. `hasattr(cov, "X")` can therefore raise
+`ValueError` for such an object; this is deliberate so the numerical failure is
+not hidden.
+
 ### 1.5 Methods kept
 
 | Method | Change |

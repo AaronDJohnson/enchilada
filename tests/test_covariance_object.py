@@ -392,6 +392,20 @@ def block_product_aet(cov):
     }
 
 
+def per_point_rotation(cov, source, matrix):
+    """Reference: per flattened point, matrix @ C @ matrix.T over ``source``."""
+    flat = {(i, j): cov.pair(i, j).reshape(-1) for i in source for j in source}
+    points = flat[(source[0], source[0])].size
+    return np.array(
+        [
+            matrix
+            @ np.array([[flat[(i, j)][p] for j in source] for i in source])
+            @ matrix.T
+            for p in range(points)
+        ]
+    )
+
+
 class TestDerivedBasis:
     def test_aet_matches_explicit_matrix_product(self):
         cov = Covariance(xyz_pairs(), channel_names=XYZ)
@@ -529,6 +543,53 @@ class TestDerivedBasis:
         reference = Covariance(pairs, channel_names=XYZ)
         np.testing.assert_allclose(cov.A, reference.A)
         np.testing.assert_allclose(cov.ET, reference.ET)
+
+    def test_aet_object_reads_xyz_names(self):
+        relabel = dict(zip(XYZ, AET, strict=True))
+        pairs = {(relabel[a], relabel[b]): v for (a, b), v in xyz_pairs().items()}
+        aet = Covariance(pairs, channel_names=AET)
+        np.testing.assert_array_equal(aet.XY, aet.in_basis("XYZ").pair("X", "Y"))
+        reference = per_point_rotation(aet, AET, AET_FROM_XYZ.T)
+        for a, first in enumerate(XYZ):
+            for b, second in enumerate(XYZ):
+                name = first if a == b else first + second
+                np.testing.assert_allclose(
+                    getattr(aet, name), reference[:, a, b], atol=1e-14
+                )
+
+    def test_copies_drop_the_cache(self):
+        cov = Covariance(xyz_pairs(), channel_names=XYZ)
+        derived = cov.in_basis("AET")
+        for copied in (cov.copy(), cov._copy_validated()):
+            assert copied.in_basis("AET") is not derived
+            assert copied.in_basis("AET").in_basis("XYZ") is copied
+
+    def test_wdm_shaped_diagonal_form_derives_per_point(self):
+        pairs = {key: value.reshape(5, 4) for key, value in xyz_pairs(n=20).items()}
+        assert np.iscomplexobj(pairs[("X", "Y")])
+        cov = Covariance(pairs, channel_names=XYZ)
+        aet = cov.in_basis("AET")
+        reference = per_point_rotation(cov, XYZ, AET_FROM_XYZ)
+        for a, first in enumerate(AET):
+            for b, second in enumerate(AET):
+                assert aet.pair(first, second).shape == (5, 4)
+                np.testing.assert_allclose(
+                    aet.pair(first, second).reshape(-1), reference[:, a, b], atol=1e-14
+                )
+
+    def test_derivation_below_float64_precision_explains_itself(self):
+        cov = Covariance(
+            {
+                ("A", "A"): np.array([1.0]),
+                ("E", "E"): np.array([2.0]),
+                ("T", "T"): np.array([1e-17]),
+            },
+            channel_names=AET,
+        )
+        with pytest.raises(ValueError, match="cannot derive the XYZ basis"):
+            _ = cov.X
+        with pytest.raises(ValueError, match="cannot derive the XYZ basis"):
+            cov.in_basis("XYZ")
 
     def test_derived_names_need_the_full_triple(self):
         cov = Covariance(diagonal_pairs(), channel_names=AE)
