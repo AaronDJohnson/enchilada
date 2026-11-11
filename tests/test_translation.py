@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from enchilada import BlockState, DataCovariance, L1Data, WDMGrid
+from enchilada.covariance import Covariance
 from enchilada.translation import transform
 
 requires_wdm = pytest.mark.skipif(
@@ -269,3 +270,36 @@ def test_unrelated_wdm_package_and_unsupported_python_have_clear_errors(monkeypa
     monkeypatch.setattr(backend.sys, "version_info", (3, 12))
     with pytest.raises(ImportError, match="Python >=3.13"):
         transform(observations(), "wdm", num_time_divisions=8)
+
+
+def test_covariance_same_domain_transform_is_an_independent_copy():
+    data = observations()
+    cov = Covariance.from_variance(data, 2.0)
+    copied = transform(cov, "time", reference_data=data)
+    assert isinstance(copied, Covariance)
+    assert copied is not cov
+    np.testing.assert_array_equal(copied.A, cov.A)
+    assert not np.shares_memory(copied.A, cov.A)
+
+
+def test_covariance_cross_domain_transform_is_the_seam():
+    data = observations()
+    cov = Covariance.from_variance(data, 2.0)
+    with pytest.raises(NotImplementedError, match="section 6"):
+        transform(cov, "frequency", reference_data=data)
+    with pytest.raises(ValueError, match="reference_data"):
+        transform(cov, "time")
+    with pytest.raises(ValueError, match="shape"):
+        transform(cov, "time", reference_data=observations(32))
+
+
+@requires_wdm
+def test_covariance_wdm_regrid_is_the_seam_but_same_grid_copies():
+    data = observations()
+    wdm = transform(data, "wdm", num_frequency_divisions=8)
+    variances = np.where(wdm.wdm_grid.active_mask, 1.0, 0.0)
+    cov = Covariance.like(wdm, {name: variances for name in wdm.channel_names})
+    same = transform(cov, "wdm", num_frequency_divisions=8, reference_data=wdm)
+    np.testing.assert_array_equal(same.A, cov.A)
+    with pytest.raises(NotImplementedError):
+        transform(cov, "wdm", num_frequency_divisions=4, reference_data=wdm)

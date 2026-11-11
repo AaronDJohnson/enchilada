@@ -6,7 +6,7 @@ from typing import overload
 
 from enchilada._transforms import transform_channels
 from enchilada.block_state import BlockState, check_on_grid
-from enchilada.covariance import DataCovariance
+from enchilada.covariance import Covariance, DataCovariance
 from enchilada.data import L1Data
 from enchilada.domains import WDMGrid, resolve_wdm_grid
 from enchilada.translated_covariance import (
@@ -52,6 +52,17 @@ def transform(
 
 @overload
 def transform(
+    value: Covariance,
+    target_domain: str,
+    *,
+    num_frequency_divisions: int | None = None,
+    num_time_divisions: int | None = None,
+    reference_data: L1Data | None = None,
+) -> Covariance: ...
+
+
+@overload
+def transform(
     value: DataCovariance | TranslatedCovariance,
     target_domain: str,
     *,
@@ -73,13 +84,13 @@ def transform(
 
 
 def transform(
-    value: L1Data | DataCovariance | TranslatedCovariance | BlockState,
+    value: L1Data | Covariance | DataCovariance | TranslatedCovariance | BlockState,
     target_domain: str,
     *,
     num_frequency_divisions: int | None = None,
     num_time_divisions: int | None = None,
     reference_data: L1Data | None = None,
-) -> L1Data | DataCovariance | TranslatedCovariance | BlockState:
+) -> L1Data | Covariance | DataCovariance | TranslatedCovariance | BlockState:
     """Return an independent representation of data, covariance or a block state.
 
     Args:
@@ -132,6 +143,28 @@ def transform(
             target_wdm_grid=grid,
         )
         return replace(source, channel_data=converted, data_domain=target_domain)
+    if isinstance(value, Covariance):
+        # The seam for the covariance translation layer (design spec section 6).
+        if reference_data is None:
+            raise ValueError(
+                "transform needs reference_data for a Covariance: the L1Data on "
+                "its current grid"
+            )
+        value.check_compatible(reference_data)
+        if target_domain == reference_data.data_domain:
+            grid = _target_grid(
+                target_domain,
+                reference_data.num_time_samples,
+                reference_data.wdm_grid,
+                num_frequency_divisions,
+                num_time_divisions,
+            )
+            if target_domain != "wdm" or grid == reference_data.wdm_grid:
+                return value.copy()
+        raise NotImplementedError(
+            "covariance translation between domains is not implemented; see "
+            "docs/superpowers/specs/2026-11-10-covariance-object-design.md section 6"
+        )
     if isinstance(value, (DataCovariance, TranslatedCovariance)):
         value = copy_covariance(value)
         if reference_data is not None:
