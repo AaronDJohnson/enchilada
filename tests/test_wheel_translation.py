@@ -286,6 +286,47 @@ def test_block_in_another_domain_reaches_the_covariance_seam_at_run():
     assert wheel.covariance.noise_variance("A", data) == 0.25
 
 
+def test_covariance_returned_in_another_domain_reaches_the_seam_at_run():
+    """A covariance returned on the block's grid must go back to the observation
+    grid; until the layer lands that raises and commits nothing (section 6)."""
+
+    class FrequencyNoise:
+        name = "frequency_noise"
+
+        def sample(self, conditional_residual, covariance, current_block_state, *, rng):
+            assert conditional_residual.data_domain == "frequency"
+            level = 1.0 + abs(rng.normal())
+            return BlockState(
+                covariance=Covariance.like(
+                    conditional_residual,
+                    {
+                        name: np.full(values.shape, level)
+                        for name, values in conditional_residual.channel_data.items()
+                    },
+                ),
+                parameters={"level": level},
+            )
+
+    data = observations()
+    wheel = Wheel(data, random_seed=3)
+    wheel.add(
+        FrequencyNoise(),
+        initial_block_state=BlockState(parameters={"level": 0.0}),
+        data_domain="frequency",
+    )
+    rng_before = wheel._rng.bit_generator.state
+    with pytest.raises(NotImplementedError, match="section 6"):
+        wheel.run(1)
+    assert wheel.covariance is None
+    assert wheel._rng.bit_generator.state == rng_before
+    entry = wheel.ledger["frequency_noise"]
+    assert entry.parameters == {"level": 0.0}
+    assert entry.template is None and entry.covariance is None
+    np.testing.assert_array_equal(
+        wheel.residual().channel_data["A"], data.channel_data["A"]
+    )
+
+
 @pytest.mark.parametrize("domain", ["frequency", "wdm"])
 def test_noise_only_seed_in_another_domain_reaches_the_seam_at_registration(domain):
     """A seed covariance is on the block's grid; returning it to the observation

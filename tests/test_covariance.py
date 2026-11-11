@@ -328,12 +328,26 @@ class TestCopy:
         pairs = diagonal_pairs()
         pairs[("A", "E")] = np.full(8, 0.5 + 0.25j)
         cov = Covariance(pairs, channel_names=AE)
-        for restored in (copy.deepcopy(cov), pickle.loads(pickle.dumps(cov))):
-            assert restored.channel_names == cov.channel_names
-            assert restored.form == cov.form
-            assert set(restored.pairs) == set(cov.pairs)
-            for key, arr in cov.pairs.items():
-                np.testing.assert_array_equal(restored.pairs[key], arr)
+        xyz = Covariance(xyz_pairs(), channel_names=XYZ)
+        expected_a = xyz.A  # caches the derived AET basis on the original
+        assert xyz._derived is not None
+        for original in (cov, xyz):
+            for restored in (
+                copy.deepcopy(original),
+                pickle.loads(pickle.dumps(original)),
+            ):
+                assert restored.channel_names == original.channel_names
+                assert restored.form == original.form
+                assert set(restored.pairs) == set(original.pairs)
+                for key, arr in original.pairs.items():
+                    np.testing.assert_array_equal(restored.pairs[key], arr)
+                    assert not np.shares_memory(restored.pairs[key], arr)
+                    assert not restored.pairs[key].flags.writeable
+                assert restored._derived is None
+                if original is xyz:
+                    np.testing.assert_array_equal(restored.A, expected_a)
+                    assert restored.in_basis("AET") is not xyz._derived
+                    assert restored.in_basis("AET").in_basis("XYZ") is restored
 
 
 def xyz_pairs(n=6, with_cross=True):
@@ -594,6 +608,11 @@ class TestDerivedBasis:
         with pytest.raises(ValueError, match="cannot derive the XYZ basis"):
             cov.in_basis("XYZ")
 
+    def test_unknown_attribute_lists_derived_names(self):
+        cov = Covariance(xyz_pairs(), channel_names=XYZ)
+        with pytest.raises(AttributeError, match="'foo'.*'XY'.*'A'.*'AE'"):
+            _ = cov.foo
+
     def test_derived_names_need_the_full_triple(self):
         cov = Covariance(diagonal_pairs(), channel_names=AE)
         with pytest.raises(AttributeError, match="channel attributes"):
@@ -814,6 +833,21 @@ class TestFactoriesAndReadBack:
             cov.noise_variance("A", data)
         with pytest.raises(ValueError, match="frequency-domain"):
             cov.noise_psd("A", data)
+
+    def test_read_backs_reject_unknown_channels(self, rng):
+        spectrum = make_observed(rng, channel_names=AE).to_frequency()
+        cov = Covariance.from_psd(spectrum, FlatPSD(1.0))
+        with pytest.raises(ValueError, match="unknown channel 'Q'"):
+            cov.noise_psd("Q", spectrum)
+        with pytest.raises(ValueError, match="unknown channel 'Q'"):
+            cov.noise_variance("Q", spectrum)
+
+    def test_noise_variance_rejects_wdm_data(self):
+        grid, data = single_channel_wdm_data()
+        variances = np.where(grid.active_mask, 2.0, 0.0)
+        cov = Covariance({("A", "A"): variances}, channel_names=("A",))
+        with pytest.raises(ValueError, match="time or frequency"):
+            cov.noise_variance("A", data)
 
 
 class TestCheckCompatible:

@@ -660,7 +660,25 @@ class Covariance:
         object.__setattr__(snapshot, "_derived", None)
         return snapshot
 
-    # ---- derived basis (Task 2) -------------------------------------------
+    def __getstate__(self) -> dict[str, Any]:
+        # deepcopy and pickle carry the fields only; the cache is rebuilt.
+        return {
+            "pairs": self.pairs,
+            "channel_names": self.channel_names,
+            "form": self.form,
+        }
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        # Restored arrays are fresh and writable; keep the read-only promise.
+        pairs = dict(state["pairs"])
+        for arr in pairs.values():
+            arr.setflags(write=False)
+        object.__setattr__(self, "pairs", pairs)
+        object.__setattr__(self, "channel_names", state["channel_names"])
+        object.__setattr__(self, "form", state["form"])
+        object.__setattr__(self, "_derived", None)
+
+    # ---- derived basis ----------------------------------------------------
 
     def _basis_name(self) -> str | None:
         current = frozenset(self.channel_names)

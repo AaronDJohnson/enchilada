@@ -76,7 +76,9 @@ def test_gb_prior_keeps_continuation_on_its_block(gb_model, spectral_context):
     assert other.state.coords == {}
 
 
-def test_gb_rejects_covariance_without_native_frequency_psd(gb_model, spectral_context):
+def test_gb_requires_a_diagonal_form_frequency_covariance_on_the_data_grid(
+    gb_model, spectral_context
+):
     data, _ = spectral_context
     time_noise = Covariance.from_variance(transform(data, "time"), 1.0)
     with pytest.raises(
@@ -137,9 +139,10 @@ def test_gb_context_requires_independent_channels_and_one_psd_value_per_bin(gb_m
 @pytest.mark.xfail(
     raises=NotImplementedError,
     strict=True,
-    reason="covariance translation seam, design spec section 6",
+    reason="covariance translation seam, design spec section 6; "
+    "assumes the layer returns the diagonal form",
 )
-def test_gb_frequency_registration_restores_native_spectral_covariance(
+def test_gb_frequency_registration_restores_a_diagonal_form_frequency_covariance(
     gb_model, spectral_context, storage_domain
 ):
     if storage_domain == "wdm":

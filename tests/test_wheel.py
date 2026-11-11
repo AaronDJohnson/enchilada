@@ -554,6 +554,38 @@ class TestExplicitNoise:
         wheel.run(3)
         assert levels == [2.0, 3.0, 4.0]
 
+    def test_copied_covariance_arrays_stay_read_only(self, observed):
+        seen = []
+
+        class Inspector(LevelNoiseBlock):
+            def sample(
+                self,
+                conditional_residual,
+                covariance,
+                current_block_state,
+                *,
+                rng,
+            ):
+                seen.append(current_block_state.covariance.pairs[("A", "A")])
+                return super().sample(
+                    conditional_residual,
+                    covariance,
+                    current_block_state,
+                    rng=rng,
+                )
+
+        wheel = Wheel(observed)
+        wheel.add(
+            Inspector("noise"), initial_block_state=noise_initial_result(observed)
+        )
+        wheel.run(2)
+        assert len(seen) == 2
+        assert not any(arr.flags.writeable for arr in seen)
+        for state in (wheel.ledger["noise"], wheel.ledger.snapshot()["noise"]):
+            assert not any(
+                arr.flags.writeable for arr in state.covariance.pairs.values()
+            )
+
     def test_initial_psd_model_must_be_converted_explicitly(self, observed):
         psd_model = FlatPSD(7.0)
         with pytest.raises(TypeError, match="initial_covariance.*Covariance"):

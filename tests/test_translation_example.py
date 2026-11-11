@@ -1,4 +1,4 @@
-"""The optional translation walkthrough preserves data and likelihood weights."""
+"""The optional translation walkthrough preserves data and states across domains."""
 
 import json
 import os
@@ -13,7 +13,7 @@ pytest.importorskip("wdm", reason="translation example needs the local WDM backe
 EXAMPLE = Path(__file__).resolve().parent.parent / "examples/domain_translation.py"
 
 
-def test_translation_example_preserves_data_and_noise_weight_across_domains():
+def test_translation_example_preserves_data_and_states_across_domains():
     result = subprocess.run(
         [sys.executable, str(EXAMPLE)],
         capture_output=True,
