@@ -40,7 +40,7 @@ def test_block_tutorial_runs_and_checks_its_sampler(tmp_path):
     assert "Known-injection start checks passed" in result.stdout
     assert "Posterior checks passed" in result.stdout
     assert "Continuation and isolation checks passed" in result.stdout
-    assert "Domain handoff checks passed" in result.stdout
+    assert "PSD construction checks passed" in result.stdout
     assert "Noise-only block checks passed" in result.stdout
 
 
