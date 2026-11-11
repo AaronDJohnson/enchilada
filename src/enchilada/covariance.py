@@ -1,7 +1,7 @@
-"""Channel covariance on an explicitly identified data grid."""
+"""Noise covariance as one array per channel pair, read through channel attributes."""
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from inspect import signature
 from typing import TYPE_CHECKING, Any
 
@@ -11,6 +11,377 @@ from enchilada.domains import WDMGrid
 
 if TYPE_CHECKING:
     from enchilada.data import L1Data
+
+FORMS = ("diagonal", "full")
+"""How pair arrays are read: one value per point, or a matrix between points."""
+
+AET_FROM_XYZ = np.array(
+    [
+        [-1.0 / np.sqrt(2.0), 0.0, 1.0 / np.sqrt(2.0)],
+        [1.0 / np.sqrt(6.0), -2.0 / np.sqrt(6.0), 1.0 / np.sqrt(6.0)],
+        [1.0 / np.sqrt(3.0), 1.0 / np.sqrt(3.0), 1.0 / np.sqrt(3.0)],
+    ]
+)
+"""Rows A, E, T from columns X, Y, Z: the orthonormal LDC combination."""
+
+BASES = {"XYZ": ("X", "Y", "Z"), "AET": ("A", "E", "T")}
+
+
+def split_pair_name(
+    name: str, channel_names: tuple[str, ...]
+) -> tuple[str, str] | None:
+    """Resolve ``"X"`` to ``("X", "X")`` and ``"XY"`` to ``("X", "Y")``.
+
+    Returns None when ``name`` is neither a channel nor a concatenation of two
+    channels. Raises ValueError when more than one split works.
+    """
+    if name in channel_names:
+        return (name, name)
+    candidates = [
+        (name[:cut], name[cut:])
+        for cut in range(1, len(name))
+        if name[:cut] in channel_names and name[cut:] in channel_names
+    ]
+    if len(candidates) > 1:
+        raise ValueError(
+            f"{name!r} is ambiguous between channel pairs {candidates}; "
+            "use a (first, second) tuple or pair(first, second)"
+        )
+    return candidates[0] if candidates else None
+
+
+@dataclass(frozen=True, eq=False)
+class Covariance:
+    """Noise covariance stored as one array per channel pair.
+
+    ``pairs`` maps ``(first, second)`` in channel order to an array. Every
+    channel's own ``(ch, ch)`` entry is required; an absent off-diagonal pair
+    means zero cross-covariance. All arrays share one shape and one ``form``:
+
+    * ``form="diagonal"``: the data's channel shape ``S``; one value per point.
+    * ``form="full"``: ``S + S``; covariance between every pair of points.
+
+    Read it through channel attributes: ``cov.X`` is ``pair("X", "X")``,
+    ``cov.XY`` is ``pair("X", "Y")`` and ``cov.YX`` its conjugate transpose.
+    With channels exactly X, Y, Z the names A, E, T and their pairs are
+    derived on demand, and the reverse; see :meth:`in_basis`.
+
+    The object carries no grid. Everything that depends on the domain takes
+    the ``L1Data`` the covariance accompanies: :meth:`check_compatible`,
+    :meth:`like`, :meth:`from_psd`, :meth:`from_variance`, :meth:`noise_psd`,
+    :meth:`noise_variance` and ``enchilada.transform``.
+
+    Construction checks what needs no grid: required diagonals, known
+    channels, one orientation per pair, finite floating arrays of one shape,
+    real nonnegative diagonals, Hermitian full-form diagonal blocks, and
+    positive definiteness over the channels with nonzero variance at each
+    point. Stored arrays are independent read-only copies. Equality is
+    identity; compare arrays explicitly.
+    """
+
+    pairs: dict[tuple[str, str], np.ndarray]
+    channel_names: tuple[str, ...] = field(kw_only=True)
+    form: str = field(default="diagonal", kw_only=True)
+    _derived: "Covariance | None" = field(
+        default=None, init=False, repr=False, compare=False
+    )
+
+    # ---- construction -----------------------------------------------------
+
+    def __post_init__(self) -> None:
+        channels = self._validated_channel_names()
+        object.__setattr__(self, "channel_names", channels)
+        if self.form not in FORMS:
+            raise ValueError(f"form must be one of {FORMS}, got {self.form!r}")
+        if not isinstance(self.pairs, Mapping):
+            raise TypeError("pairs must be a dict of (first, second) -> numpy array")
+        stored: dict[tuple[str, str], np.ndarray] = {}
+        for key, value in self.pairs.items():
+            pair_key, reversed_orientation = self._canonical_key(key)
+            if pair_key in stored:
+                raise ValueError(f"pair {pair_key!r} is given in both orientations")
+            array = self._validated_array(pair_key, value)
+            stored[pair_key] = (
+                self._conjugate_transpose(array) if reversed_orientation else array
+            )
+        missing = [ch for ch in channels if (ch, ch) not in stored]
+        if missing:
+            raise ValueError(
+                f"pairs is missing the diagonal entry for channels {missing}"
+            )
+        shapes = sorted({arr.shape for arr in stored.values()})
+        if len(shapes) != 1:
+            raise ValueError(f"all pair arrays must share one shape, got {shapes}")
+        (shape,) = shapes
+        if self.form == "full":
+            half = len(shape) // 2
+            if len(shape) % 2 or shape[:half] != shape[half:]:
+                raise ValueError(
+                    "form='full' arrays need shape S + S for one grid shape S, "
+                    f"got {shape}"
+                )
+        for ch in channels:
+            if np.iscomplexobj(stored[(ch, ch)]):
+                raise ValueError(f"diagonal pair {(ch, ch)!r} must be real")
+        if self.form == "diagonal":
+            for ch in channels:
+                if np.any(stored[(ch, ch)] < 0):
+                    raise ValueError(f"diagonal pair {(ch, ch)!r} must be nonnegative")
+            self._check_positive_diagonal_form(stored)
+        else:
+            stored = self._symmetrised_full_form(stored)
+            self._check_block_positive(self._assembled_full_matrix(stored)[None])
+        for arr in stored.values():
+            arr.setflags(write=False)
+        object.__setattr__(self, "pairs", stored)
+
+    def _validated_channel_names(self) -> tuple[str, ...]:
+        names = self.channel_names
+        if not isinstance(names, (tuple, list)) or not names:
+            raise ValueError("channel_names must be a non-empty tuple of channel names")
+        channels = tuple(names)
+        if any(not isinstance(ch, str) or not ch for ch in channels) or len(
+            set(channels)
+        ) != len(channels):
+            raise ValueError("channel_names must contain unique non-empty strings")
+        reserved = set(dir(type(self))) | _FIELD_NAMES
+        clashing = [ch for ch in channels if ch in reserved]
+        if clashing:
+            raise ValueError(
+                f"channel names {clashing} collide with Covariance attributes"
+            )
+        return channels
+
+    def _canonical_key(self, key: object) -> tuple[tuple[str, str], bool]:
+        """Return the upper-triangle key and whether ``key`` was reversed."""
+        if not (
+            isinstance(key, tuple)
+            and len(key) == 2
+            and all(isinstance(name, str) for name in key)
+        ):
+            raise TypeError(
+                "pair keys must be (first, second) tuples of channel names, "
+                f"got {key!r}"
+            )
+        for name in key:
+            if name not in self.channel_names:
+                raise ValueError(
+                    f"unknown channel {name!r} in pair {key!r}; "
+                    f"channels are {self.channel_names}"
+                )
+        first, second = key
+        if self.channel_names.index(first) <= self.channel_names.index(second):
+            return (first, second), False
+        return (second, first), True
+
+    @staticmethod
+    def _validated_array(pair_key: tuple[str, str], value: object) -> np.ndarray:
+        if not isinstance(value, np.ndarray):
+            raise TypeError(
+                f"pair {pair_key!r} must be a numpy array, got {type(value).__name__}"
+            )
+        if value.dtype.kind not in "fc":
+            raise TypeError(
+                f"pair {pair_key!r} must have a floating or complex dtype, "
+                f"got {value.dtype}"
+            )
+        if not np.isfinite(value).all():
+            raise ValueError(f"pair {pair_key!r} must be finite")
+        return np.array(value, copy=True)
+
+    def _conjugate_transpose(self, array: np.ndarray) -> np.ndarray:
+        if self.form == "diagonal":
+            return np.conj(array)
+        half = array.ndim // 2
+        return np.conj(np.transpose(array, (*range(half, array.ndim), *range(half))))
+
+    def _lookup(
+        self, stored: Mapping[tuple[str, str], np.ndarray], first: str, second: str
+    ) -> np.ndarray | None:
+        if (first, second) in stored:
+            return stored[(first, second)]
+        if (second, first) in stored:
+            return self._conjugate_transpose(stored[(second, first)])
+        return None
+
+    def _check_positive_diagonal_form(
+        self, stored: dict[tuple[str, str], np.ndarray]
+    ) -> None:
+        """Per point, the channel matrix must be positive definite where active."""
+        channels = self.channel_names
+        if all(first == second for first, second in stored):
+            return  # independent channels: nonnegative diagonals suffice
+        count = len(channels)
+        points = stored[(channels[0], channels[0])].size
+        dtype = complex if any(np.iscomplexobj(a) for a in stored.values()) else float
+        matrices = np.zeros((points, count, count), dtype=dtype)
+        for i, first in enumerate(channels):
+            for j, second in enumerate(channels):
+                values = self._lookup(stored, first, second)
+                if values is not None:
+                    matrices[:, i, j] = values.reshape(-1)
+        self._check_block_positive(matrices)
+
+    @staticmethod
+    def _check_block_positive(matrices: np.ndarray) -> None:
+        """Each matrix must be positive definite over its nonzero-diagonal entries.
+
+        An entry with zero variance must have a zero row and column: it is a
+        structurally inactive point, not a data constraint.
+        """
+        diagonals = matrices.diagonal(axis1=-2, axis2=-1).real
+        inactive = diagonals == 0
+        if np.any(inactive):
+            rows = np.where(inactive[:, :, None], matrices, 0)
+            cols = np.where(inactive[:, None, :], matrices, 0)
+            if np.any(rows != 0) or np.any(cols != 0):
+                raise ValueError(
+                    "a channel with zero variance at a point must have zero "
+                    "cross-covariance there"
+                )
+        for pattern in np.unique(inactive, axis=0):
+            keep = ~pattern
+            if not keep.any():
+                continue
+            selected = matrices[np.all(inactive == pattern, axis=1)][:, keep][
+                :, :, keep
+            ]
+            try:
+                np.linalg.cholesky(selected)
+            except np.linalg.LinAlgError as exc:
+                raise ValueError(
+                    "covariance must be positive definite at every active point"
+                ) from exc
+
+    def _assembled_full_matrix(
+        self, stored: Mapping[tuple[str, str], np.ndarray]
+    ) -> np.ndarray:
+        """Stack full-form pair matrices into one (channels*points)^2 matrix."""
+        channels = self.channel_names
+        sample = stored[(channels[0], channels[0])]
+        points = int(np.prod(sample.shape[: sample.ndim // 2]))
+        dtype = complex if any(np.iscomplexobj(a) for a in stored.values()) else float
+        block = np.zeros((len(channels) * points, len(channels) * points), dtype=dtype)
+        for i, first in enumerate(channels):
+            for j, second in enumerate(channels):
+                values = self._lookup(stored, first, second)
+                if values is not None:
+                    block[
+                        i * points : (i + 1) * points, j * points : (j + 1) * points
+                    ] = values.reshape(points, points)
+        return block
+
+    def _symmetrised_full_form(
+        self, stored: dict[tuple[str, str], np.ndarray]
+    ) -> dict[tuple[str, str], np.ndarray]:
+        """Require Hermitian diagonal blocks and store them exactly symmetric."""
+        result = dict(stored)
+        for ch in self.channel_names:
+            values = stored[(ch, ch)]
+            points = int(np.prod(values.shape[: values.ndim // 2]))
+            matrix = values.reshape(points, points)
+            scale = np.sqrt(np.abs(np.diagonal(matrix).real))
+            with np.errstate(over="ignore", under="ignore"):
+                tolerance = (1e-12 * np.maximum.outer(scale, scale)) * np.minimum.outer(
+                    scale, scale
+                )
+                asymmetry = np.abs(matrix - matrix.conj().T)
+            if np.any(asymmetry > tolerance):
+                raise ValueError(f"diagonal pair {(ch, ch)!r} must be Hermitian")
+            with np.errstate(under="ignore"):
+                symmetric = 0.5 * (matrix + matrix.conj().T)
+            result[(ch, ch)] = symmetric.real.reshape(values.shape)
+        return result
+
+    # ---- access -----------------------------------------------------------
+
+    def pair(self, first: str, second: str) -> np.ndarray:
+        """Covariance between two channels: stored, conjugate-transposed, or zero.
+
+        A stored pair returns its read-only array; never write to it.
+        """
+        for name in (first, second):
+            if name not in self.channel_names:
+                raise ValueError(
+                    f"unknown channel {name!r}; channels are {self.channel_names}"
+                )
+        found = self._lookup(self.pairs, first, second)
+        if found is None:
+            return np.zeros_like(self.pairs[(first, first)])
+        return found
+
+    def __getattr__(self, name: str) -> np.ndarray:
+        # Only reached when normal lookup fails, so fields and methods win.
+        if name.startswith("_") or name in _FIELD_NAMES:
+            raise AttributeError(name)
+        channels = self.channel_names
+        try:
+            resolved = split_pair_name(name, channels)
+        except ValueError as exc:
+            raise AttributeError(str(exc)) from None
+        if resolved is not None:
+            return self.pair(*resolved)
+        derived_basis = self._other_basis()
+        if derived_basis is not None:
+            if split_pair_name(name, BASES[derived_basis]) is not None:
+                return getattr(self.in_basis(derived_basis), name)
+        valid = [*channels, *(a + b for a in channels for b in channels if a != b)]
+        if derived_basis is not None:
+            derived_channels = BASES[derived_basis]
+            valid += [
+                *derived_channels,
+                *(a + b for a in derived_channels for b in derived_channels if a != b),
+            ]
+        raise AttributeError(
+            f"Covariance has no attribute {name!r}; channel attributes are {valid}"
+        )
+
+    # ---- copies -----------------------------------------------------------
+
+    def copy(self) -> "Covariance":
+        """Copy and revalidate, for arrays a caller may have edited in place."""
+        return Covariance(
+            {key: arr.copy() for key, arr in self.pairs.items()},
+            channel_names=self.channel_names,
+            form=self.form,
+        )
+
+    def _copy_validated(self) -> "Covariance":
+        """Copy an owned, already validated object without re-running checks.
+
+        Only for orchestrator-owned objects never handed to callers; public
+        input and block-returned covariance go through :meth:`copy`.
+        """
+        snapshot = object.__new__(Covariance)
+        copied = {key: arr.copy() for key, arr in self.pairs.items()}
+        for arr in copied.values():
+            arr.setflags(write=False)
+        object.__setattr__(snapshot, "pairs", copied)
+        object.__setattr__(snapshot, "channel_names", self.channel_names)
+        object.__setattr__(snapshot, "form", self.form)
+        object.__setattr__(snapshot, "_derived", None)
+        return snapshot
+
+    # ---- derived basis (Task 2) -------------------------------------------
+
+    def _basis_name(self) -> str | None:
+        current = frozenset(self.channel_names)
+        for basis, names in BASES.items():
+            if current == frozenset(names):
+                return basis
+        return None
+
+    def _other_basis(self) -> str | None:
+        basis = self._basis_name()
+        if basis is None:
+            return None
+        return "AET" if basis == "XYZ" else "XYZ"
+
+    def in_basis(self, basis: str) -> "Covariance":
+        raise NotImplementedError  # Task 2
+
+
+_FIELD_NAMES = frozenset(f.name for f in fields(Covariance))
 
 
 def _validate_covariance_values(
