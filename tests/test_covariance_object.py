@@ -648,6 +648,16 @@ class TestFactoriesAndReadBack:
         with pytest.raises(ValueError, match="keys must match"):
             Covariance.from_variance(data, {"A": 1.0})
 
+    def test_from_variance_rejects_zero_variance(self, rng):
+        data = make_observed(rng, channel_names=AE)
+        with pytest.raises(ValueError, match="positive at every point"):
+            Covariance.from_variance(data, 0.0)
+
+    def test_from_variance_rejects_negative_variance(self, rng):
+        data = make_observed(rng, channel_names=AE)
+        with pytest.raises(ValueError, match="nonnegative|positive"):
+            Covariance.from_variance(data, {"A": 1.0, "E": -1.0})
+
     def test_from_psd_fills_every_bin_including_dc(self, rng):
         data = make_observed(rng, channel_names=AE).to_frequency()
         cov = Covariance.from_psd(data, FlatPSD(2.0))

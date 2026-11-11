@@ -478,21 +478,25 @@ class Covariance:
                 )
             levels = [float(scalar)] * len(channels)
         shape = reference_data.channel_data[channels[0]].shape
-        return cls(
+        covariance = cls(
             {
                 (ch, ch): np.full(shape, level)
                 for ch, level in zip(channels, levels, strict=True)
             },
             channel_names=channels,
         )
+        covariance.check_compatible(reference_data)
+        return covariance
 
     def check_compatible(self, reference_data: "L1Data") -> None:
         """Require this covariance to describe ``reference_data``'s grid and domain.
 
         Checks channel order, the shape rule for ``form``, real arrays outside
-        the frequency domain, real values at DC and even-length Nyquist for
-        complex frequency pairs, positive variances in time and frequency, and
-        WDM variances that are zero exactly at structurally inactive pixels.
+        the frequency domain, real entries where both coefficients are real
+        (the DC and even-length Nyquist entries of a diagonal-form pair; the
+        DC/Nyquist corner entries of a full-form block), positive variances in
+        time and frequency, and WDM variances that are zero exactly at
+        structurally inactive pixels.
         """
         if tuple(reference_data.channel_names) != self.channel_names:
             raise ValueError(
