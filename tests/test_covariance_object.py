@@ -6,6 +6,8 @@ import pickle
 import numpy as np
 import pytest
 
+from conftest import make_observed
+from enchilada import L1Data, WDMGrid
 from enchilada.covariance import AET_FROM_XYZ, Covariance
 
 AE = ("A", "E")
@@ -600,3 +602,166 @@ class TestDerivedBasis:
             cov.in_basis("XYZ")
         with pytest.raises(ValueError, match="basis must be one of"):
             Covariance(xyz_pairs(), channel_names=XYZ).in_basis("ABC")
+
+
+class FlatPSD:
+    def __init__(self, level):
+        self.level = level
+
+    def psd(self, frequencies, channel=None):
+        return np.full_like(frequencies, self.level, dtype=float)
+
+
+class TestLike:
+    def test_string_keys_and_form_inference(self, rng):
+        data = make_observed(rng, channel_names=AE)
+        n = data.num_time_samples
+        cov = Covariance.like(
+            data, {"A": np.ones(n), "E": np.full(n, 4.0), "AE": np.full(n, 0.5)}
+        )
+        assert cov.form == "diagonal"
+        np.testing.assert_array_equal(cov.AE, 0.5)
+        full = Covariance.like(data, {"A": np.eye(n), "E": np.eye(n)})
+        assert full.form == "full"
+
+    def test_bad_keys_and_shapes(self, rng):
+        data = make_observed(rng, channel_names=AE)
+        n = data.num_time_samples
+        with pytest.raises(ValueError, match="neither a channel nor a pair"):
+            Covariance.like(data, {"A": np.ones(n), "E": np.ones(n), "AT": np.ones(n)})
+        with pytest.raises(ValueError, match="channel shape"):
+            Covariance.like(data, {"A": np.ones(n + 1), "E": np.ones(n + 1)})
+        with pytest.raises(ValueError, match="at least every channel"):
+            Covariance.like(data, {})
+
+
+class TestFactoriesAndReadBack:
+    def test_from_variance_scalar_and_mapping(self, rng):
+        data = make_observed(rng, channel_names=AE)
+        cov = Covariance.from_variance(data, 0.25)
+        np.testing.assert_array_equal(cov.A, 0.25)
+        assert cov.noise_variance("A", data) == 0.25
+        cov = Covariance.from_variance(data, {"A": 1.0, "E": 4.0})
+        np.testing.assert_array_equal(cov.E, 4.0)
+        with pytest.raises(ValueError, match="time-domain"):
+            Covariance.from_variance(data.to_frequency(), 1.0)
+        with pytest.raises(ValueError, match="keys must match"):
+            Covariance.from_variance(data, {"A": 1.0})
+
+    def test_from_psd_fills_every_bin_including_dc(self, rng):
+        data = make_observed(rng, channel_names=AE).to_frequency()
+        cov = Covariance.from_psd(data, FlatPSD(2.0))
+        tobs = data.num_time_samples / data.sample_rate_hz
+        np.testing.assert_allclose(cov.A, tobs / 2 * 2.0)
+        assert cov.A.shape == (data.num_time_samples // 2 + 1,)
+        np.testing.assert_allclose(cov.noise_psd("A", data), 2.0)
+
+    def test_from_psd_rejects_non_frequency_data_and_bad_models(self, rng):
+        data = make_observed(rng, channel_names=AE)
+        with pytest.raises(ValueError, match="frequency-domain"):
+            Covariance.from_psd(data, FlatPSD(1.0))
+        spectrum = data.to_frequency()
+
+        class Diverging:
+            def psd(self, f, channel=None):
+                with np.errstate(divide="ignore"):
+                    return 1.0 / f**2
+
+        with pytest.raises(ValueError, match="f = 0"):
+            Covariance.from_psd(spectrum, Diverging())
+        with pytest.raises(TypeError, match="psd"):
+            Covariance.from_psd(spectrum, object())
+
+    @pytest.mark.parametrize("n", [63, 64])
+    def test_white_noise_variance_round_trips_exactly(self, rng, n):
+        data = make_observed(rng, num_time_samples=n, channel_names=("A",))
+        sigma2 = 0.09
+        spectrum = data.to_frequency()
+        cov = Covariance.from_psd(spectrum, FlatPSD(2 * sigma2 / data.sample_rate_hz))
+        assert cov.noise_variance("A", spectrum) == pytest.approx(sigma2, rel=1e-12)
+
+    def test_noise_variance_needs_stationary_time_and_noise_psd_needs_frequency(
+        self, rng
+    ):
+        data = make_observed(rng, channel_names=AE)
+        n = data.num_time_samples
+        cov = Covariance.like(data, {"A": np.linspace(1, 2, n), "E": np.ones(n)})
+        with pytest.raises(ValueError, match="stationary"):
+            cov.noise_variance("A", data)
+        with pytest.raises(ValueError, match="frequency-domain"):
+            cov.noise_psd("A", data)
+
+
+class TestCheckCompatible:
+    def test_channel_order_and_shape(self, rng):
+        data = make_observed(rng, channel_names=AE)
+        cov = Covariance.from_variance(data, 1.0)
+        with pytest.raises(ValueError, match="channel_names"):
+            cov.check_compatible(make_observed(rng, channel_names=("E", "A")))
+        with pytest.raises(ValueError, match="shape"):
+            cov.check_compatible(
+                make_observed(rng, num_time_samples=32, channel_names=AE)
+            )
+        with pytest.raises(ValueError, match="shape"):
+            cov.check_compatible(data.to_frequency())
+
+    def test_time_arrays_must_be_real_and_positive(self, rng):
+        data = make_observed(rng, channel_names=AE)
+        n = data.num_time_samples
+        complex_cross = Covariance(
+            {
+                ("A", "A"): np.ones(n),
+                ("E", "E"): np.ones(n),
+                ("A", "E"): np.full(n, 0.1j),
+            },
+            channel_names=AE,
+        )
+        with pytest.raises(ValueError, match="must be real"):
+            complex_cross.check_compatible(data)
+        zero = np.ones(n)
+        zero[0] = 0.0
+        with pytest.raises(ValueError, match="positive at every point"):
+            Covariance(
+                {("A", "A"): zero, ("E", "E"): np.ones(n)}, channel_names=AE
+            ).check_compatible(data)
+
+    def test_frequency_endpoints_must_be_real(self, rng):
+        spectrum = make_observed(rng, channel_names=AE).to_frequency()
+        k = spectrum.num_time_samples // 2 + 1
+        cross = np.full(k, 0.1 + 0.1j)
+        cov = Covariance(
+            {("A", "A"): np.ones(k), ("E", "E"): np.ones(k), ("A", "E"): cross},
+            channel_names=AE,
+        )
+        with pytest.raises(ValueError, match="both coefficients are real"):
+            cov.check_compatible(spectrum)
+        cross = cross.copy()
+        cross[0] = 0.1
+        cross[-1] = 0.1
+        Covariance(
+            {("A", "A"): np.ones(k), ("E", "E"): np.ones(k), ("A", "E"): cross},
+            channel_names=AE,
+        ).check_compatible(spectrum)
+
+    def test_wdm_zeros_exactly_at_inactive_pixels(self):
+        grid = WDMGrid(num_frequency_divisions=4, num_time_divisions=8)
+        coefficients = np.zeros(grid.array_shape)
+        # L1Data infers wdm_grid from the
+        # (num_frequency_divisions + 1, num_time_divisions) shape.
+        data = L1Data(
+            {"A": coefficients},
+            sample_rate_hz=1.0,
+            tdi_generation="2.0",
+            physical_observable="fractional_frequency",
+            data_domain="wdm",
+        )
+        variances = np.where(grid.active_mask, 2.0, 0.0)
+        Covariance({("A", "A"): variances}, channel_names=("A",)).check_compatible(data)
+        with pytest.raises(ValueError, match="inactive WDM pixels"):
+            Covariance(
+                {("A", "A"): np.full(grid.array_shape, 2.0)}, channel_names=("A",)
+            ).check_compatible(data)
+        leaky = variances.copy()
+        leaky[1, 0] = 0.0
+        with pytest.raises(ValueError, match="positive at active WDM"):
+            Covariance({("A", "A"): leaky}, channel_names=("A",)).check_compatible(data)
