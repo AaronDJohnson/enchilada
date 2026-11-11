@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from conftest import make_observed
-from enchilada import BlockState, DataCovariance, L1Data, Wheel, transform
+from enchilada import BlockState, Covariance, L1Data, Wheel, transform
 
 
 class TestConstructorSettings:
@@ -20,9 +20,14 @@ class TestConstructorSettings:
             **settings,
         )
         assert data.channel_names == ("E", "A")
-        covariance = DataCovariance.from_variance(data, {"A": 1.0, "E": 4.0})
-        np.testing.assert_array_equal(covariance.covariance_matrix[0], [[4, 0], [0, 1]])
-        assert covariance.quadratic_form(data.channel_data) == pytest.approx(8.0)
+        covariance = Covariance.from_variance(data, {"A": 1.0, "E": 4.0})
+        assert covariance.channel_names == ("E", "A")
+        assert covariance.E[0] == 4 and covariance.A[0] == 1
+        whitened = sum(
+            float(np.sum(data.channel_data[ch] ** 2 / covariance.pair(ch, ch)))
+            for ch in data.channel_names
+        )
+        assert whitened == pytest.approx(8.0)
 
     def test_resolved_order_survives_reordered_buffers_and_transforms(self):
         data = L1Data(
@@ -35,7 +40,7 @@ class TestConstructorSettings:
             data,
             channel_data={"A": data.channel_data["A"], "E": data.channel_data["E"]},
         )
-        covariance = DataCovariance.from_variance(data, {"A": 1.0, "E": 4.0})
+        covariance = Covariance.from_variance(data, {"A": 1.0, "E": 4.0})
         wheel = Wheel(reordered, covariance)
         assert wheel.observed_data.channel_names == ("E", "A")
         assert reordered.to_frequency().to_time().channel_names == ("E", "A")
@@ -48,10 +53,10 @@ class TestConstructorSettings:
             tdi_generation="2.0",
             physical_observable="strain",
         )
-        covariance = DataCovariance.from_variance(data, {"E": 4.0, "A": 1.0})
+        covariance = Covariance.from_variance(data, {"E": 4.0, "A": 1.0})
         assert data.channel_names == ("A", "E")
-        np.testing.assert_array_equal(covariance.covariance_matrix[0], [[1, 0], [0, 4]])
-        covariance.check_compatible(data.to_frequency())
+        assert covariance.A[0] == 1 and covariance.E[0] == 4
+        covariance.check_compatible(data)
 
     def test_settings_cannot_be_passed_positionally(self):
         with pytest.raises(TypeError, match="positional"):
@@ -623,8 +628,8 @@ class TestDomainTransforms:
             power = np.abs(t.to_frequency().channel_data["A"]) ** 2
             acc = power if acc is None else acc + power
         measured = acc / trials
-        noise_covariance = DataCovariance.from_psd(t, White())
-        predicted = noise_covariance.covariance_matrix[:, 0, 0].real
+        covariance = Covariance.from_psd(t.to_frequency(), White())
+        predicted = covariance.A
         interior = slice(10, -10)
         ratio = float(np.mean(measured[interior] / predicted[interior]))
         assert ratio == pytest.approx(1.0, abs=0.05)
@@ -698,7 +703,7 @@ class TestBlockStateFactories:
         assert isinstance(t, BlockState)
         for ch in observed.channel_names:
             np.testing.assert_array_equal(t.template[ch], 2.0)
-        assert t.covariance_matrix is None  # a signal block publishes nothing
+        assert t.covariance is None  # a signal block publishes nothing
 
     def test_block_state_arrays_are_taken_not_copied(self, observed):
         arrs = {ch: np.zeros_like(a) for ch, a in observed.channel_data.items()}
@@ -762,12 +767,12 @@ class TestBlockStateFactories:
 class TestBlockStateClass:
     """The container itself, for block states built without the factories."""
 
-    def test_with_covariance_matrix_returns_a_new_block_state(self, observed):
+    def test_with_covariance_returns_a_new_block_state(self, observed):
         z = observed.zero_block_state()
-        model = DataCovariance.from_variance(observed, 1.0)
-        published = z.with_covariance_matrix(model)
-        assert published.covariance_matrix is model
-        assert z.covariance_matrix is None  # frozen: the original is unchanged
+        model = Covariance.from_variance(observed, 1.0)
+        published = z.with_covariance(model)
+        assert published.covariance is model
+        assert z.covariance is None  # frozen: the original is unchanged
         assert published.template is z.template
 
     def test_equality_is_identity_not_elementwise(self, observed):

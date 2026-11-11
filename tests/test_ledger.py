@@ -8,9 +8,7 @@ from enchilada import BlockState, Wheel
 class AmplitudeUpdate:
     name = "amplitudes"
 
-    def sample(
-        self, conditional_residual, noise_covariance, current_block_state, *, rng
-    ):
+    def sample(self, conditional_residual, covariance, current_block_state, *, rng):
         current_block_state.parameters["amplitudes"] += 1
         return current_block_state
 

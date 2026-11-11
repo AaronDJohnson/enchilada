@@ -4,10 +4,9 @@ from typing import TYPE_CHECKING, Any, ClassVar, Never
 import numpy as np
 
 from enchilada.block_state import BlockState, check_on_grid, check_rfft_endpoints
-from enchilada.covariance import DataCovariance
+from enchilada.covariance import Covariance
 from enchilada.domains import WDMGrid, check_wdm_coefficients
 from enchilada.orbits import Orbit
-from enchilada.translated_covariance import TranslatedCovariance
 
 
 @dataclass(frozen=True, eq=False, init=False)
@@ -35,7 +34,7 @@ class L1Data:
             between even and odd time sample counts.
         channel_names: Ordered TDI channel names, e.g. ("A", "E", "T"). Omitted
             or None uses `channel_data` key order. An explicit order overrides
-            dictionary order and must match covariance matrix channel axes.
+            dictionary order and is the channel order a `Covariance` uses.
         tdi_generation: TDI generation string, e.g. "1.5" or "2.0".
         physical_observable: Data meaning, typically "fractional_frequency"
             (dnu/nu), "phase" (radians), or "strain". Custom strings are allowed.
@@ -52,7 +51,7 @@ class L1Data:
 
     Fields are frozen, but the supplied arrays and dictionary are retained without
     copying. Wheel makes its own snapshots. Covariance is supplied separately as
-    `DataCovariance`, `TranslatedCovariance`, or None. See :meth:`aliases` for
+    a `Covariance` or None. See :meth:`aliases` for
     scientific shorthand. Equality compares identity; compare arrays explicitly
     for numerical equality.
     """
@@ -427,14 +426,14 @@ class L1Data:
         self,
         template: dict[str, np.ndarray] | None = None,
         *,
-        covariance_matrix: DataCovariance | TranslatedCovariance | None = None,
+        covariance: Covariance | None = None,
         parameters: dict[str, Any] | None = None,
     ) -> BlockState:
         """Build a `BlockState` and validate its signal against this grid.
 
         The summed TDI signal must match this object's channels, shape, and
         real/complex representation. None means zero contribution, replacing
-        any prior signal. Optional `covariance_matrix` replaces the full covariance
+        any prior signal. Optional `covariance` replaces the full covariance
         on adoption; its compatibility is checked by Wheel, not this helper.
 
         Physical parameters follow the `BlockState` contract.
@@ -443,7 +442,7 @@ class L1Data:
         """
         state = BlockState(
             template=template,
-            covariance_matrix=covariance_matrix,
+            covariance=covariance,
             parameters={} if parameters is None else parameters,
         )
         if state.template is not None:
@@ -460,7 +459,7 @@ class L1Data:
     def zero_block_state(
         self,
         *,
-        covariance_matrix: DataCovariance | TranslatedCovariance | None = None,
+        covariance: Covariance | None = None,
         parameters: dict[str, Any] | None = None,
     ) -> BlockState:
         """A `BlockState` with a zero signal on this grid: nothing to subtract.
@@ -471,11 +470,11 @@ class L1Data:
         any arrays:
 
             return BlockState(parameters={"sources": []})
-            return BlockState(covariance_matrix=covariance)
+            return BlockState(covariance=covariance)
         """
         return self.block_state(
             {ch: np.zeros_like(arr) for ch, arr in self.channel_data.items()},
-            covariance_matrix=covariance_matrix,
+            covariance=covariance,
             parameters=parameters,
         )
 

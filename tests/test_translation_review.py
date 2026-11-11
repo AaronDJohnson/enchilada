@@ -5,75 +5,54 @@ import importlib.util
 import numpy as np
 import pytest
 
-from enchilada import BlockState, DataCovariance, Wheel
+from enchilada import BlockState, Covariance, Wheel
 from enchilada.translation import transform
 
 
-@pytest.mark.parametrize("operation", ["apply", "solve", "project", "quadratic_form"])
-def test_translated_wdm_covariance_rejects_inactive_data_before_backend_use(
-    observed, operation
-):
-    covariance = transform(
-        DataCovariance.from_variance(observed, 1.0),
-        "wdm",
-        num_frequency_divisions=4,
-    )
-    values = {
-        name: np.zeros(covariance.wdm_grid.array_shape)
-        for name in observed.channel_names
-    }
-    values["A"][0, 1] = 1.0
-    with pytest.raises(ValueError, match="inactive"):
-        getattr(covariance, operation)(values)
-
-
+@pytest.mark.skipif(
+    importlib.util.find_spec("wdm") is None, reason="local WDM backend is optional"
+)
+@pytest.mark.xfail(
+    raises=NotImplementedError,
+    strict=True,
+    reason="covariance translation seam, design spec section 6",
+)
 def test_noise_only_wdm_result_can_reuse_grid_with_compatible_time_reference(observed):
     covariance = transform(
-        DataCovariance.from_variance(observed, 1.0),
+        Covariance.from_variance(observed, 1.0),
         "wdm",
         num_frequency_divisions=4,
+        reference_data=observed,
     )
-    original = BlockState(covariance_matrix=covariance, parameters={"variance": 1.0})
-    converted = transform(original, "wdm", reference_data=observed)
-    assert converted.covariance_matrix.wdm_grid == covariance.wdm_grid
+    original = BlockState(covariance=covariance, parameters={"variance": 1.0})
+    wdm_reference = transform(observed, "wdm", num_frequency_divisions=4)
+    converted = transform(original, "wdm", reference_data=wdm_reference)
     assert converted.parameters == original.parameters
     assert converted.template is None
-    assert converted.covariance_matrix is not covariance
+    assert converted.covariance is not covariance
 
 
-def test_omitted_domain_preserves_inputs_while_explicit_domain_aligns_them(observed):
+def test_omitted_domain_and_explicit_same_domain_both_receive_the_covariance(observed):
     received = []
 
     class RecordInputs:
         def __init__(self, name):
             self.name = name
 
-        def sample(
-            self, conditional_residual, noise_covariance, current_block_state, *, rng
-        ):
-            received.append(
-                (
-                    "sample",
-                    self.name,
-                    conditional_residual.data_domain,
-                    noise_covariance.data_domain,
-                )
-            )
+        def sample(self, conditional_residual, covariance, current_block_state, *, rng):
+            covariance.check_compatible(conditional_residual)
+            received.append(("sample", self.name, conditional_residual.data_domain))
             return current_block_state
 
-    covariance = transform(DataCovariance.from_variance(observed, 2.0), "frequency")
-    wheel = Wheel(observed, covariance)
+    wheel = Wheel(observed, Covariance.from_variance(observed, 2.0))
     wheel.add(RecordInputs("default"), initial_block_state=BlockState())
     wheel.add(
         RecordInputs("explicit"), initial_block_state=BlockState(), data_domain="time"
     )
     assert received == []
     wheel.run(1)
-    assert received == [
-        ("sample", "default", "time", "frequency"),
-        ("sample", "explicit", "time", "time"),
-    ]
-    assert wheel.noise_covariance.data_domain == "frequency"
+    assert received == [("sample", "default", "time"), ("sample", "explicit", "time")]
+    assert wheel.covariance.noise_variance("A", observed) == 2.0
 
 
 @pytest.mark.parametrize(
@@ -102,15 +81,10 @@ def test_rejected_translated_output_rolls_back_mutated_inputs_and_rng(
     class MutateInputs:
         name = "mutate"
 
-        def sample(
-            self, conditional_residual, noise_covariance, current_block_state, *, rng
-        ):
+        def sample(self, conditional_residual, covariance, current_block_state, *, rng):
             amplitude = rng.normal()
             if fail[0]:
                 conditional_residual.channel_data["A"][:] = 1e9
-                native = noise_covariance.source_covariance
-                native.covariance_matrix.setflags(write=True)
-                native.covariance_matrix[:] = -1.0
                 current_block_state.parameters["coordinates"][0] = -8.0
                 signal = {
                     name: np.zeros_like(values)
@@ -122,9 +96,8 @@ def test_rejected_translated_output_rolls_back_mutated_inputs_and_rng(
                 parameters={"amplitude": amplitude, "coordinates": np.array([3.0])}
             )
 
-    initial_covariance = DataCovariance.from_variance(observed, 2.0)
-    actual = Wheel(canonical, initial_covariance, random_seed=7)
-    control = Wheel(canonical, initial_covariance, random_seed=7)
+    actual = Wheel(canonical, random_seed=7)
+    control = Wheel(canonical, random_seed=7)
     for wheel in (actual, control):
         wheel.add(
             MutateInputs(),
@@ -147,10 +120,6 @@ def test_rejected_translated_output_rolls_back_mutated_inputs_and_rng(
         np.testing.assert_array_equal(
             actual.residual().channel_data[name], canonical.channel_data[name]
         )
-    np.testing.assert_array_equal(
-        actual.noise_covariance.covariance_matrix,
-        initial_covariance.covariance_matrix,
-    )
     fail[0] = False
     actual.run(1)
     control.run(1)

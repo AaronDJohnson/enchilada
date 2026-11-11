@@ -67,7 +67,7 @@ def test_tutorial_sampler_refreshes_target_when_other_blocks_change_it(
 ):
     import numpy as np
 
-    from enchilada import DataCovariance, L1Data
+    from enchilada import Covariance, L1Data
 
     module = tutorial_definitions
     times = np.arange(64)
@@ -79,7 +79,7 @@ def test_tutorial_sampler_refreshes_target_when_other_blocks_change_it(
         tdi_generation="2.0",
         physical_observable="fractional_frequency",
     )
-    noise = DataCovariance.from_variance(data, 0.2)
+    noise = Covariance.from_variance(data, 0.2)
     block = module.SineAmplitudeBlock(
         name="signal", frequency_hz=0.125, proposal_std=0.4, steps_per_call=20
     )
@@ -88,7 +88,7 @@ def test_tutorial_sampler_refreshes_target_when_other_blocks_change_it(
     # conditional data and covariance. A cached old target would repeat a draw.
     positive = block.sample(data, noise, initial_result, rng=np.random.default_rng(1))
     changed_data = replace(data, channel_data={"A": -2.0 * basis})
-    changed_noise = DataCovariance.from_variance(changed_data, 0.4)
+    changed_noise = Covariance.from_variance(changed_data, 0.4)
     negative = block.sample(
         changed_data, changed_noise, initial_result, rng=np.random.default_rng(1)
     )
@@ -103,7 +103,7 @@ def test_tutorial_rejection_returns_retained_signal_and_complete_state(
 ):
     import numpy as np
 
-    from enchilada import DataCovariance, L1Data
+    from enchilada import Covariance, L1Data
 
     data = L1Data(
         channel_data={"A": np.zeros(64)},
@@ -112,7 +112,7 @@ def test_tutorial_rejection_returns_retained_signal_and_complete_state(
         tdi_generation="2.0",
         physical_observable="fractional_frequency",
     )
-    noise = DataCovariance.from_variance(data, 0.2)
+    noise = Covariance.from_variance(data, 0.2)
     block = tutorial_definitions.SineAmplitudeBlock(
         name="signal", frequency_hz=0.125, proposal_std=1e12, steps_per_call=8
     )

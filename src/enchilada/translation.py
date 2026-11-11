@@ -6,14 +6,9 @@ from typing import overload
 
 from enchilada._transforms import transform_channels
 from enchilada.block_state import BlockState, check_on_grid
-from enchilada.covariance import Covariance, DataCovariance
+from enchilada.covariance import Covariance
 from enchilada.data import L1Data
 from enchilada.domains import WDMGrid, resolve_wdm_grid
-from enchilada.translated_covariance import (
-    TranslatedCovariance,
-    copy_covariance,
-    translate_covariance,
-)
 
 
 def _target_grid(
@@ -63,17 +58,6 @@ def transform(
 
 @overload
 def transform(
-    value: DataCovariance | TranslatedCovariance,
-    target_domain: str,
-    *,
-    num_frequency_divisions: int | None = None,
-    num_time_divisions: int | None = None,
-    reference_data: L1Data | None = None,
-) -> DataCovariance | TranslatedCovariance: ...
-
-
-@overload
-def transform(
     value: BlockState,
     target_domain: str,
     *,
@@ -84,13 +68,13 @@ def transform(
 
 
 def transform(
-    value: L1Data | Covariance | DataCovariance | TranslatedCovariance | BlockState,
+    value: L1Data | Covariance | BlockState,
     target_domain: str,
     *,
     num_frequency_divisions: int | None = None,
     num_time_divisions: int | None = None,
     reference_data: L1Data | None = None,
-) -> L1Data | Covariance | DataCovariance | TranslatedCovariance | BlockState:
+) -> L1Data | Covariance | BlockState:
     """Return an independent representation of data, covariance or a block state.
 
     Args:
@@ -104,16 +88,15 @@ def transform(
             may be supplied if consistent. WDM-to-WDM defaults to its current grid.
         reference_data: Required for a Covariance, as the L1Data on its current
             grid, and for a BlockState with a signal, as that signal's source
-            grid. If supplied for a DataCovariance or TranslatedCovariance, its
-            channel names, sampling grid and epoch must agree.
+            grid.
 
     Preserves observation metadata, orbit, and published physical parameters.
     Signal arrays follow dt*rfft and the WDM backend's normalized-edge convention.
-    Covariance conversion preserves correlations and statistical exclusions;
-    a TranslatedCovariance provides exact operators instead of a diagonal grid.
+    Covariance translation between domains is a seam that raises
+    `NotImplementedError` until the translation layer is installed (design spec
+    section 6).
     WDM coefficient transforms require the separately installed local backend
-    and Python >=3.13. Same-grid copies and covariance construction do not;
-    covariance operations load the backend when they transform WDM coefficients.
+    and Python >=3.13. Same-grid copies and covariance construction do not.
     """
     if target_domain not in L1Data.DOMAINS:
         raise ValueError(f"target_domain must be one of {L1Data.DOMAINS}")
@@ -170,18 +153,6 @@ def transform(
             "covariance translation between domains is not implemented; see "
             "docs/superpowers/specs/2026-11-10-covariance-object-design.md section 6"
         )
-    if isinstance(value, (DataCovariance, TranslatedCovariance)):
-        value = copy_covariance(value)
-        if reference_data is not None:
-            value.check_compatible(reference_data)
-        grid = _target_grid(
-            target_domain,
-            value.num_time_samples,
-            value.wdm_grid,
-            num_frequency_divisions,
-            num_time_divisions,
-        )
-        return translate_covariance(value, target_domain, target_wdm_grid=grid)
     if isinstance(value, BlockState):
         source_state = deepcopy(value)
         source_state.__post_init__()
@@ -218,10 +189,10 @@ def transform(
                 source_wdm_grid=source_reference.wdm_grid,
                 target_wdm_grid=grid,
             )
-        covariance = source_state.covariance_matrix
+        covariance = source_state.covariance
         if covariance is not None:
-            # A covariance carries its own source representation, which can
-            # differ from the signal's. Share the chosen target grid instead.
+            # The covariance is on reference_data's grid, like the signal.
+            # Pass the resolved target grid so both land on the same one.
             if (
                 signal is not None
                 and reference_data is not None
@@ -244,5 +215,5 @@ def transform(
                 num_time_divisions=num_time_divisions,
                 reference_data=reference_data,
             )
-        return replace(source_state, template=signal, covariance_matrix=covariance)
-    raise TypeError("transform expects L1Data, a covariance, or BlockState")
+        return replace(source_state, template=signal, covariance=covariance)
+    raise TypeError("transform expects L1Data, Covariance, or BlockState")

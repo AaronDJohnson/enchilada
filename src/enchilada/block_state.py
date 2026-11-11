@@ -5,9 +5,8 @@ from typing import Any
 
 import numpy as np
 
-from enchilada.covariance import DataCovariance
+from enchilada.covariance import Covariance
 from enchilada.domains import WDMGrid, check_wdm_coefficients
-from enchilada.translated_covariance import TranslatedCovariance
 
 
 @dataclass(frozen=True, eq=False)
@@ -25,16 +24,16 @@ class BlockState:
     Sampler continuation state, diagnostics, and resources belong to the block's
     own State object; they are not published to the ledger.
 
-    `covariance_matrix` is a DataCovariance or TranslatedCovariance replacing the
-    full covariance; components are not summed.
-    A signal block can omit it. The current covariance owner must supply its
-    complete covariance on every call. A noise-only state needs no signal arrays.
+    `covariance` is a Covariance replacing the current noise model; components
+    are not summed. A signal block can omit it. The current covariance owner
+    must supply its complete covariance on every call, on the grid of the data
+    it received. A noise-only state needs no signal arrays.
     Data conventions and orbit stay with L1Data.
     Construction checks the container; Wheel checks the grid and finiteness.
     """
 
     template: dict[str, np.ndarray] | None = None
-    covariance_matrix: DataCovariance | TranslatedCovariance | None = None
+    covariance: Covariance | None = None
     parameters: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -56,25 +55,18 @@ class BlockState:
                         f"BlockState.template[{ch!r}] has "
                         f"dtype {arr.dtype}; a signal must be floating or complex"
                     )
-        if self.covariance_matrix is not None and not isinstance(
-            self.covariance_matrix, (DataCovariance, TranslatedCovariance)
-        ):
-            raise TypeError(
-                "BlockState.covariance_matrix must be a DataCovariance "
-                "or TranslatedCovariance"
-            )
+        if self.covariance is not None and not isinstance(self.covariance, Covariance):
+            raise TypeError("BlockState.covariance must be a Covariance or None")
         if not isinstance(self.parameters, dict):
             raise TypeError("BlockState.parameters must be a dict")
 
-    def with_covariance_matrix(
-        self, covariance_matrix: DataCovariance | TranslatedCovariance
-    ) -> "BlockState":
+    def with_covariance(self, covariance: Covariance) -> "BlockState":
         """Return a shallow replacement with the supplied covariance.
 
         Other fields remain shared. Publication occurs only when Wheel adopts
         the returned state.
         """
-        return replace(self, covariance_matrix=covariance_matrix)
+        return replace(self, covariance=covariance)
 
 
 def check_rfft_endpoints(

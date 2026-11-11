@@ -7,9 +7,8 @@ import numpy as np
 
 from enchilada.block import Block
 from enchilada.block_state import BlockState
-from enchilada.covariance import DataCovariance
+from enchilada.covariance import Covariance
 from enchilada.data import L1Data
-from enchilada.translated_covariance import TranslatedCovariance
 
 
 class EchoBlock:
@@ -34,7 +33,7 @@ class EchoBlock:
     def sample(
         self,
         conditional_residual: L1Data,
-        noise_covariance: DataCovariance | TranslatedCovariance | None,
+        covariance: Covariance | None,
         current_block_state: BlockState,
         *,
         rng: np.random.Generator,
@@ -63,14 +62,14 @@ def check_block(
     num_cycles: int = 2,
     *,
     initial_block_state: BlockState,
-    initial_noise_covariance: DataCovariance | TranslatedCovariance | None = None,
+    initial_covariance: Covariance | None = None,
     random_seed: int | None = 0,
 ) -> None:
     """Run a block on a scratch Wheel and validate each returned BlockState.
 
     Adopts the required ``initial_block_state``, then calls ``sample`` for
     ``num_cycles``, passing accepted state into each call. Wheel validates the
-    signal grid and any published DataCovariance or TranslatedCovariance.
+    signal grid and any published Covariance.
 
     Args:
         block_under_test: Configured block whose exchange contract is checked.
@@ -78,8 +77,8 @@ def check_block(
         num_cycles: Number of sampling cycles after initialization; defaults to 2.
         initial_block_state: Required starting physical estimates on the observation
             grid. Initialize any sampler continuation state on the block itself.
-        initial_noise_covariance: Starting DataCovariance or TranslatedCovariance
-            for the scratch Wheel. None leaves it unset until a block supplies it.
+        initial_covariance: Starting Covariance for the scratch Wheel. None
+            leaves it unset until a block supplies it.
         random_seed: Seed for the scratch Wheel's NumPy generator. Defaults to
             0 for reproducibility; None requests nondeterministic initialization.
 
@@ -92,7 +91,7 @@ def check_block(
 
     wheel = Wheel(
         observed_data=observed_data,
-        initial_noise_covariance=initial_noise_covariance,
+        initial_covariance=initial_covariance,
         random_seed=random_seed,
     )
     wheel.add(

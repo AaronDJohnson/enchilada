@@ -12,20 +12,26 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from enchilada import BlockState, DataCovariance, L1Data, TranslatedCovariance
+from enchilada import BlockState, Covariance, L1Data
 
 
 # ---------------------------------------------------------------- noise model
 class FixedLISANoise:
     """One-sided LISA PSD from lisatools ``get_sensitivity`` (A == E).
 
-    The only contract a enchilada noise object needs: ``psd(freqs[, channel])``.
+    The only contract an enchilada noise object needs: ``psd(freqs[, channel])``.
+    ``Covariance.from_psd`` evaluates the model at every rfft bin including
+    ``f = 0``, so frequencies are floored at ``minimum_frequency_hz``.
     """
+
+    def __init__(self, minimum_frequency_hz: float = 1e-5):
+        self.minimum_frequency_hz = minimum_frequency_hz
 
     def psd(self, f, channel=None):
         from lisatools.sensitivity import A1TDISens, get_sensitivity
 
-        return get_sensitivity(np.asarray(f), sens_fn=A1TDISens)
+        floored = np.maximum(np.asarray(f, dtype=float), self.minimum_frequency_hz)
+        return get_sensitivity(floored, sens_fn=A1TDISens)
 
 
 # ---------------------------------------------------------------- waveform helpers
@@ -126,9 +132,8 @@ class GBBlock:
 
     Register with ``wheel.add(block, initial_block_state=initial,
     data_domain="frequency")``. This narrowband likelihood requires native
-    frequency covariance with independent channels;
-    generic translated covariance operators need a different likelihood. Wheel
-    can restore a native frequency covariance that was stored in time or WDM.
+    frequency covariance with independent channels.
+    The covariance must be on the frequency grid of the data it accompanies.
     """
 
     SUPPORTED_CHANNELS = ("A", "E")
@@ -172,7 +177,7 @@ class GBBlock:
     def _context(
         self,
         conditional_residual: L1Data,
-        noise_covariance: DataCovariance | TranslatedCovariance | None,
+        covariance: Covariance | None,
     ):
         if conditional_residual.data_domain != "frequency":
             raise ValueError(f"{self.name}: GBBlock requires frequency-domain data")
@@ -183,28 +188,31 @@ class GBBlock:
         )
         if unsupported:
             raise ValueError(f"{self.name}: unsupported channels {sorted(unsupported)}")
-        if noise_covariance is None:
+        if covariance is None:
             raise ValueError(f"{self.name}: GBBlock requires a noise covariance")
-        if (
-            not isinstance(noise_covariance, DataCovariance)
-            or noise_covariance.data_domain != "frequency"
-        ):
+        try:
+            covariance.check_compatible(conditional_residual)
+        except ValueError as exc:
             raise ValueError(
                 f"{self.name}: this narrowband likelihood requires a native "
-                "frequency-domain covariance"
+                "frequency-domain covariance on the data grid"
+            ) from exc
+        if covariance.form != "diagonal":
+            raise ValueError(
+                f"{self.name}: this likelihood needs one PSD value per bin"
             )
-        noise_covariance.check_compatible(conditional_residual)
-        if np.any(
-            noise_covariance.covariance_matrix[
-                :, ~np.eye(len(conditional_residual.channel_names), dtype=bool)
-            ]
+        channels = conditional_residual.channel_names
+        if any(
+            np.any(covariance.pair(first, second))
+            for first in channels
+            for second in channels
+            if first != second
         ):
             raise ValueError(
                 f"{self.name}: this likelihood requires uncorrelated channels"
             )
         return _new_gb(), {
-            ch: noise_covariance.noise_psd(channel_name=ch)
-            for ch in conditional_residual.channel_names
+            ch: covariance.noise_psd(ch, conditional_residual) for ch in channels
         }
 
     def _waveform(self, gb, params, conditional_residual):
@@ -242,7 +250,7 @@ class GBBlock:
     def sample(
         self,
         conditional_residual: L1Data,
-        noise_covariance: DataCovariance | TranslatedCovariance | None,
+        covariance: Covariance | None,
         current_block_state: BlockState,
         *,
         rng: np.random.Generator,
@@ -252,7 +260,7 @@ class GBBlock:
         from eryn.prior import ProbDistContainer, UniformDistribution
         from eryn.state import State
 
-        gb, psds = self._context(conditional_residual, noise_covariance)
+        gb, psds = self._context(conditional_residual, covariance)
 
         def loglike(x):
             si, cols = self._waveform(gb, np.asarray(x).ravel(), conditional_residual)
@@ -325,7 +333,7 @@ class GBBlock:
 def draw_gb_prior(
     block: GBBlock,
     reference_data: L1Data,
-    noise_covariance: DataCovariance | TranslatedCovariance | None,
+    covariance: Covariance | None,
     *,
     rng: np.random.Generator,
 ) -> BlockState:
@@ -336,7 +344,7 @@ def draw_gb_prior(
     This resets ``block.state``. Wheel never calls the helper or draws initial
     parameters itself. A fresh block instance belongs to each independent campaign.
     """
-    gb, _ = block._context(reference_data, noise_covariance)
+    gb, _ = block._context(reference_data, covariance)
     bounds = np.asarray(block.bounds)
     coords = rng.uniform(bounds[:, 0], bounds[:, 1], size=(1, block.nw, 1, 4))
     # Eryn consumes RandomState tuples, not Generator.bit_generator.state.

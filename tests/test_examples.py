@@ -106,7 +106,7 @@ def test_toy_prior_is_random_and_separate_campaigns_are_reproducible():
 
 
 def test_sine_conditional_includes_declared_amplitude_prior():
-    from enchilada import DataCovariance, L1Data
+    from enchilada import Covariance, L1Data
 
     toy = load_example("toy_fit")
     data = L1Data(
@@ -116,7 +116,7 @@ def test_sine_conditional_includes_declared_amplitude_prior():
         tdi_generation="2.0",
         physical_observable="fractional_frequency",
     )
-    noise = DataCovariance.from_variance(data, 2.0)
+    noise = Covariance.from_variance(data, 2.0)
     signal = toy.SineBlock("signal", 0.25, prior_std=0.5)
     prior = toy.draw_sine_prior(signal, data, rng=np.random.default_rng(0))
     draws = np.array(
@@ -135,7 +135,7 @@ def test_sine_conditional_includes_declared_amplitude_prior():
 def test_sine_rejects_covariance_its_likelihood_cannot_use():
     from dataclasses import replace
 
-    from enchilada import DataCovariance
+    from enchilada import Covariance
 
     toy = load_example("toy_fit")
     observed = toy.make_observed()
@@ -145,17 +145,13 @@ def test_sine_rejects_covariance_its_likelihood_cannot_use():
         channel_data={"A": observed.channel_data["A"], "E": observed.channel_data["A"]},
     )
     signal = toy.SineBlock("signal", 0.004)
-    noise = DataCovariance.from_variance(data, 1.0)
-    varying = noise.covariance_matrix.copy()
-    varying[:, 0, 1] = varying[:, 1, 0] = 0.5
+    n = data.num_time_samples
+    noise = Covariance.like(
+        data, {"A": np.ones(n), "E": np.ones(n), "AE": np.full(n, 0.5)}
+    )
     prior = toy.draw_sine_prior(signal, data, rng=np.random.default_rng(0))
     with pytest.raises(ValueError, match="uncorrelated"):
-        signal.sample(
-            data,
-            replace(noise, covariance_matrix=varying),
-            prior,
-            rng=np.random.default_rng(1),
-        )
+        signal.sample(data, noise, prior, rng=np.random.default_rng(1))
 
 
 @pytest.fixture
@@ -185,7 +181,7 @@ def gb_model_with_eryn(gb_model_with_test_waveform):
 
 
 def gb_test_context():
-    from enchilada import DataCovariance, L1Data
+    from enchilada import Covariance, L1Data
 
     data = L1Data(
         channel_data={"A": np.ones(33, dtype=complex)},
@@ -201,7 +197,7 @@ def gb_test_context():
         def psd(self, freqs, channel=None):
             return np.ones_like(freqs)
 
-    return data, DataCovariance.from_psd(data, UnitPSD())
+    return data, Covariance.from_psd(data, UnitPSD())
 
 
 @pytest.mark.parametrize("num_time_samples", [63, 64])
@@ -328,29 +324,20 @@ def test_gb_recomputes_likelihood_for_changed_residual(gb_model_with_eryn):
     )
 
 
-@pytest.mark.parametrize("invalid", ["frequency_covariance", "inactive_samples"])
-def test_sine_requires_fully_observed_time_white_noise(invalid):
-    from dataclasses import replace
-
-    from enchilada import DataCovariance
+def test_sine_requires_time_white_noise_on_the_data_grid():
+    from enchilada import Covariance
 
     toy = load_example("toy_fit")
     data = toy.make_observed()
     block = toy.SineBlock("slow", 0.004)
     prior = toy.draw_sine_prior(block, data, rng=np.random.default_rng(0))
-    noise = DataCovariance.from_variance(data, 1.0)
-    if invalid == "frequency_covariance":
 
-        class UnitPSD:
-            def psd(self, f, channel=None):
-                return np.ones_like(f)
+    class UnitPSD:
+        def psd(self, f, channel=None):
+            return np.ones_like(f)
 
-        noise = DataCovariance.from_psd(data, UnitPSD())
-    else:
-        active = noise.active_mask.copy()
-        active[0] = False
-        noise = replace(noise, active_mask=active)
-    with pytest.raises(ValueError, match="time-domain.*all samples active"):
+    noise = Covariance.from_psd(data.to_frequency(), UnitPSD())
+    with pytest.raises(ValueError, match="time-domain white noise on the data grid"):
         block.sample(data, noise, prior, rng=np.random.default_rng(1))
 
 

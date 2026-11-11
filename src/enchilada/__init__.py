@@ -3,12 +3,11 @@ from importlib.metadata import PackageNotFoundError, version
 
 from enchilada.block import Block
 from enchilada.block_state import BlockState
-from enchilada.covariance import DataCovariance
+from enchilada.covariance import Covariance
 from enchilada.data import L1Data
 from enchilada.domains import WDMGrid
 from enchilada.ledger import Ledger
 from enchilada.orbits import NumericOrbit, Orbit
-from enchilada.translated_covariance import TranslatedCovariance
 from enchilada.translation import transform
 from enchilada.wheel import NoiseOverwrittenWarning, Wheel
 
@@ -19,7 +18,7 @@ except PackageNotFoundError:  # pragma: no cover - source tree without install
 
 __all__ = [
     "Block",
-    "DataCovariance",
+    "Covariance",
     "Ledger",
     "NoiseOverwrittenWarning",
     "NumericOrbit",
@@ -28,7 +27,6 @@ __all__ = [
     "BlockState",
     "Wheel",
     "WDMGrid",
-    "TranslatedCovariance",
     "__version__",
     "replace",
     "transform",

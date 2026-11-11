@@ -4,15 +4,16 @@ Blocks retain fixed model configuration. Wheel owns the current parameters,
 BlockState snapshots, covariance, and sampling random stream. Caller-side helpers draw
 complete initial results using a separate RNG; an on_cycle_complete callback collects
 posterior chains outside the blocks. These blocks request time-domain inputs;
-Wheel can also run them on Fourier or WDM observations using data_domain="time".
-Their likelihood requires native, fully active white time noise. Run with:
+Wheel can also run them on Fourier or WDM observations using data_domain="time"
+once covariance translation lands (design spec section 6). Their likelihood
+requires white time noise with one variance per sample. Run with:
 
     uv run --no-sync python examples/toy_fit.py
 """
 
 import numpy as np
 
-from enchilada import BlockState, DataCovariance, L1Data, TranslatedCovariance, Wheel
+from enchilada import BlockState, Covariance, L1Data, Wheel
 
 
 class SineBlock:
@@ -46,26 +47,30 @@ class SineBlock:
     def sample(
         self,
         conditional_residual: L1Data,
-        noise_covariance: DataCovariance | TranslatedCovariance | None,
+        covariance: Covariance | None,
         current_block_state: BlockState,
         *,
         rng: np.random.Generator,
     ) -> BlockState:
-        if noise_covariance is None:
+        if covariance is None:
             raise ValueError("SineBlock requires a white-noise covariance")
-        if (
-            noise_covariance.data_domain != "time"
-            or noise_covariance.active_mask is None
-            or not noise_covariance.active_mask.all()
-        ):
+        if conditional_residual.data_domain != "time" or covariance.form != "diagonal":
             raise ValueError(
-                "SineBlock requires native time-domain noise with all samples active; "
-                "translated covariance can contain nonlocal correlations or exclusions"
+                "SineBlock requires time-domain white noise "
+                "with one variance per sample"
             )
-        if np.any(
-            noise_covariance.covariance_matrix[
-                :, ~np.eye(len(conditional_residual.channel_names), dtype=bool)
-            ]
+        try:
+            covariance.check_compatible(conditional_residual)
+        except ValueError as exc:
+            raise ValueError(
+                "SineBlock requires time-domain white noise on the data grid"
+            ) from exc
+        channels = conditional_residual.channel_names
+        if any(
+            np.any(covariance.pair(first, second))
+            for first in channels
+            for second in channels
+            if first != second
         ):
             raise ValueError("SineBlock requires uncorrelated channels")
         basis = self._basis(conditional_residual)
@@ -74,7 +79,7 @@ class SineBlock:
         precision = 1.0 / self.prior_std**2
         weighted_data = 0.0
         for ch in conditional_residual.channel_names:
-            variance = noise_covariance.noise_variance(channel_name=ch)
+            variance = covariance.noise_variance(ch, conditional_residual)
             precision += float(basis @ basis) / variance
             weighted_data += (
                 float(conditional_residual.channel_data[ch] @ basis) / variance
@@ -97,7 +102,7 @@ class WhiteNoiseBlock:
         if conditional_residual.data_domain != "time":
             raise ValueError("WhiteNoiseBlock requires time-domain data")
         return BlockState(
-            covariance_matrix=DataCovariance.from_variance(
+            covariance=Covariance.from_variance(
                 reference_data=conditional_residual, time_sample_variance=variance
             ),
             parameters={"sigma": float(np.sqrt(variance))},
@@ -106,7 +111,7 @@ class WhiteNoiseBlock:
     def sample(
         self,
         conditional_residual: L1Data,
-        noise_covariance: DataCovariance | TranslatedCovariance | None,
+        covariance: Covariance | None,
         current_block_state: BlockState,
         *,
         rng: np.random.Generator,

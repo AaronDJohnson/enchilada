@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from conftest import make_observed
-from enchilada import BlockState, DataCovariance
+from enchilada import BlockState, Covariance
 from enchilada.testing import EchoBlock, check_block
 
 
@@ -15,7 +15,7 @@ class TestCheckBlock:
             observed_data=observed,
             initial_block_state=BlockState(),
             num_cycles=2,
-            initial_noise_covariance=DataCovariance.from_variance(observed, 1.0),
+            initial_covariance=Covariance.from_variance(observed, 1.0),
             random_seed=0,
         )
 
@@ -39,7 +39,7 @@ class TestCheckBlock:
             def sample(
                 self,
                 conditional_residual,
-                noise_covariance,
+                covariance,
                 current_block_state,
                 *,
                 rng,
@@ -54,7 +54,7 @@ class TestCheckBlock:
             def sample(
                 self,
                 conditional_residual,
-                noise_covariance,
+                covariance,
                 current_block_state,
                 *,
                 rng,
@@ -79,19 +79,21 @@ class TestCheckBlock:
             def sample(
                 self,
                 conditional_residual,
-                noise_covariance,
+                covariance,
                 current_block_state,
                 *,
                 rng,
             ):
-                from enchilada import DataCovariance
+                from enchilada import Covariance
 
-                return conditional_residual.block_state().with_covariance_matrix(
-                    DataCovariance.from_psd(conditional_residual, FlatPSD())
+                return conditional_residual.block_state().with_covariance(
+                    Covariance.from_psd(conditional_residual, FlatPSD())
                 )
 
         check_block(
-            FlatNoiseBlock(name="noise"), observed, initial_block_state=BlockState()
+            FlatNoiseBlock(name="noise"),
+            observed.to_frequency(),
+            initial_block_state=BlockState(),
         )
 
     def test_noise_model_violating_contract_caught(self, observed):
@@ -99,16 +101,14 @@ class TestCheckBlock:
             def sample(
                 self,
                 conditional_residual,
-                noise_covariance,
+                covariance,
                 current_block_state,
                 *,
                 rng,
             ):
-                return conditional_residual.block_state().with_covariance_matrix(
-                    object()
-                )
+                return conditional_residual.block_state().with_covariance(object())
 
-        with pytest.raises(TypeError, match="DataCovariance"):
+        with pytest.raises(TypeError, match="Covariance"):
             check_block(
                 BadNoise(name="bad"), observed, initial_block_state=BlockState()
             )
@@ -137,7 +137,7 @@ class TestEchoBlock:
         assert echo.state.num_sample_calls == 3
         published = wheel.ledger["echo"]
         assert published.template is None
-        assert published.covariance_matrix is None
+        assert published.covariance is None
         assert published.parameters == {}
         assert echo.state.metadata == {}
 
@@ -161,13 +161,13 @@ def test_echo_continuation_belongs_to_each_block_instance(observed, rng):
     initial = BlockState()
     updated = echo.sample(
         conditional_residual=observed,
-        noise_covariance=None,
+        covariance=None,
         current_block_state=initial,
         rng=rng,
     )
     for published in (initial, updated):
         assert published.template is None
-        assert published.covariance_matrix is None
+        assert published.covariance is None
         assert published.parameters == {}
     assert echo.state.num_sample_calls == 1
     echo.sample(observed, None, BlockState(), rng=rng)
@@ -177,7 +177,7 @@ def test_echo_continuation_belongs_to_each_block_instance(observed, rng):
     assert fresh.state.num_sample_calls == 0
     restarted = fresh.sample(observed, None, initial, rng=rng)
     assert restarted.template is None
-    assert restarted.covariance_matrix is None
+    assert restarted.covariance is None
     assert restarted.parameters == {}
     assert fresh.state.num_sample_calls == 1
     assert echo.state.num_sample_calls == 2

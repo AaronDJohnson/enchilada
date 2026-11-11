@@ -10,14 +10,25 @@ import numpy as np
 from enchilada._signal_sum import Signal, SignalSum
 from enchilada.block import Block
 from enchilada.block_state import BlockState, check_on_grid
-from enchilada.covariance import DataCovariance
+from enchilada.covariance import Covariance
 from enchilada.data import L1Data
 from enchilada.domains import WDMGrid
 from enchilada.ledger import Ledger
-from enchilada.translated_covariance import TranslatedCovariance, copy_covariance
 from enchilada.translation import _target_grid, transform
 
 DomainSelection = tuple[str, WDMGrid | None] | None
+
+
+def _empty_channel(
+    domain: str, num_time_samples: int, grid: WDMGrid | None
+) -> np.ndarray:
+    """Zeros with the channel shape and dtype of ``domain`` on this grid."""
+    if domain == "time":
+        return np.zeros(num_time_samples)
+    if domain == "frequency":
+        return np.zeros(num_time_samples // 2 + 1, dtype=complex)
+    assert grid is not None
+    return np.zeros(grid.array_shape)
 
 
 class NoiseOverwrittenWarning(RuntimeWarning):
@@ -50,7 +61,7 @@ class Wheel:
     Earlier successful updates in a failed cycle remain committed. Exceptions in
     on_cycle_complete occur after that entire cycle has committed.
 
-    `initial_noise_covariance` supplies a DataCovariance or TranslatedCovariance.
+    `initial_covariance` supplies a Covariance.
     If omitted, covariance stays unset until a block supplies it. Blocks receive it
     separately from L1Data. The original data domain stays canonical. Register
     a block with data_domain to translate its inputs and returned estimates.
@@ -61,7 +72,7 @@ class Wheel:
     def __init__(
         self,
         observed_data: L1Data,
-        initial_noise_covariance: DataCovariance | TranslatedCovariance | None = None,
+        initial_covariance: Covariance | None = None,
         *,
         random_seed: int | None = None,
     ) -> None:
@@ -70,8 +81,8 @@ class Wheel:
         Args:
             observed_data: L1 observations and shared run settings. The Wheel
                 makes independent pristine and working copies.
-            initial_noise_covariance: Starting DataCovariance or
-                TranslatedCovariance. None leaves it unset until a block supplies it.
+            initial_covariance: Starting Covariance. None leaves it unset
+                until a block supplies it.
             random_seed: Seed for the campaign's NumPy generator. None requests
                 nondeterministic initialization.
         """
@@ -84,19 +95,16 @@ class Wheel:
                     "enchilada has no data-quality mask for gaps; "
                     "fill or trim them first"
                 )
-        if initial_noise_covariance is not None and not isinstance(
-            initial_noise_covariance, (DataCovariance, TranslatedCovariance)
+        if initial_covariance is not None and not isinstance(
+            initial_covariance, Covariance
         ):
-            raise TypeError(
-                "initial_noise_covariance must be a DataCovariance, "
-                "TranslatedCovariance or None"
-            )
-        if initial_noise_covariance is not None:
-            initial_noise_covariance = copy_covariance(initial_noise_covariance)
-            initial_noise_covariance.check_compatible(observed_data)
+            raise TypeError("initial_covariance must be a Covariance or None")
+        if initial_covariance is not None:
+            initial_covariance = initial_covariance.copy()
+            initial_covariance.check_compatible(observed_data)
         self._observed_data = self._copy_data(observed_data)
         self._working_residual = self._copy_data(observed_data)
-        self._noise_covariance = initial_noise_covariance
+        self._covariance = initial_covariance
         self._noise_owner_block_name: str | None = None
         self._ledger = Ledger()
         self._blocks: list[tuple[str, Block]] = []
@@ -128,13 +136,9 @@ class Wheel:
         return self._copy_data(self._working_residual)
 
     @property
-    def noise_covariance(self) -> DataCovariance | TranslatedCovariance | None:
+    def covariance(self) -> Covariance | None:
         """The current covariance, as an independent copy."""
-        return (
-            None
-            if self._noise_covariance is None
-            else copy_covariance(self._noise_covariance, validated=True)
-        )
+        return None if self._covariance is None else self._covariance._copy_validated()
 
     @property
     def ledger(self) -> Ledger:
@@ -161,7 +165,8 @@ class Wheel:
         Wheel copies and validates it without calling an initialization method or
         consuming random draws. The state is required and cannot be None.
         Its signal uses the selected block domain/grid, or the observation grid when no
-        data_domain is selected. Covariance carries its own source grid metadata.
+        data_domain is selected. A seed covariance is on the block's grid, like
+        its template.
         The caller must keep published estimates and block-local state consistent.
         This sets the starting state only; sample still runs normally.
 
@@ -199,7 +204,7 @@ class Wheel:
             raise TypeError(
                 f"block {block_name!r} does not implement sample; "
                 "a Block needs name and sample(conditional_residual, "
-                "noise_covariance, current_block_state, *, rng)."
+                "covariance, current_block_state, *, rng)."
             )
         new_block_state: object = initial_block_state
         source_reference = self._observed_data
@@ -220,6 +225,22 @@ class Wheel:
                 wdm_grid=grid,
                 context_label="initial_block_state.template",
             )
+        elif (
+            domain_selection is not None and initial_block_state.covariance is not None
+        ):
+            # A noise-only seed is on the block's grid. Only that grid is needed,
+            # so build an empty reference instead of transforming observations.
+            domain, grid = domain_selection
+            source_reference = replace(
+                self._observed_data,
+                channel_data={
+                    ch: _empty_channel(
+                        domain, self._observed_data.num_time_samples, grid
+                    )
+                    for ch in self._observed_data.channel_names
+                },
+                data_domain=domain,
+            )
         if domain_selection is not None:
             new_block_state = self._canonical_state(new_block_state, source_reference)
         self._adopt(
@@ -235,27 +256,30 @@ class Wheel:
         self,
         domain_selection: DomainSelection,
         exclude_block_name: str | None = None,
-    ) -> tuple[L1Data, DataCovariance | TranslatedCovariance | None]:
+    ) -> tuple[L1Data, Covariance | None]:
         conditional_residual = self.residual(exclude_block_name=exclude_block_name)
-        noise_covariance = self.noise_covariance
-        if domain_selection is not None:
-            domain, grid = domain_selection
-            conditional_residual = transform(
-                conditional_residual,
-                domain,
-                num_frequency_divisions=None
-                if grid is None
-                else grid.num_frequency_divisions,
-            )
-            if noise_covariance is not None:
-                noise_covariance = transform(
-                    noise_covariance,
-                    domain,
-                    num_frequency_divisions=None
-                    if grid is None
-                    else grid.num_frequency_divisions,
-                )
-        return conditional_residual, noise_covariance
+        if domain_selection is None:
+            return conditional_residual, self.covariance
+        domain, grid = domain_selection
+        divisions = None if grid is None else grid.num_frequency_divisions
+        conditional_residual = transform(
+            conditional_residual, domain, num_frequency_divisions=divisions
+        )
+        observation_grid = (
+            self._observed_data.data_domain,
+            self._observed_data.wdm_grid,
+        )
+        if self._covariance is None or domain_selection == observation_grid:
+            # The owned covariance is already validated on the observation grid;
+            # transform() would rerun check_compatible and a revalidating copy.
+            return conditional_residual, self.covariance
+        covariance = transform(
+            self._covariance,
+            domain,
+            num_frequency_divisions=divisions,
+            reference_data=self._observed_data,
+        )
+        return conditional_residual, covariance
 
     def _canonical_state(self, state: object, source_reference: L1Data) -> object:
         if not isinstance(state, BlockState):
@@ -300,7 +324,7 @@ class Wheel:
             for block_name, block in self._blocks:
                 candidate_rng = deepcopy(self._rng)
                 domain_selection = self._block_domains[block_name]
-                conditional_residual, noise_covariance = self._block_inputs(
+                conditional_residual, covariance = self._block_inputs(
                     domain_selection, block_name
                 )
                 current_block_state = self._ledger[block_name]
@@ -316,7 +340,7 @@ class Wheel:
                     )
                 new_block_state: object = block.sample(
                     conditional_residual=conditional_residual,
-                    noise_covariance=noise_covariance,
+                    covariance=covariance,
                     current_block_state=current_block_state,
                     rng=candidate_rng,
                 )
@@ -415,26 +439,22 @@ class Wheel:
                         f"{block_name}.{source_method_name} returned non-finite "
                         f"samples in channel {ch!r}"
                     )
-        candidate_noise_covariance = self._noise_covariance
+        candidate_covariance = self._covariance
         candidate_noise_owner_block_name = self._noise_owner_block_name
         if (
             block_name == candidate_noise_owner_block_name
-            and candidate_block_state.covariance_matrix is None
+            and candidate_block_state.covariance is None
         ):
             raise ValueError(
                 f"{block_name}.{source_method_name} must return its complete "
-                "covariance_matrix "
-                "because it owns the current covariance"
+                "covariance because it owns the current covariance"
             )
-        if candidate_block_state.covariance_matrix is not None:
+        if candidate_block_state.covariance is not None:
             # Revalidate: callers can edit arrays inside a frozen dataclass.
-            candidate_noise_covariance = copy_covariance(
-                candidate_block_state.covariance_matrix
-            )
-            candidate_noise_covariance.check_compatible(self._observed_data)
+            candidate_covariance = candidate_block_state.covariance.copy()
+            candidate_covariance.check_compatible(self._observed_data)
             candidate_block_state = replace(
-                candidate_block_state,
-                covariance_matrix=candidate_noise_covariance,
+                candidate_block_state, covariance=candidate_covariance
             )
             candidate_noise_owner_block_name = block_name
         candidate_block_states = {
@@ -482,8 +502,8 @@ class Wheel:
         self._signal_sum = candidate_signal_sum
         self._block_indices = candidate_block_indices
         self._block_domains = candidate_block_domains
-        self._noise_covariance, self._noise_owner_block_name = (
-            candidate_noise_covariance,
+        self._covariance, self._noise_owner_block_name = (
+            candidate_covariance,
             candidate_noise_owner_block_name,
         )
         self._rng = next_rng

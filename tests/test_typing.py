@@ -20,7 +20,7 @@ from dataclasses import dataclass
 import numpy as np
 from typing import assert_type
 from enchilada import (
-    Block, L1Data, DataCovariance, TranslatedCovariance, BlockState, Wheel, WDMGrid,
+    Block, L1Data, Covariance, BlockState, Wheel, WDMGrid,
     transform,
 )
 from enchilada.testing import EchoBlock, check_block
@@ -41,10 +41,10 @@ y: str = r.T_obs   # typo in assignment position
 
 assert_type(transform(r, "frequency"), L1Data)
 assert_type(transform(r, "wdm", num_frequency_divisions=2).wdm_grid, WDMGrid | None)
-noise = DataCovariance.from_variance(r, 1.0)
-assert_type(transform(noise, "frequency"), DataCovariance | TranslatedCovariance)
+noise = Covariance.from_variance(r, 1.0)
+assert_type(transform(noise, "time", reference_data=r), Covariance)
 assert_type(transform(BlockState(), "time"), BlockState)
-wheel = Wheel(r, transform(noise, "frequency"))
+wheel = Wheel(r, noise)
 initial = BlockState()
 wheel.add(EchoBlock("wdm"), initial_block_state=initial,
           data_domain="wdm", num_time_divisions=2)
@@ -56,7 +56,7 @@ class SampleOnly:
 
     def sample(
         self, conditional_residual: L1Data,
-        noise_covariance: DataCovariance | TranslatedCovariance | None,
+        covariance: Covariance | None,
         current_block_state: BlockState, *, rng: np.random.Generator,
     ) -> BlockState:
         return current_block_state
@@ -71,7 +71,7 @@ class FrozenBlock:
 
     def sample(
         self, conditional_residual: L1Data,
-        noise_covariance: DataCovariance | TranslatedCovariance | None,
+        covariance: Covariance | None,
         current_block_state: BlockState, *, rng: np.random.Generator,
     ) -> BlockState:
         return current_block_state
@@ -86,7 +86,7 @@ class ExplicitBlock(Block):
 
     def sample(
         self, conditional_residual: L1Data,
-        noise_covariance: DataCovariance | TranslatedCovariance | None,
+        covariance: Covariance | None,
         current_block_state: BlockState, *, rng: np.random.Generator,
     ) -> BlockState:
         return current_block_state
@@ -200,9 +200,7 @@ def test_frozen_dataclass_can_explicitly_inherit_block():
     class ExplicitBlock(Block):
         name: str
 
-        def sample(
-            self, conditional_residual, noise_covariance, current_block_state, *, rng
-        ):
+        def sample(self, conditional_residual, covariance, current_block_state, *, rng):
             return current_block_state
 
     block = ExplicitBlock("explicit")
@@ -237,7 +235,7 @@ def test_public_surface_is_pinned():
 
     assert enchilada.__all__ == [
         "Block",
-        "DataCovariance",
+        "Covariance",
         "Ledger",
         "NoiseOverwrittenWarning",
         "NumericOrbit",
@@ -246,7 +244,6 @@ def test_public_surface_is_pinned():
         "BlockState",
         "Wheel",
         "WDMGrid",
-        "TranslatedCovariance",
         "__version__",
         "replace",
         "transform",

@@ -6,8 +6,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from enchilada import BlockState, DataCovariance, L1Data, WDMGrid
-from enchilada.covariance import Covariance
+from enchilada import BlockState, Covariance, L1Data, WDMGrid
 from enchilada.translation import transform
 
 requires_wdm = pytest.mark.skipif(
@@ -77,18 +76,15 @@ def test_same_domain_transform_is_an_independent_snapshot():
     copied = transform(data, "time")
     copied.channel_data["A"][:] = 0
     assert np.any(data.channel_data["A"])
-    covariance = DataCovariance.from_variance(data, 2.0)
-    copied_covariance = transform(covariance, "time")
-    assert not np.shares_memory(
-        copied_covariance.covariance_matrix, covariance.covariance_matrix
-    )
+    covariance = Covariance.from_variance(data, 2.0)
+    copied_covariance = transform(covariance, "time", reference_data=data)
+    assert not np.shares_memory(copied_covariance.A, covariance.A)
 
 
 def test_result_conversion_preserves_state_without_aliasing():
     data = observations()
     original = data.block_state(
         data.channel_data,
-        covariance_matrix=DataCovariance.from_variance(data, 3.0),
         parameters={"amplitude": np.array([2.0])},
     )
     converted = transform(original, "frequency", reference_data=data)
@@ -97,17 +93,19 @@ def test_result_conversion_preserves_state_without_aliasing():
         np.testing.assert_allclose(
             converted.template[name], spectrum.channel_data[name]
         )
-    assert converted.covariance_matrix.data_domain == "frequency"
     converted.parameters["amplitude"][0] = 7
     assert original.parameters["amplitude"][0] == 2
 
 
-def test_noise_only_and_parameters_only_states_need_no_signal_grid():
+def test_noise_only_state_needs_reference_data_and_parameters_only_does_not():
     data = observations()
-    result = BlockState(covariance_matrix=DataCovariance.from_variance(data, 1.0))
-    converted = transform(result, "frequency")
-    assert converted.template is None
-    assert converted.covariance_matrix.data_domain == "frequency"
+    result = BlockState(covariance=Covariance.from_variance(data, 1.0))
+    with pytest.raises(ValueError, match="reference_data"):
+        transform(result, "frequency")
+    with pytest.raises(NotImplementedError, match="section 6"):
+        transform(result, "frequency", reference_data=data)
+    same = transform(result, "time", reference_data=data)
+    np.testing.assert_array_equal(same.covariance.A, 1.0)
     state = BlockState(parameters={"amplitude": 1.0})
     copied = transform(state, "frequency")
     assert copied is not state
@@ -121,11 +119,11 @@ def test_conversion_rejects_missing_or_mismatched_reference():
         transform(result, "frequency")
     with pytest.raises(ValueError, match="length|shape"):
         transform(result, "frequency", reference_data=observations(32))
-    with pytest.raises(ValueError, match="sample_rate_hz"):
+    with pytest.raises(ValueError, match="shape"):
         transform(
-            DataCovariance.from_variance(data, 1.0),
-            "frequency",
-            reference_data=replace(data, sample_rate_hz=2.0),
+            Covariance.from_variance(data, 1.0),
+            "time",
+            reference_data=observations(32),
         )
 
 
@@ -230,7 +228,7 @@ def test_missing_wdm_backend_has_a_local_install_hint(monkeypatch):
         transform(observations(), "wdm", num_time_divisions=8)
 
 
-def test_joint_wdm_result_reuses_signal_grid_for_covariance():
+def test_joint_wdm_result_converts_signal_with_a_wdm_reference():
     data = observations()
     grid = WDMGrid(num_frequency_divisions=8, num_time_divisions=8)
     reference = replace(
@@ -238,13 +236,8 @@ def test_joint_wdm_result_reuses_signal_grid_for_covariance():
         data_domain="wdm",
         channel_data={name: np.zeros(grid.array_shape) for name in data.channel_names},
     )
-    result = reference.block_state(
-        reference.channel_data,
-        covariance_matrix=DataCovariance.from_variance(data, 2.0),
-    )
+    result = reference.block_state(reference.channel_data)
     converted = transform(result, "wdm", reference_data=reference)
-    assert converted.covariance_matrix.wdm_grid == grid
-    assert converted.covariance_matrix.data_domain == "wdm"
     assert not np.shares_memory(converted.template["A"], result.template["A"])
 
 

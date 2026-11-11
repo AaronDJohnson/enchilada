@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from enchilada import BlockState, DataCovariance, Wheel
+from enchilada import BlockState, Covariance, Wheel
 
 
 def test_block_local_state_survives_calls_without_entering_the_ledger(observed):
@@ -23,9 +23,7 @@ def test_block_local_state_survives_calls_without_entering_the_ledger(observed):
         def __init__(self):
             self.state = self.State(metadata={"resource": LocalResource()})
 
-        def sample(
-            self, conditional_residual, noise_covariance, current_block_state, *, rng
-        ):
+        def sample(self, conditional_residual, covariance, current_block_state, *, rng):
             self.state.num_calls += 1
             amplitude = current_block_state.parameters["amplitude"] + 1.0
             return conditional_residual.block_state(
@@ -33,9 +31,7 @@ def test_block_local_state_survives_calls_without_entering_the_ledger(observed):
                     name: np.full_like(values, amplitude)
                     for name, values in conditional_residual.channel_data.items()
                 },
-                covariance_matrix=DataCovariance.from_variance(
-                    conditional_residual, 2.0
-                ),
+                covariance=Covariance.from_variance(conditional_residual, 2.0),
                 parameters={"amplitude": amplitude},
             )
 
@@ -55,7 +51,7 @@ def test_block_local_state_survives_calls_without_entering_the_ledger(observed):
         np.testing.assert_allclose(
             wheel.working_residual.channel_data[name], observed.channel_data[name] - 2.0
         )
-        assert accepted.covariance_matrix.noise_variance(name) == 2.0
+        assert accepted.covariance.noise_variance(name, observed) == 2.0
 
     accepted.parameters["amplitude"] = 100.0
     accepted.template["A"][:] = 100.0

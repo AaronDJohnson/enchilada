@@ -5,9 +5,8 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 import numpy as np
 
 from enchilada.block_state import BlockState
-from enchilada.covariance import DataCovariance
+from enchilada.covariance import Covariance
 from enchilada.data import L1Data
-from enchilada.translated_covariance import TranslatedCovariance
 
 
 @runtime_checkable
@@ -15,15 +14,15 @@ class Block(Protocol):
     """A model that publishes physical estimates while owning its sampler state.
 
     Keep sampler continuation and diagnostics in a block-owned State object.
-    BlockState contains only template, covariance_matrix, and physical parameters.
+    BlockState contains only template, covariance, and physical parameters.
     `Wheel.add` requires an explicit `initial_block_state`; it calls no
     initialization hook. `sample` advances the latest accepted
     `current_block_state` and returns a complete new state.
 
     `conditional_residual` is the observed data minus every OTHER block's current
     signal; this block's signal is still present. The block does not perform
-    cross-block subtraction or add-back. `noise_covariance` is the current
-    DataCovariance, TranslatedCovariance, or None.
+    cross-block subtraction or add-back. `covariance` is the current
+    `Covariance` on the same grid as `conditional_residual`, or None.
 
     Signal-only, noise-only, and joint models share this interface. A None signal
     means zero contribution, replacing any previous signal.
@@ -37,7 +36,6 @@ class Block(Protocol):
     Wheel does not copy or roll back block-local state; blocks manage their own
     failure recovery. Use separate block instances for independent campaigns.
     Register a preferred data_domain with Wheel.add to receive matching inputs.
-    A translated covariance exposes exact operators; it may correlate samples.
     Validate unsupported conventions explicitly.
 
     Static type checkers validate signatures; runtime protocol checks only test
@@ -58,7 +56,7 @@ class Block(Protocol):
     def sample(
         self,
         conditional_residual: L1Data,
-        noise_covariance: DataCovariance | TranslatedCovariance | None,
+        covariance: Covariance | None,
         current_block_state: BlockState,
         *,
         rng: np.random.Generator,

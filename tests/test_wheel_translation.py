@@ -1,7 +1,7 @@
 """Wheel keeps accepted signals on its observation grid.
 
-Explicit block domain selections also return covariance to that grid; the default
-handoff preserves covariance in its declared representation.
+Explicit block domain selections also return covariance to that grid, through
+the covariance seam in transform() (design spec section 6).
 """
 
 import importlib.util
@@ -10,7 +10,8 @@ from dataclasses import dataclass, replace
 import numpy as np
 import pytest
 
-from enchilada import BlockState, DataCovariance, L1Data, Wheel, transform
+from enchilada import BlockState, Covariance, L1Data, WDMGrid, Wheel, transform
+from enchilada.testing import EchoBlock
 
 requires_wdm = pytest.mark.skipif(
     importlib.util.find_spec("wdm") is None, reason="local WDM backend is optional"
@@ -58,10 +59,7 @@ class ConstantSignal:
             result, residual.data_domain, reference_data=time_data, **grid_options
         )
 
-    def sample(
-        self, conditional_residual, noise_covariance, current_block_state, *, rng
-    ):
-        assert noise_covariance.data_domain == self.expected_domain
+    def sample(self, conditional_residual, covariance, current_block_state, *, rng):
         previous = transform(
             current_block_state, "time", reference_data=conditional_residual
         )
@@ -86,7 +84,7 @@ def test_mixed_blocks_receive_matching_inputs_and_return_canonical_states(
     data = observations()
     options = {"num_frequency_divisions": 8} if canonical_domain == "wdm" else {}
     canonical = transform(data, canonical_domain, **options)
-    wheel = Wheel(canonical, DataCovariance.from_variance(data, 0.25), random_seed=42)
+    wheel = Wheel(canonical, random_seed=42)
     domains = ("time", "frequency", third_domain)
     blocks = {}
     for name, amplitude, domain in zip(
@@ -112,30 +110,28 @@ def test_mixed_blocks_receive_matching_inputs_and_return_canonical_states(
 
 
 @requires_wdm
+@pytest.mark.xfail(
+    raises=NotImplementedError,
+    strict=True,
+    reason="covariance translation seam, design spec section 6",
+)
 def test_wdm_noise_publication_is_usable_in_every_domain():
     class PixelNoise:
         name = "noise"
 
-        def sample(
-            self, conditional_residual, noise_covariance, current_block_state, *, rng
-        ):
-            assert noise_covariance.data_domain == "wdm"
-            assert isinstance(current_block_state.covariance_matrix, DataCovariance)
+        def sample(self, conditional_residual, covariance, current_block_state, *, rng):
+            covariance.check_compatible(conditional_residual)
+            assert isinstance(current_block_state.covariance, Covariance)
             return current_block_state
 
     data = observations()
-    grid = transform(data, "wdm", num_frequency_divisions=8).wdm_grid
-    variances = np.broadcast_to(np.eye(2), (*grid.array_shape, 2, 2)).copy()
-    variances[1:-1] *= np.arange(1, grid.num_frequency_divisions)[:, None, None, None]
+    wdm_data = transform(data, "wdm", num_frequency_divisions=8)
+    grid = wdm_data.wdm_grid
+    variances = np.where(grid.active_mask, 1.0, 0.0)
+    variances[1:-1] *= np.arange(1, grid.num_frequency_divisions)[:, None]
     initial = BlockState(
-        covariance_matrix=DataCovariance(
-            variances,
-            channel_names=data.channel_names,
-            sample_rate_hz=data.sample_rate_hz,
-            num_time_samples=data.num_time_samples,
-            start_time_gps=data.start_time_gps,
-            data_domain="wdm",
-            wdm_grid=grid,
+        covariance=Covariance.like(
+            wdm_data, {name: variances for name in data.channel_names}
         )
     )
     wheel = Wheel(data)
@@ -145,13 +141,9 @@ def test_wdm_noise_publication_is_usable_in_every_domain():
         data_domain="wdm",
         num_frequency_divisions=8,
     )
-    assert wheel.noise_covariance.data_domain == "time"
+    assert wheel.covariance is not None
     assert wheel.ledger["noise"].template is None
-    before = wheel.noise_covariance.quadratic_form(data.channel_data)
     wheel.run(2)
-    assert wheel.noise_covariance.quadratic_form(data.channel_data) == pytest.approx(
-        before
-    )
     np.testing.assert_array_equal(
         wheel.residual().channel_data["A"], data.channel_data["A"]
     )
@@ -164,16 +156,15 @@ def test_failed_translated_result_preserves_accepted_state_and_rng(failure):
     class RandomSignal:
         name = "random"
 
-        def sample(
-            self, conditional_residual, noise_covariance, current_block_state, *, rng
-        ):
+        def sample(self, conditional_residual, covariance, current_block_state, *, rng):
             value = rng.normal()
             if fail[0]:
                 if failure == "signal_shape":
                     return BlockState(template={"A": np.zeros(4, complex)})
-                wrong = replace(conditional_residual, sample_rate_hz=2.0)
                 return BlockState(
-                    covariance_matrix=DataCovariance.from_variance(wrong, 1.0)
+                    covariance=Covariance.from_variance(
+                        transform(conditional_residual, "time"), 1.0
+                    )
                 )
             return BlockState(parameters={"amplitude": value})
 
@@ -204,9 +195,7 @@ def test_invalid_domain_selection_does_not_register_or_sample():
     class NeverCalled:
         name = "unregistered"
 
-        def sample(
-            self, conditional_residual, noise_covariance, current_block_state, *, rng
-        ):
+        def sample(self, conditional_residual, covariance, current_block_state, *, rng):
             raise AssertionError
 
     wheel = Wheel(observations())
@@ -275,3 +264,53 @@ def test_explicit_domain_revalidates_mutated_initial_signal_arrays(domain):
             data_domain=domain,
         )
     assert len(wheel.ledger) == 0
+
+
+def test_block_in_another_domain_reaches_the_covariance_seam_at_run():
+    """The Wheel hands the covariance to transform() with the observations as
+    reference_data; until the layer lands that raises (design spec section 6)."""
+
+    class NeverSampled:
+        name = "frequency_block"
+
+        def sample(self, conditional_residual, covariance, current_block_state, *, rng):
+            raise AssertionError("the seam must raise before sample is called")
+
+    data = observations()
+    wheel = Wheel(data, Covariance.from_variance(data, 0.25), random_seed=3)
+    wheel.add(NeverSampled(), initial_block_state=BlockState(), data_domain="frequency")
+    rng_before = wheel._rng.bit_generator.state
+    with pytest.raises(NotImplementedError, match="section 6"):
+        wheel.run(1)
+    assert wheel._rng.bit_generator.state == rng_before
+    assert wheel.covariance.noise_variance("A", data) == 0.25
+
+
+@pytest.mark.parametrize("domain", ["frequency", "wdm"])
+def test_noise_only_seed_in_another_domain_reaches_the_seam_at_registration(domain):
+    """A seed covariance is on the block's grid; returning it to the observation
+    grid is covariance translation, so registration fails and changes nothing."""
+    data = observations()
+    if domain == "frequency":
+        reference = data.to_frequency()
+        variances = np.ones(data.num_time_samples // 2 + 1)
+        options = {}
+    else:
+        # Built by hand so the check needs no WDM backend.
+        grid = WDMGrid(num_frequency_divisions=8, num_time_divisions=8)
+        zeros = {name: np.zeros(grid.array_shape) for name in data.channel_names}
+        reference = replace(data, channel_data=zeros, data_domain="wdm")
+        variances = np.where(grid.active_mask, 1.0, 0.0)
+        options = {"num_frequency_divisions": 8}
+    seed = BlockState(
+        covariance=Covariance.like(
+            reference, {name: variances for name in data.channel_names}
+        )
+    )
+    wheel = Wheel(data)
+    with pytest.raises(NotImplementedError, match="section 6"):
+        wheel.add(
+            EchoBlock("noise"), initial_block_state=seed, data_domain=domain, **options
+        )
+    assert len(wheel.ledger) == 0
+    assert wheel.covariance is None

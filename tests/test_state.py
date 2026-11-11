@@ -5,7 +5,8 @@ from dataclasses import dataclass, replace
 import numpy as np
 import pytest
 
-from enchilada import DataCovariance, Wheel
+from conftest import make_observed
+from enchilada import Covariance, Wheel
 
 
 def counter_initial_result(observed):
@@ -22,9 +23,7 @@ class Counter:
     def __init__(self):
         self.state = self.State()
 
-    def sample(
-        self, conditional_residual, noise_covariance, current_block_state, *, rng
-    ):
+    def sample(self, conditional_residual, covariance, current_block_state, *, rng):
         self.state.n += 1
         current_block_state.parameters["a"] = rng.normal()
         return current_block_state
@@ -69,11 +68,9 @@ def test_failed_sample_rolls_back_published_state_data_and_rng(observed):
     fail = [True]
 
     class FailsOnce(Counter):
-        def sample(
-            self, conditional_residual, noise_covariance, current_block_state, *, rng
-        ):
+        def sample(self, conditional_residual, covariance, current_block_state, *, rng):
             result = super().sample(
-                conditional_residual, noise_covariance, current_block_state, rng=rng
+                conditional_residual, covariance, current_block_state, rng=rng
             )
             conditional_residual.channel_data["A"][:] = 999
             if fail[0]:
@@ -122,12 +119,10 @@ def test_retained_rng_reference_cannot_advance_campaign(observed):
     retained = []
 
     class RetainsRng(Counter):
-        def sample(
-            self, conditional_residual, noise_covariance, current_block_state, *, rng
-        ):
+        def sample(self, conditional_residual, covariance, current_block_state, *, rng):
             retained.append(rng)
             return super().sample(
-                conditional_residual, noise_covariance, current_block_state, rng=rng
+                conditional_residual, covariance, current_block_state, rng=rng
             )
 
     actual, expected = Wheel(observed, random_seed=11), Wheel(observed, random_seed=11)
@@ -150,11 +145,9 @@ def test_failed_adoption_preserves_rng_and_published_state(observed, failure):
             raise RuntimeError("cannot copy parameter")
 
     class Invalid(Counter):
-        def sample(
-            self, conditional_residual, noise_covariance, current_block_state, *, rng
-        ):
+        def sample(self, conditional_residual, covariance, current_block_state, *, rng):
             result = super().sample(
-                conditional_residual, noise_covariance, current_block_state, rng=rng
+                conditional_residual, covariance, current_block_state, rng=rng
             )
             if fail[0]:
                 fail[0] = False
@@ -162,13 +155,10 @@ def test_failed_adoption_preserves_rng_and_published_state(observed, failure):
                     return replace(result, parameters={"amplitude": CannotCopy()})
                 if failure == "exception":
                     raise RuntimeError("sampler failed")
-                wrong_grid = replace(
-                    conditional_residual,
-                    start_time_gps=conditional_residual.start_time_gps + 1,
+                wrong_grid = make_observed(
+                    np.random.default_rng(0), num_time_samples=32
                 )
-                return result.with_covariance_matrix(
-                    DataCovariance.from_variance(wrong_grid, 1)
-                )
+                return result.with_covariance(Covariance.from_variance(wrong_grid, 1))
             return result
 
     actual, expected = Wheel(observed, random_seed=12), Wheel(observed, random_seed=12)
@@ -179,32 +169,30 @@ def test_failed_adoption_preserves_rng_and_published_state(observed, failure):
         actual.run(1)
     assert actual.ledger["counter"].parameters == {"a": 0.0}
     assert block.state.n == 1
-    assert actual.noise_covariance is None
+    assert actual.covariance is None
     actual.run(1)
     expected.run(1)
     assert actual.ledger["counter"].parameters == expected.ledger["counter"].parameters
 
 
 def test_covariance_input_and_output_snapshots_are_isolated(observed):
-    covariance = DataCovariance.from_variance(observed, 1)
-    wheel = Wheel(observed, initial_noise_covariance=covariance)
-    covariance.covariance_matrix.setflags(write=True)
-    covariance.covariance_matrix[:] *= 2
-    inspected = wheel.noise_covariance
-    inspected.covariance_matrix.setflags(write=True)
-    inspected.covariance_matrix[:] *= 3
+    covariance = Covariance.from_variance(observed, 1)
+    wheel = Wheel(observed, initial_covariance=covariance)
+    covariance.pairs[("A", "A")].setflags(write=True)
+    covariance.pairs[("A", "A")][:] *= 2
+    inspected = wheel.covariance
+    inspected.pairs[("A", "A")].setflags(write=True)
+    inspected.pairs[("A", "A")][:] *= 3
 
     class EditsNoise(Counter):
-        def sample(
-            self, conditional_residual, noise_covariance, current_block_state, *, rng
-        ):
-            noise_covariance.covariance_matrix.setflags(write=True)
-            noise_covariance.covariance_matrix[:] *= 4
+        def sample(self, conditional_residual, covariance, current_block_state, *, rng):
+            covariance.pairs[("A", "A")].setflags(write=True)
+            covariance.pairs[("A", "A")][:] *= 4
             return current_block_state
 
     wheel.add(EditsNoise(), initial_block_state=counter_initial_result(observed))
     wheel.run(1)
-    assert wheel.noise_covariance.noise_variance("A") == 1
+    assert wheel.covariance.noise_variance("A", observed) == 1
 
 
 def test_residual_overflow_is_rejected_before_registration(observed):

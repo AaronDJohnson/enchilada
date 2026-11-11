@@ -1,4 +1,4 @@
-"""Array transforms shared by object translation and covariance operators."""
+"""Array transforms used by object translation."""
 
 import importlib
 import sys
