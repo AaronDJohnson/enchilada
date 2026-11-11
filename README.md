@@ -269,8 +269,8 @@ wheel = Wheel(
 
 With `initial_covariance=None`, Wheel starts without a covariance; a block can
 publish one. Convert a one-sided PSD model with
-`Covariance.from_psd(spectrum, noise_psd_model=model)`, where `spectrum` is
-frequency-domain data and the model provides `psd(frequencies)` or
+`spectral = Covariance.from_psd(spectrum, noise_psd_model=model)`, where
+`spectrum` is frequency-domain data and the model provides `psd(frequencies)` or
 `psd(frequencies, channel)` returning finite positive one-sided densities at
 every rfft bin including `f = 0` (floor the model at low frequency).
 Signal-only, noise-only, and joint signal/noise models all implement `Block`.
@@ -298,26 +298,30 @@ cross terms, with `noise.EA` the conjugate transpose of `noise.AE`; an absent
 cross term reads as zero. When the channels are exactly X, Y, Z the names
 A, E, T and their pairs are derived on demand with the orthonormal LDC
 combination `A = (Z − X)/√2`, `E = (X − 2Y + Z)/√6`, `T = (X + Y + Z)/√3`, and
-the reverse holds for A, E, T data; `noise.in_basis("AET")` returns the whole
-derived object. `noise.pair("A", "E")` is the method form, for channel names
-that are not identifiers or whose concatenation is ambiguous.
+the reverse holds for A, E, T data. `noise.in_basis("AET")` returns the whole
+derived object for X, Y, Z channels and the object itself when its channels are
+already A, E, T. Derivation raises `ValueError` when the rotated covariance is
+not numerically positive definite (T ≪ A at the lowest frequencies).
+`noise.pair("A", "E")` is the method form, for channel names that are not
+identifiers or whose concatenation is ambiguous.
 
 Each pair is one array on the grid of the data the covariance accompanies.
 With channel shape `S` (`(N,)` time, `(N//2 + 1,)` frequency, `(Nf + 1, Nt)`
 WDM), shape `S` means one value per point (`form="diagonal"`) and shape `S + S`
 a full matrix between points (`form="full"`). Build one from arrays with
-`Covariance.like(data, {"A": var_a, "E": var_e, "AE": cross})`; the form is
-inferred by comparing the array shapes with the data's channel shape.
+`Covariance.like(data, {"A": var_a, "E": var_e, "T": var_t, "AE": cross})`;
+the form is inferred by comparing the array shapes with the data's channel
+shape.
 Coefficients use `dt * rfft(x)`; a one-sided PSD becomes `C = (Tobs / 2) S` at
-every bin, and `noise.noise_psd("A", spectrum)` inverts it.
+every bin, and `spectral.noise_psd("A", spectrum)` inverts it.
 `noise.noise_variance("A", data)` gives the per-sample variance from stationary
 time covariance or by integrating a frequency covariance.
 
 The object carries no grid; `noise.check_compatible(data)` checks channel
 order, shape, real/complex kind and positivity against the data it accompanies,
-and Wheel runs it on every adoption. Covariance translation between domains is
-a seam in `transform()` that currently raises `NotImplementedError`; a
-translation layer plugs in there.
+and Wheel runs it on the initial covariance and on every covariance a block
+publishes. Covariance translation between domains is a seam in `transform()`
+that currently raises `NotImplementedError`; a translation layer plugs in there.
 
 Wheel uses descriptive arguments at each entry point:
 
@@ -382,7 +386,8 @@ prior, likelihood, and sampler; see the conjugate example in `examples/toy_fit.p
 
 ## Time, frequency, and WDM translation
 
-Use one wrapper for observations, covariance, and block states:
+Use one wrapper for observations, covariance (only on its own grid for now),
+and block states:
 
 ```python
 from enchilada import transform
@@ -428,7 +433,7 @@ for any other target until a translation layer implements that branch. Until
 then, a block registered with a different domain or WDM grid raises
 `NotImplementedError` whenever a covariance must cross to or from it: at `add`
 for a seed covariance, at `run` while the Wheel holds one, and when it publishes
-one. Keep a campaign that carries covariance on the observation domain.
+one. Keep a campaign that carries covariance on the observation grid.
 
 Select a representation when registering a block:
 
