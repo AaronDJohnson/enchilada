@@ -449,6 +449,55 @@ class TestDerivedBasis:
                     aet.pair(first, second), reference[(first, second)], atol=1e-14
                 )
 
+    @pytest.mark.parametrize("dtype", [float, complex])
+    def test_small_variance_channel_converts_in_full_form(self, dtype):
+        # LISA's T channel can sit ~1e-8 below X at low frequency. The derived
+        # T block must still pass the Hermitian check scaled to its own size.
+        n = 6
+        rng = np.random.default_rng(13)
+
+        def random_block():
+            g = rng.standard_normal((n, n)).astype(dtype)
+            if dtype is complex:
+                g = g + 1j * rng.standard_normal((n, n))
+            return g
+
+        def hermitian_pd():
+            g = random_block()
+            return g @ g.conj().T + n * np.eye(n)
+
+        a_blk, e_blk, t_blk = hermitian_pd(), hermitian_pd(), hermitian_pd()
+        # A non-Hermitian A-E coupling makes the X, Y, Z cross blocks
+        # non-Hermitian, so an entry and its mirror sum different values.
+        ae_blk = 0.5 * random_block()
+        zeros = np.zeros((n, n), dtype=dtype)
+        aet_matrix = np.block(
+            [
+                [a_blk, ae_blk, zeros],
+                [ae_blk.conj().T, e_blk, zeros],
+                [zeros, zeros, 1e-8 * t_blk],
+            ]
+        )
+        rotation = np.kron(AET_FROM_XYZ.T, np.eye(n))
+        c = rotation @ aet_matrix @ rotation.T
+        c = 0.5 * (c + c.conj().T)
+        block = {
+            (first, second): c[i * n : (i + 1) * n, j * n : (j + 1) * n]
+            for i, first in enumerate(XYZ)
+            for j, second in enumerate(XYZ)
+            if i <= j
+        }
+        cov = Covariance(block, channel_names=XYZ, form="full")
+        aet = cov.in_basis("AET")
+        scale = np.abs(c).max()
+        np.testing.assert_allclose(aet.T, 1e-8 * t_blk, rtol=0, atol=1e-14 * scale)
+        reference = block_product_aet(cov)
+        for first in AET:
+            for second in AET:
+                np.testing.assert_allclose(
+                    aet.pair(first, second), reference[(first, second)], atol=1e-13
+                )
+
     def test_round_trip_and_caching(self):
         cov = Covariance(xyz_pairs(), channel_names=XYZ)
         aet = cov.in_basis("AET")

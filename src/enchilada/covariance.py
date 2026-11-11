@@ -400,7 +400,9 @@ class Covariance:
         Available only when the channels are exactly X, Y, Z or exactly A, E, T.
         The derived object has all six pairs stored, the same ``form``, channel
         order ``("A", "E", "T")`` or ``("X", "Y", "Z")``, and is computed once.
-        Asking for the current basis returns ``self``.
+        Asking for the current basis returns ``self``. Derived full-form diagonal
+        blocks are symmetrised exactly, because the summation order differs
+        between an entry and its mirror.
         """
         if basis not in BASES:
             raise ValueError(f"basis must be one of {tuple(BASES)}, got {basis!r}")
@@ -434,8 +436,14 @@ class Covariance:
                                 source_first, source_second
                             )
                 assert isinstance(total, np.ndarray)
-                real_diagonal = first == second and self.form == "diagonal"
-                pairs[(first, second)] = total.real if real_diagonal else total
+                if first != second:
+                    pairs[(first, second)] = total
+                elif self.form == "diagonal":
+                    pairs[(first, second)] = total.real
+                else:
+                    pairs[(first, second)] = 0.5 * (
+                        total + self._conjugate_transpose(total)
+                    )
         return Covariance(pairs, channel_names=target, form=self.form)
 
 
