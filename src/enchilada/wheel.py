@@ -100,7 +100,8 @@ class Wheel:
         ):
             raise TypeError("initial_covariance must be a Covariance or None")
         if initial_covariance is not None:
-            initial_covariance = initial_covariance.copy()
+            # Unbound call: copy without trusting a subclass's overridden methods.
+            initial_covariance = Covariance.copy(initial_covariance)
             initial_covariance.check_compatible(observed_data)
         self._observed_data = self._copy_data(observed_data)
         self._working_residual = self._copy_data(observed_data)
@@ -138,7 +139,10 @@ class Wheel:
     @property
     def covariance(self) -> Covariance | None:
         """The current covariance, as an independent copy."""
-        return None if self._covariance is None else self._covariance._copy_validated()
+        if self._covariance is None:
+            return None
+        # Unbound call: copy without trusting a subclass's overridden methods.
+        return Covariance._copy_validated(self._covariance)
 
     @property
     def ledger(self) -> Ledger:
@@ -451,7 +455,8 @@ class Wheel:
             )
         if candidate_block_state.covariance is not None:
             # Revalidate: callers can edit arrays inside a frozen dataclass.
-            candidate_covariance = candidate_block_state.covariance.copy()
+            # Unbound call: copy without trusting a subclass's overridden methods.
+            candidate_covariance = Covariance.copy(candidate_block_state.covariance)
             candidate_covariance.check_compatible(self._observed_data)
             candidate_block_state = replace(
                 candidate_block_state, covariance=candidate_covariance

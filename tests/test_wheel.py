@@ -988,8 +988,14 @@ class TestObservedDataIsChecked:
     def test_finite_data_constructs_normally(self, observed):
         assert Wheel(observed).residual() is not None
 
-    def test_initial_covariance_subclass_cannot_skip_grid_validation(self, observed):
+    def test_covariance_subclass_cannot_skip_grid_validation(self, observed):
+        """Wheel copies through Covariance's own methods, so overriding copy()
+        and check_compatible() cannot store an unvalidated object."""
+
         class UncheckedCovariance(Covariance):
+            def copy(self):
+                return self
+
             def check_compatible(self, reference_data):
                 pass
 
@@ -1000,6 +1006,22 @@ class TestObservedDataIsChecked:
         )
         with pytest.raises(ValueError, match="shape"):
             Wheel(observed, initial_covariance=unchecked)
+
+        class PublishesUnchecked(EchoBlock):
+            def sample(
+                self, conditional_residual, covariance, current_block_state, *, rng
+            ):
+                return BlockState(covariance=unchecked)
+
+        wheel = Wheel(
+            observed, initial_covariance=Covariance.from_variance(observed, 1.0)
+        )
+        wheel.add(PublishesUnchecked("noise"), initial_block_state=BlockState())
+        with pytest.raises(ValueError, match="shape"):
+            wheel.run(1)
+        assert type(wheel._covariance) is Covariance
+        assert wheel.covariance.A.shape == observed.channel_data["A"].shape
+        assert wheel.covariance.noise_variance("A", observed) == 1.0
 
 
 class TestNoiseOwnership:

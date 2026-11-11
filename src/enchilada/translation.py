@@ -135,7 +135,10 @@ def transform(
                 "transform needs reference_data for a Covariance: the L1Data on "
                 "its current grid"
             )
-        value.check_compatible(reference_data)
+        # Unbound call: copy without trusting a subclass's overridden methods,
+        # then validate the plain Covariance that results.
+        copied = Covariance.copy(value)
+        copied.check_compatible(reference_data)
         grid = _target_grid(
             target_domain,
             reference_data.num_time_samples,
@@ -148,7 +151,7 @@ def transform(
             target_domain == reference_data.data_domain
             and grid == reference_data.wdm_grid
         ):
-            return value.copy()
+            return copied
         raise NotImplementedError(
             "covariance translation between domains is not implemented; see "
             "docs/superpowers/specs/2026-11-10-covariance-object-design.md section 6"

@@ -293,6 +293,27 @@ def test_covariance_cross_domain_transform_is_the_seam():
         transform(cov, "wdm", num_frequency_divisions=7, reference_data=data)
 
 
+def test_covariance_seam_copies_through_covariance_methods():
+    class UncheckedCovariance(Covariance):
+        def copy(self):
+            return self
+
+        def check_compatible(self, reference_data):
+            pass
+
+    def unchecked(cov):
+        return UncheckedCovariance(dict(cov.pairs), channel_names=cov.channel_names)
+
+    data = observations()
+    same = transform(
+        unchecked(Covariance.from_variance(data, 2.0)), "time", reference_data=data
+    )
+    assert type(same) is Covariance
+    short = unchecked(Covariance.from_variance(observations(32), 2.0))
+    with pytest.raises(ValueError, match="shape"):
+        transform(short, "time", reference_data=data)
+
+
 def test_covariance_wdm_same_grid_copies_and_regrid_is_the_seam_without_backend():
     grid = WDMGrid(num_frequency_divisions=8, num_time_divisions=8)
     active = np.where(grid.active_mask, 1.0, 0.0)
