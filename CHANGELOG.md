@@ -15,9 +15,8 @@ All notable changes to enchilada are documented here. The format follows
   `examples/create_block.ipynb`.
 - `transform` converts observations and block states between time, frequency,
   and WDM representations; covariance translation is a seam that raises
-  `NotImplementedError` until a translation layer is installed. `WDMGrid`
-  validates dependent division counts; the optional local WDM backend is loaded
-  lazily.
+  `NotImplementedError` until a translation layer is added. `WDMGrid` validates
+  dependent division counts; the optional local WDM backend is loaded lazily.
 - Per-block representation selection in `Wheel.add` translates the residual and
   current signal together and adopts returned outputs on the canonical
   observation grid. A runnable translation example checks both grid selectors
@@ -27,10 +26,12 @@ All notable changes to enchilada are documented here. The format follows
   reversed pairs as conjugate transposes and absent cross terms as zero. With
   channels exactly X, Y, Z the A, E, T basis is derived on demand through the
   orthonormal LDC combination, and the reverse; `in_basis` returns the whole
-  derived object. Arrays follow a shape rule on the data's grid (`form`
-  "diagonal" or "full"). `like`, `from_psd`, `from_variance`, `noise_psd`,
-  `noise_variance` and `check_compatible` take the `L1Data` the covariance
-  accompanies; the object carries no grid.
+  derived object. Each array has the data's channel shape S
+  (`form="diagonal"`) or S + S (`form="full"`); full-form arrays are checked
+  Hermitian per channel, with tolerance scaled to each pair of points'
+  variances, and stored exactly Hermitian. `like`, `from_psd`, `from_variance`,
+  `noise_psd`, `noise_variance`, and `check_compatible` take the `L1Data` the
+  covariance accompanies; the object carries no grid.
 - `Ledger` provides defensive snapshots of each block's complete `BlockState`:
   optional `template` and `covariance`, and physical `parameters`.
   `ledger.snapshot()` returns an independent dictionary for
@@ -111,9 +112,6 @@ All notable changes to enchilada are documented here. The format follows
 - The optional GB example constrains NumPy below 2.4 because released Eryn 1.2.6
   calls the removed `numpy.in1d` function. This upper bound applies only to the
   example dependencies.
-- Full-form covariance blocks are checked for Hermitian symmetry per channel,
-  with tolerance scaled to each pair of points' variances, and stored exactly
-  Hermitian.
 - NumericOrbit copies its input arrays and rejects nonfinite query times, keeping
   caller mutations and invalid times from changing its interpolation bounds.
 - Observation and block-state spectra require real DC coefficients and real
@@ -127,7 +125,7 @@ All notable changes to enchilada are documented here. The format follows
 - Noise storage and weighting helpers on observation data, the `DataCovariance`
   stacked point × channel × channel matrix with its `active_mask` and inactive
   DC bin, the `TranslatedCovariance` operator, and the `apply`, `solve`,
-  `project`, `quadratic_form`, `log_determinant` and `degrees_of_freedom`
+  `project`, `quadratic_form`, `log_determinant`, and `degrees_of_freedom`
   methods. Covariance is one `Covariance` object managed by Wheel.
 - Separate noise-block and stateful-block contracts; signal, noise, and joint
   models use the same `Block` protocol.

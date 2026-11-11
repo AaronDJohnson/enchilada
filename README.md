@@ -233,16 +233,20 @@ wheel.add(
 
 Registration validates and adopts this state without calling model code or
 consuming Wheel RNG draws. Build `initial_state` with the applicable template,
-covariance, and physical parameters. Initialize the block's own `state` separately
-so its sampler agrees with that estimate. Optional prior initialization belongs in
-application or model setup: use a separate setup RNG to draw parameters and
-construct their published state. The Block protocol requires only `name` and
-`sample`. The
-[Block authoring tutorial](examples/create_block.ipynb) shows a complete example.
-Supply signal arrays on the requested block domain and WDM grid, or the observation
-grid if no domain is selected. Wheel converts them to the observation grid for
-storage. An optional covariance is on the block's grid, like its template, and
-follows the normal ownership rules; noise-only initial states are supported too.
+covariance, and physical parameters. Initialize the block's own `state`
+separately so its sampler agrees with that estimate. Optional prior
+initialization belongs in application or model setup: use a separate setup RNG
+to draw parameters and construct their published state. The Block protocol
+requires only `name` and `sample`. The
+[Block authoring tutorial](examples/create_block.ipynb) shows a complete
+example. Supply signal arrays on the requested block domain and WDM grid, or
+the observation grid if no domain is selected. Wheel converts them to the
+observation grid for storage. An optional covariance follows the normal
+ownership rules and, until covariance translation lands, must be on the
+observation grid; a block registered with another domain or WDM grid cannot
+carry one (see
+[Time, frequency, and WDM translation](#time-frequency-and-wdm-translation)).
+Noise-only initial states are supported too.
 
 Wheel validates and defensively copies the published state before adopting it
 atomically.
@@ -268,11 +272,18 @@ wheel = Wheel(
 ```
 
 With `initial_covariance=None`, Wheel starts without a covariance; a block can
-publish one. Convert a one-sided PSD model with
-`spectral = Covariance.from_psd(spectrum, noise_psd_model=model)`, where
-`spectrum` is frequency-domain data and the model provides `psd(frequencies)` or
-`psd(frequencies, channel)` returning finite positive one-sided densities at
-every rfft bin including `f = 0` (floor the model at low frequency).
+publish one. Convert a one-sided PSD model on frequency-domain data:
+
+```python
+spectrum = observed.to_frequency()
+spectral = Covariance.from_psd(spectrum, noise_psd_model=model)
+```
+
+The model provides `psd(frequencies)` or `psd(frequencies, channel)` returning
+finite positive one-sided densities at every rfft bin, including `f = 0`, so
+floor it at low frequency. With `dt * rfft(x)` coefficients each bin holds
+`C = (Tobs / 2) S`, and `spectral.noise_psd("A", spectrum)` inverts it.
+
 Signal-only, noise-only, and joint signal/noise models all implement `Block`.
 A noise-only block publishes covariance directly:
 
@@ -287,41 +298,42 @@ new_block_state = BlockState(
 
 Publishing covariance makes that block the current covariance owner. The owner
 must return its full covariance on every subsequent call, even when unchanged;
-omitting it raises `ValueError`. Other blocks may omit `covariance` to preserve
-the current model. Joint signal/noise states publish both in one `BlockState`;
-validation and adoption are atomic. `state.with_covariance(covariance)` builds a
-new state with that covariance.
+omitting it raises `ValueError`. Other blocks may omit `covariance` to keep the
+Wheel's current covariance. Joint signal/noise states publish a template and a
+covariance in one `BlockState`; validation and adoption are atomic.
+`state.with_covariance(covariance)` builds a new state with that covariance.
 
 A `Covariance` is read through its channels. `noise.A`, `noise.E`, `noise.T`
 are each channel's own covariance; `noise.AE`, `noise.ET`, `noise.AT` are the
-cross terms, with `noise.EA` the conjugate transpose of `noise.AE`; an absent
+cross terms (or `noise.pair("A", "E")` for names that do not concatenate
+cleanly), with `noise.EA` the conjugate transpose of `noise.AE`; an absent
 cross term reads as zero. When the channels are exactly X, Y, Z the names
 A, E, T and their pairs are derived on demand with the orthonormal LDC
-combination `A = (Z − X)/√2`, `E = (X − 2Y + Z)/√6`, `T = (X + Y + Z)/√3`, and
-the reverse holds for A, E, T data. `noise.in_basis("AET")` returns the whole
-derived object for X, Y, Z channels and the object itself when its channels are
-already A, E, T. Derivation raises `ValueError` when the rotated covariance is
-not numerically positive definite (T ≪ A at the lowest frequencies).
-`noise.pair("A", "E")` is the method form, for channel names that are not
-identifiers or whose concatenation is ambiguous.
+combination A = (Z − X)/√2, E = (X − 2Y + Z)/√6, T = (X + Y + Z)/√3, and
+X, Y, Z are derived the same way from A, E, T channels.
+`noise.in_basis("AET")` returns the whole derived object. Derivation raises
+`ValueError` when the rotated covariance is not numerically positive definite,
+as happens when one channel's variance is below float64 roundoff of the others
+(T ≪ A at the lowest LISA frequencies).
 
 Each pair is one array on the grid of the data the covariance accompanies.
-With channel shape `S` (`(N,)` time, `(N//2 + 1,)` frequency, `(Nf + 1, Nt)`
-WDM), shape `S` means one value per point (`form="diagonal"`) and shape `S + S`
-a full matrix between points (`form="full"`). Build one from arrays with
-`Covariance.like(data, {"A": var_a, "E": var_e, "T": var_t, "AE": cross})`;
+With channel shape `S` (`(N,)` time, `(N//2 + 1,)` frequency,
+`(num_frequency_divisions + 1, num_time_divisions)` WDM), shape `S` means one
+value per point (`form="diagonal"`) and shape `S + S` (e.g. `(N, N)` for time
+data) a full matrix between points (`form="full"`). Build one from arrays with
+`Covariance.like(observed, {"A": var_a, "E": var_e, "T": var_t, "AE": cross})`;
 the form is inferred by comparing the array shapes with the data's channel
-shape.
-Coefficients use `dt * rfft(x)`; a one-sided PSD becomes `C = (Tobs / 2) S` at
-every bin, and `spectral.noise_psd("A", spectrum)` inverts it.
-`noise.noise_variance("A", data)` gives the per-sample variance from stationary
-time covariance or by integrating a frequency covariance.
+shape. `noise.noise_variance("A", observed)` gives the per-sample variance from
+stationary time covariance or by integrating a frequency covariance. Both it
+and `noise_psd` read one channel's own variances; they ignore cross terms such
+as `AE` and, for `form="full"`, correlations between points.
 
-The object carries no grid; `noise.check_compatible(data)` checks channel
-order, shape, real/complex kind and positivity against the data it accompanies,
-and Wheel runs it on the initial covariance and on every covariance a block
-publishes. Covariance translation between domains is a seam in `transform()`
-that currently raises `NotImplementedError`; a translation layer plugs in there.
+The object carries no grid; `noise.check_compatible(observed)` checks channel
+order, shape, real/complex kind, and positivity against the data it
+accompanies, and Wheel runs it on the initial covariance and on every
+covariance a block publishes. Covariance does not yet translate to another
+domain or WDM grid; see
+[Time, frequency, and WDM translation](#time-frequency-and-wdm-translation).
 
 Wheel uses descriptive arguments at each entry point:
 
@@ -386,8 +398,7 @@ prior, likelihood, and sampler; see the conjugate example in `examples/toy_fit.p
 
 ## Time, frequency, and WDM translation
 
-Use one wrapper for observations, covariance (only on its own grid for now),
-and block states:
+Use one wrapper for observations, covariance, and block states:
 
 ```python
 from enchilada import transform
@@ -426,15 +437,6 @@ Python ≥3.12 or NumPy-only requirements.
 The [WDM integration workflow](.github/workflows/wdm.yml) records the tested
 backend version and pinned revision.
 
-Covariance translation between representations is not built in. `transform` on
-a `Covariance` needs `reference_data` (the data on its current grid), returns an
-independent copy for the same domain and grid, and raises `NotImplementedError`
-for any other target until a translation layer implements that branch. Until
-then, a block registered with a different domain or WDM grid raises
-`NotImplementedError` whenever a covariance must cross to or from it: at `add`
-for a seed covariance, at `run` while the Wheel holds one, and when it publishes
-one. Keep a campaign that carries covariance on the observation grid.
-
 Select a representation when registering a block:
 
 ```python
@@ -451,15 +453,26 @@ wheel.add(
 )
 ```
 
-Each initial state must contain the physical estimate its block expects, with any
-template arrays on that block's selected domain and WDM grid.
-Wheel converts the conditional residual and previous signal into the selected
-representation, then converts returned outputs back to the canonical
-observation grid before atomic adoption. Omitting `data_domain` keeps the default
-handoff. To convert a standalone state containing a template, supply its source grid:
+Each initial state must contain the physical estimate its block expects, with
+any template arrays on that block's selected domain and WDM grid. Wheel converts
+the conditional residual and previous signal into the selected representation,
+then converts returned outputs back to the canonical observation grid before
+atomic adoption. Omitting `data_domain` keeps the default handoff. To convert a
+standalone state containing a template, supply its source grid:
 `transform(state, "wdm", num_frequency_divisions=8, reference_data=observed)`.
-Physical parameters are copied without reinterpretation; block-local sampler state
-does not pass through translation.
+Physical parameters are copied without reinterpretation; block-local sampler
+state does not pass through translation.
+
+Covariance translation between representations is not built in. `transform` on
+a `Covariance` needs `reference_data` (the data on its current grid), returns an
+independent copy for the same domain and grid, and raises `NotImplementedError`
+for any other target until a translation layer implements that branch. Until
+then, a block registered with a different domain or WDM grid raises
+`NotImplementedError` whenever a covariance must cross to or from it: at `add`
+for a seed covariance, at `run` while the Wheel holds one, and when it publishes
+one. In a campaign that carries covariance, register every block without
+`data_domain`.
+
 The [translation notebook](examples/domain_translation.ipynb) walks through the
 same API with plots, round-trip checks, and blocks using different domains.
 
@@ -540,8 +553,8 @@ producing quietly wrong science:
 - `Wheel` checks `name` and `sample` before registration, then validates
   every supplied initial or returned signal's channels, lengths, real/complex
   kind, and finiteness.
-  Covariance publications are checked against the observation grid and the
-  positivity rules before any state is committed.
+  Covariance publications are checked with `check_compatible` against the
+  observation grid before any state is committed.
 - `NumericOrbit.positions` refuses to extrapolate outside its tabulated
   ephemeris instead of returning cubic-polynomial garbage.
 
@@ -632,9 +645,10 @@ oversights:
   `NoiseOverwrittenWarning`. Blocks other than the current owner may omit a
   covariance publication to preserve the model; the owner must return its full
   covariance. Ownership changes remain warnings because they may be deliberate.
-- **No covariance translation yet.** `transform` raises `NotImplementedError` for
-  a `Covariance` across domains; the translation layer that fills that seam is
-  separate work.
+- **No covariance translation yet.** A `Covariance` cannot move to another
+  domain or WDM grid, so a campaign that carries covariance keeps every block on
+  the observation grid; `transform()` raises `NotImplementedError` there until a
+  translation layer is added.
 - **No checkpoint file format or lifecycle end.** A restart requires the blocks'
   sampler states, Wheel's accepted physical estimates, and the relevant RNG states
   to be saved and restored consistently. Serialization, restoration, and resource
@@ -648,11 +662,12 @@ excluding one block takes O(log B) array additions for B registered blocks;
 residuals are formed from pristine observations, avoiding cumulative add-back
 drift. The tree uses up to one aggregate array per channel at each internal node.
 
-Defensive state and covariance copies still cost memory and work. Internal copies
-of validated covariance skip revalidation; constructors and new covariance
-publications retain it. Keep unbounded chains in a callback sink, outside
-`BlockState`. Run [the benchmark](benchmarks/benchmark_wheel.py) for a
-reproducible workload, cycle timings, and process peak memory usage.
+Defensive state and covariance copies still cost memory and work. Internal
+copies of validated covariance skip revalidation; constructors and new
+covariance publications are still validated. Keep unbounded chains in a
+callback sink, outside `BlockState`. Run
+[the benchmark](benchmarks/benchmark_wheel.py) for a reproducible workload,
+cycle timings, and process peak memory usage.
 
 ## Status
 
