@@ -604,6 +604,30 @@ class TestDerivedBasis:
             Covariance(xyz_pairs(), channel_names=XYZ).in_basis("ABC")
 
 
+def single_channel_wdm_data():
+    grid = WDMGrid(num_frequency_divisions=4, num_time_divisions=8)
+    # L1Data infers wdm_grid from the
+    # (num_frequency_divisions + 1, num_time_divisions) shape.
+    data = L1Data(
+        {"A": np.zeros(grid.array_shape)},
+        sample_rate_hz=1.0,
+        tdi_generation="2.0",
+        physical_observable="fractional_frequency",
+        data_domain="wdm",
+    )
+    return grid, data
+
+
+def hermitian_block(rng, k, *, real_corners):
+    """Complex Hermitian positive-definite (k, k) block for one channel."""
+    b = rng.standard_normal((k, k)) + 1j * rng.standard_normal((k, k))
+    block = b @ b.conj().T + k * np.eye(k)
+    if real_corners:
+        block[0, -1] = block[0, -1].real
+        block[-1, 0] = np.conj(block[0, -1])
+    return block
+
+
 class FlatPSD:
     def __init__(self, level):
         self.level = level
@@ -634,6 +658,18 @@ class TestLike:
         with pytest.raises(ValueError, match="at least every channel"):
             Covariance.like(data, {})
 
+    def test_two_keys_naming_one_pair_are_rejected(self, rng):
+        data = make_observed(rng, channel_names=AE)
+        n = data.num_time_samples
+        ones = np.ones(n)
+        with pytest.raises(ValueError, match=r"'A' and \('A', 'A'\) both name"):
+            Covariance.like(data, {"A": ones, ("A", "A"): ones, "E": ones})
+        with pytest.raises(ValueError, match=r"'AE' and \('A', 'E'\) both name"):
+            Covariance.like(
+                data,
+                {"A": ones, "E": ones, "AE": 0.1 * ones, ("A", "E"): 0.1 * ones},
+            )
+
 
 class TestFactoriesAndReadBack:
     def test_from_variance_scalar_and_mapping(self, rng):
@@ -648,15 +684,93 @@ class TestFactoriesAndReadBack:
         with pytest.raises(ValueError, match="keys must match"):
             Covariance.from_variance(data, {"A": 1.0})
 
-    def test_from_variance_rejects_zero_variance(self, rng):
+    @pytest.mark.parametrize("variance", [0.0, -1.0, np.inf, np.nan])
+    def test_from_variance_rejects_non_positive_or_non_finite(self, rng, variance):
         data = make_observed(rng, channel_names=AE)
-        with pytest.raises(ValueError, match="positive at every point"):
-            Covariance.from_variance(data, 0.0)
+        with pytest.raises(ValueError, match="time_sample_variance must be finite"):
+            Covariance.from_variance(data, variance)
 
     def test_from_variance_rejects_negative_variance(self, rng):
         data = make_observed(rng, channel_names=AE)
-        with pytest.raises(ValueError, match="nonnegative|positive"):
+        with pytest.raises(
+            ValueError, match=r"time_sample_variance\['E'\] must be finite and positive"
+        ):
             Covariance.from_variance(data, {"A": 1.0, "E": -1.0})
+
+    @pytest.mark.parametrize("variance", ["2", 1 + 1j, [2.0, 3.0], True])
+    def test_from_variance_requires_a_real_number(self, rng, variance):
+        data = make_observed(rng, channel_names=AE)
+        with pytest.raises(TypeError, match="time_sample_variance must be a real"):
+            Covariance.from_variance(data, variance)
+
+    def test_from_variance_mapping_requires_real_numbers(self, rng):
+        data = make_observed(rng, channel_names=AE)
+        with pytest.raises(
+            TypeError, match=r"time_sample_variance\['A'\] must be a real number"
+        ):
+            Covariance.from_variance(data, {"A": "1.5", "E": 1.0})
+
+    def test_from_psd_passes_each_channel_to_a_per_channel_model(self, rng):
+        spectrum = make_observed(rng, channel_names=AE).to_frequency()
+
+        class PerChannel:
+            def psd(self, f, channel):
+                return np.full_like(f, {"A": 3.0, "E": 7.0}[channel])
+
+        cov = Covariance.from_psd(spectrum, PerChannel())
+        tobs = spectrum.num_time_samples / spectrum.sample_rate_hz
+        k = spectrum.num_time_samples // 2 + 1
+        np.testing.assert_array_equal(cov.A, np.full(k, tobs / 2 * 3.0))
+        np.testing.assert_array_equal(cov.E, np.full(k, tobs / 2 * 7.0))
+        assert ("A", "E") not in cov.pairs
+
+    def test_from_psd_accepts_a_frequency_only_model(self, rng):
+        spectrum = make_observed(rng, channel_names=AE).to_frequency()
+
+        class Shared:
+            def psd(self, f):
+                return 1.0 + f
+
+        cov = Covariance.from_psd(spectrum, Shared())
+        np.testing.assert_array_equal(cov.A, cov.E)
+        f = np.fft.rfftfreq(spectrum.num_time_samples, d=1 / spectrum.sample_rate_hz)
+        np.testing.assert_allclose(cov.noise_psd("A", spectrum), 1.0 + f)
+
+    def test_from_psd_propagates_a_type_error_raised_inside_the_model(self, rng):
+        spectrum = make_observed(rng, channel_names=AE).to_frequency()
+
+        class Broken:
+            # Fails only when given a channel, so retrying without the channel
+            # after catching the TypeError would succeed and hide the bug.
+            def psd(self, f, channel=None):
+                if channel is not None:
+                    raise TypeError("model bug")
+                return np.ones_like(f)
+
+        with pytest.raises(TypeError, match="model bug"):
+            Covariance.from_psd(spectrum, Broken())
+
+    @pytest.mark.parametrize(
+        ("values", "error"),
+        [
+            (0, ValueError),
+            (-1e-40, ValueError),
+            (np.inf, ValueError),
+            (np.nan, ValueError),
+            (np.ones(2), ValueError),
+            (1 + 0j, TypeError),
+            ("invalid", TypeError),
+        ],
+    )
+    def test_from_psd_rejects_invalid_model_values(self, rng, values, error):
+        spectrum = make_observed(rng, channel_names=AE).to_frequency()
+
+        class Noise:
+            def psd(self, f, channel=None):
+                return values
+
+        with pytest.raises(error, match="PSD"):
+            Covariance.from_psd(spectrum, Noise())
 
     def test_from_psd_fills_every_bin_including_dc(self, rng):
         data = make_observed(rng, channel_names=AE).to_frequency()
@@ -754,17 +868,7 @@ class TestCheckCompatible:
         ).check_compatible(spectrum)
 
     def test_wdm_zeros_exactly_at_inactive_pixels(self):
-        grid = WDMGrid(num_frequency_divisions=4, num_time_divisions=8)
-        coefficients = np.zeros(grid.array_shape)
-        # L1Data infers wdm_grid from the
-        # (num_frequency_divisions + 1, num_time_divisions) shape.
-        data = L1Data(
-            {"A": coefficients},
-            sample_rate_hz=1.0,
-            tdi_generation="2.0",
-            physical_observable="fractional_frequency",
-            data_domain="wdm",
-        )
+        grid, data = single_channel_wdm_data()
         variances = np.where(grid.active_mask, 2.0, 0.0)
         Covariance({("A", "A"): variances}, channel_names=("A",)).check_compatible(data)
         with pytest.raises(ValueError, match="inactive WDM pixels"):
@@ -775,3 +879,82 @@ class TestCheckCompatible:
         leaky[1, 0] = 0.0
         with pytest.raises(ValueError, match="positive at active WDM"):
             Covariance({("A", "A"): leaky}, channel_names=("A",)).check_compatible(data)
+
+    def test_like_infers_diagonal_form_for_a_wdm_array(self):
+        grid, data = single_channel_wdm_data()
+        variances = np.where(grid.active_mask, 2.0, 0.0)
+        assert Covariance.like(data, {"A": variances}).form == "diagonal"
+
+    @pytest.mark.filterwarnings("error")  # a complex-to-float cast warns, not raises
+    @pytest.mark.parametrize("n", [63, 64])
+    def test_complex_hermitian_full_block_reads_back_a_real_psd(self, rng, n):
+        spectrum = make_observed(
+            rng, num_time_samples=n, channel_names=("A",)
+        ).to_frequency()
+        k = n // 2 + 1
+        block = hermitian_block(rng, k, real_corners=n % 2 == 0)
+        cov = Covariance({("A", "A"): block}, channel_names=("A",), form="full")
+        cov.check_compatible(spectrum)
+        psd = cov.noise_psd("A", spectrum)
+        tobs = n / spectrum.sample_rate_hz
+        assert psd.dtype == np.float64
+        np.testing.assert_allclose(psd, 2 * np.diag(block).real / tobs)
+
+    @pytest.mark.parametrize("n", [63, 64])
+    def test_full_form_dc_row_may_pair_dc_with_complex_coefficients(self, rng, n):
+        spectrum = make_observed(
+            rng, num_time_samples=n, channel_names=("A",)
+        ).to_frequency()
+        k = n // 2 + 1
+        block = hermitian_block(rng, k, real_corners=True)
+        block[0, 1] = 1.0 + 1.0j
+        block[1, 0] = 1.0 - 1.0j
+        Covariance(
+            {("A", "A"): block}, channel_names=("A",), form="full"
+        ).check_compatible(spectrum)
+
+    @pytest.mark.parametrize("n", [63, 64])
+    def test_full_form_corner_must_be_real_only_when_nyquist_is_real(self, rng, n):
+        spectrum = make_observed(
+            rng, num_time_samples=n, channel_names=("A",)
+        ).to_frequency()
+        k = n // 2 + 1
+        block = hermitian_block(rng, k, real_corners=True)
+        block[0, -1] = block[0, -1].real + 0.5j
+        block[-1, 0] = np.conj(block[0, -1])
+        cov = Covariance({("A", "A"): block}, channel_names=("A",), form="full")
+        if n % 2 == 0:
+            with pytest.raises(ValueError, match="both coefficients are real"):
+                cov.check_compatible(spectrum)
+        else:
+            cov.check_compatible(spectrum)  # the last bin is a complex interior
+
+    @pytest.mark.parametrize("n", [63, 64])
+    def test_diagonal_cross_pair_must_be_real_at_even_nyquist(self, rng, n):
+        spectrum = make_observed(
+            rng, num_time_samples=n, channel_names=AE
+        ).to_frequency()
+        k = n // 2 + 1
+        cross = np.full(k, 0.1 + 0.1j)
+        cross[0] = 0.1
+        cov = Covariance(
+            {("A", "A"): np.ones(k), ("E", "E"): np.ones(k), ("A", "E"): cross},
+            channel_names=AE,
+        )
+        if n % 2 == 0:
+            with pytest.raises(ValueError, match="both coefficients are real"):
+                cov.check_compatible(spectrum)
+        else:
+            cov.check_compatible(spectrum)
+
+    @pytest.mark.parametrize("n", [63, 64])
+    def test_like_runs_check_compatible(self, rng, n):
+        spectrum = make_observed(
+            rng, num_time_samples=n, channel_names=AE
+        ).to_frequency()
+        k = n // 2 + 1
+        with pytest.raises(ValueError, match="both coefficients are real"):
+            Covariance.like(
+                spectrum,
+                {"A": np.ones(k), "E": np.ones(k), "AE": np.full(k, 0.1 + 0.1j)},
+            )

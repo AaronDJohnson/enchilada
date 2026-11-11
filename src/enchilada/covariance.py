@@ -50,6 +50,17 @@ def split_pair_name(
     return candidates[0] if candidates else None
 
 
+def _checked_variance(value: object, label: str) -> float:
+    """Return ``value`` as a float, requiring a finite positive real number."""
+    array = np.asarray(value)
+    if array.ndim != 0 or array.dtype.kind not in "fiu":  # kind "b" is excluded
+        raise TypeError(f"{label} must be a real number, got {value!r}")
+    level = float(array)
+    if not np.isfinite(level) or level <= 0:
+        raise ValueError(f"{label} must be finite and positive, got {value!r}")
+    return level
+
+
 @dataclass(frozen=True, eq=False)
 class Covariance:
     """Noise covariance stored as one array per channel pair.
@@ -365,22 +376,28 @@ class Covariance:
         """Build a covariance on ``reference_data``'s grid from channel-keyed arrays.
 
         Keys are ``"A"``, ``"AE"`` (resolved by the attribute rule) or
-        ``(first, second)`` tuples. ``form`` follows the array shape against the
-        data's channel shape. The result passes :meth:`check_compatible`.
+        ``(first, second)`` tuples; two keys naming the same pair raise
+        ``ValueError``. ``form`` follows the array shape against the data's
+        channel shape. The result passes :meth:`check_compatible`.
         """
         channels = tuple(reference_data.channel_names)
-        resolved: dict[tuple[str, str], np.ndarray] = {}
+        resolved: dict[Any, np.ndarray] = {}
+        origins: dict[Any, Any] = {}
         for key, value in pairs.items():
+            target = key
             if isinstance(key, str):
-                split = split_pair_name(key, channels)
-                if split is None:
+                target = split_pair_name(key, channels)
+                if target is None:
                     raise ValueError(
                         f"key {key!r} is neither a channel nor a pair of channels "
                         f"from {channels}"
                     )
-                resolved[split] = value
-            else:
-                resolved[key] = value
+            if target in origins:
+                raise ValueError(
+                    f"keys {origins[target]!r} and {key!r} both name pair {target!r}"
+                )
+            origins[target] = key
+            resolved[target] = value
         if not resolved:
             raise ValueError(
                 "pairs must contain at least every channel's diagonal entry"
@@ -459,7 +476,8 @@ class Covariance:
 
         ``reference_data`` must be time-domain data. ``time_sample_variance``
         is a scalar shared by all channels or a mapping with exactly the run's
-        channel names.
+        channel names; each value must be a finite positive real number
+        (``TypeError`` for a non-real value, ``ValueError`` otherwise).
         """
         if reference_data.data_domain != "time":
             raise ValueError("from_variance needs time-domain reference_data")
@@ -469,14 +487,15 @@ class Covariance:
                 raise ValueError(
                     "time_sample_variance keys must match channels exactly"
                 )
-            levels = [float(time_sample_variance[ch]) for ch in channels]
-        else:
-            scalar = np.asarray(time_sample_variance)
-            if scalar.ndim != 0 or scalar.dtype.kind not in "fiu":
-                raise ValueError(
-                    "time_sample_variance must be a real scalar for each channel"
+            levels = [
+                _checked_variance(
+                    time_sample_variance[ch], f"time_sample_variance[{ch!r}]"
                 )
-            levels = [float(scalar)] * len(channels)
+                for ch in channels
+            ]
+        else:
+            level = _checked_variance(time_sample_variance, "time_sample_variance")
+            levels = [level] * len(channels)
         shape = reference_data.channel_data[channels[0]].shape
         covariance = cls(
             {
