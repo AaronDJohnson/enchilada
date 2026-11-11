@@ -1,7 +1,7 @@
 # Covariance object design
 
 Date: 2026-11-10
-Status: approved in discussion, awaiting written review
+Status: approved (written spec approved 2026-11-10; amended during implementation)
 Branch: `name_changes` (contains the `BlockState` rename and the CI hardening merge)
 
 ## Goal
@@ -149,7 +149,7 @@ not hidden.
 |---|---|
 | `noise_psd(channel, data)` | needs frequency-domain `data` for `Tobs`; returns `2 * C_kk / Tobs` at every bin, no infinities |
 | `noise_variance(channel, data)` | time data: the constant diagonal, `ValueError` if not constant; frequency data: trapezoid integral of the PSD over all bins with half weight at DC and even-length Nyquist, so white noise reads back as exactly `sigma**2` |
-| `copy()` | new object with independent read-only copies; skips validation through a private fast path, as today |
+| `copy()` | new object with independent read-only copies, revalidated; `_copy_validated()` is the Wheel's private fast path for objects it owns; `deepcopy` and pickle restore read-only arrays without the derived-basis cache |
 | `check_compatible(data)` | the domain-dependent validation, section 4.2 |
 
 ### 1.6 Removed
@@ -296,13 +296,19 @@ numerical rules, `AttributeError` for unknown attribute names,
   take the renames of 2.1. The owner rule and rollback tests are unchanged in
   substance.
 - `tests/test_covariance_translation.py` is deleted with the module it tests.
-- The four tests that exercise covariance translation through the Wheel
-  (`test_translation_example.py::test_translation_example_preserves_data_and_noise_weight_across_domains`,
+- The tests that exercise covariance translation through the Wheel are
+  rewritten to the new API and marked
+  `pytest.mark.xfail(raises=NotImplementedError, strict=True)`:
+  `test_initial_block_state.py::test_seed_without_signal_can_sample_in_selected_domain[True]`,
   `test_wheel_translation.py::test_wdm_noise_publication_is_usable_in_every_domain`,
-  and the two tests in `test_translation_review.py`) are rewritten to the new
-  API and marked `pytest.mark.xfail(raises=NotImplementedError, strict=True)`.
-  When the translation layer lands they fail as unexpected passes and the
-  marker is removed.
+  `test_translation_review.py::test_noise_only_wdm_result_can_reuse_grid_with_compatible_time_reference`,
+  `test_toy_translation.py::test_toy_time_blocks_preserve_draws_on_translated_observations[frequency|wdm]`
+  and
+  `test_gb_example_contract.py::test_gb_frequency_registration_restores_a_diagonal_form_frequency_covariance[time|wdm]`
+  (the last two assume the layer returns the diagonal form; section 6 allows
+  promotion to full). When the translation layer lands they fail as unexpected
+  passes and the marker is removed. `examples/domain_translation.py` and its
+  test lost their covariance part and run green.
 - `examples/gb_model.py` uses the attribute API; `tests/test_examples.py` keeps
   running every script.
 - Coverage stays at or above the configured 95 percent.
@@ -376,8 +382,9 @@ reference the old names.
 Docs: README covariance section rewritten around the attribute API, the shape
 rule, the derived basis and the seam. CHANGELOG 0.3.0 is unreleased, so its
 existing `DataCovariance` and `TranslatedCovariance` bullets are replaced by
-one `Changed` entry for `Covariance` and the renames in 2.1 and one `Removed`
-entry for the deletions in 1.6, with a note that covariance translation is
+an `Added` entry for `Covariance` (the class is new in the unreleased 0.3.0),
+the renames in 2.1 in the `Changed` entries, and one `Removed` entry for the
+deletions in 1.6, with a note that covariance translation is
 pending. Version stays 0.3.0.
 
 ## Non-goals
