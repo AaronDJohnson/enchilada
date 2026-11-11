@@ -249,7 +249,7 @@ class Covariance:
             return
         width = inactive.shape[1]
         if width < 64:
-            codes = inactive @ (1 << np.arange(width))
+            codes = inactive @ (1 << np.arange(width, dtype=np.int64))
         else:  # too wide for one integer code (e.g. full form): group whole rows
             codes = np.unique(inactive, axis=0, return_inverse=True)[1].reshape(-1)
         for code in np.unique(codes):
@@ -394,7 +394,47 @@ class Covariance:
         return "AET" if basis == "XYZ" else "XYZ"
 
     def in_basis(self, basis: str) -> "Covariance":
-        raise NotImplementedError  # Task 2
+        """Return this covariance in the ``"XYZ"`` or ``"AET"`` basis.
+
+        Available only when the channels are exactly X, Y, Z or exactly A, E, T.
+        The derived object has all six pairs stored, the same ``form``, channel
+        order ``("A", "E", "T")`` or ``("X", "Y", "Z")``, and is computed once.
+        Asking for the current basis returns ``self``.
+        """
+        if basis not in BASES:
+            raise ValueError(f"basis must be one of {tuple(BASES)}, got {basis!r}")
+        current = self._basis_name()
+        if current is None:
+            raise ValueError(
+                "deriving a basis needs channels exactly X, Y, Z or A, E, T; "
+                f"got {self.channel_names}"
+            )
+        if basis == current:
+            return self
+        if self._derived is None:
+            derived = self._derive(current, basis)
+            object.__setattr__(derived, "_derived", self)
+            object.__setattr__(self, "_derived", derived)
+        assert self._derived is not None
+        return self._derived
+
+    def _derive(self, current: str, basis: str) -> "Covariance":
+        source, target = BASES[current], BASES[basis]
+        matrix = AET_FROM_XYZ if basis == "AET" else AET_FROM_XYZ.T
+        pairs: dict[tuple[str, str], np.ndarray] = {}
+        for a, first in enumerate(target):
+            for b, second in enumerate(target[a:], start=a):
+                total: np.ndarray | float = 0.0
+                for i, source_first in enumerate(source):
+                    for j, source_second in enumerate(source):
+                        weight = matrix[a, i] * matrix[b, j]
+                        if weight != 0.0:
+                            total = total + weight * self.pair(
+                                source_first, source_second
+                            )
+                assert isinstance(total, np.ndarray)
+                pairs[(first, second)] = total.real if first == second else total
+        return Covariance(pairs, channel_names=target, form=self.form)
 
 
 _FIELD_NAMES = frozenset(f.name for f in fields(Covariance))

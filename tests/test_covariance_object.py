@@ -6,9 +6,11 @@ import pickle
 import numpy as np
 import pytest
 
-from enchilada.covariance import Covariance
+from enchilada.covariance import AET_FROM_XYZ, Covariance
 
 AE = ("A", "E")
+XYZ = ("X", "Y", "Z")
+AET = ("A", "E", "T")
 
 
 def diagonal_pairs(n=8, a=1.0, e=4.0):
@@ -306,3 +308,105 @@ class TestCopy:
             assert set(restored.pairs) == set(cov.pairs)
             for key, arr in cov.pairs.items():
                 np.testing.assert_array_equal(restored.pairs[key], arr)
+
+
+def xyz_pairs(n=6, with_cross=True):
+    rng = np.random.default_rng(5)
+    pairs = {
+        ("X", "X"): np.full(n, 2.0),
+        ("Y", "Y"): np.full(n, 3.0),
+        ("Z", "Z"): np.full(n, 4.0),
+    }
+    if with_cross:
+        pairs[("X", "Y")] = rng.uniform(-0.5, 0.5, n) + 1j * rng.uniform(-0.5, 0.5, n)
+        pairs[("X", "Z")] = rng.uniform(-0.5, 0.5, n) + 1j * rng.uniform(-0.5, 0.5, n)
+        pairs[("Y", "Z")] = rng.uniform(-0.5, 0.5, n) + 1j * rng.uniform(-0.5, 0.5, n)
+    return pairs
+
+
+def explicit_aet(cov):
+    """Reference: per point, M C M^T with C the 3x3 channel matrix."""
+    n = cov.X.size
+    out = {}
+    for p in range(n):
+        c = np.array([[cov.pair(i, j)[p] for j in XYZ] for i in XYZ])
+        out[p] = AET_FROM_XYZ @ c @ AET_FROM_XYZ.T
+    return out
+
+
+class TestDerivedBasis:
+    def test_aet_matches_explicit_matrix_product(self):
+        cov = Covariance(xyz_pairs(), channel_names=XYZ)
+        reference = explicit_aet(cov)
+        aet = cov.in_basis("AET")
+        for a, first in enumerate(AET):
+            for b, second in enumerate(AET):
+                expected = np.array([reference[p][a, b] for p in range(cov.X.size)])
+                np.testing.assert_allclose(
+                    aet.pair(first, second), expected, atol=1e-14
+                )
+                # The same values through the derived attribute names.
+                name = first if a == b else first + second
+                np.testing.assert_allclose(getattr(cov, name), expected, atol=1e-14)
+        np.testing.assert_allclose(cov.EA, np.conj(cov.AE))
+
+    def test_full_form_derivation_is_elementwise(self):
+        n = 3
+        base = np.diag(np.full(n, 5.0)) + 0.5 * np.eye(n, k=1) + 0.5 * np.eye(n, k=-1)
+        pairs = {
+            ("X", "X"): base,
+            ("Y", "Y"): 2 * base,
+            ("Z", "Z"): 3 * base,
+            ("X", "Z"): 0.1 * np.eye(n),
+        }
+        cov = Covariance(pairs, channel_names=XYZ, form="full")
+        aet = cov.in_basis("AET")
+        assert aet.form == "full"
+        m = AET_FROM_XYZ
+        expected_aa = sum(
+            m[0, i] * m[0, j] * cov.pair(XYZ[i], XYZ[j])
+            for i in range(3)
+            for j in range(3)
+        )
+        np.testing.assert_allclose(aet.A, expected_aa, atol=1e-14)
+
+    def test_round_trip_and_caching(self):
+        cov = Covariance(xyz_pairs(), channel_names=XYZ)
+        aet = cov.in_basis("AET")
+        assert aet.channel_names == ("A", "E", "T")
+        assert cov.in_basis("AET") is aet
+        assert cov.in_basis("XYZ") is cov
+        assert aet.in_basis("XYZ") is cov
+        back = Covariance(dict(aet.pairs), channel_names=aet.channel_names).in_basis(
+            "XYZ"
+        )
+        for first in XYZ:
+            for second in XYZ:
+                np.testing.assert_allclose(
+                    back.pair(first, second), cov.pair(first, second), atol=1e-14
+                )
+
+    def test_white_equal_noise_stays_white(self):
+        cov = Covariance({(ch, ch): np.full(4, 7.0) for ch in XYZ}, channel_names=XYZ)
+        np.testing.assert_allclose(cov.A, 7.0)
+        np.testing.assert_allclose(cov.E, 7.0)
+        np.testing.assert_allclose(cov.T, 7.0)
+        np.testing.assert_allclose(cov.AE, 0.0, atol=1e-14)
+        np.testing.assert_allclose(cov.AT, 0.0, atol=1e-14)
+        np.testing.assert_allclose(cov.ET, 0.0, atol=1e-14)
+
+    def test_any_channel_order_works(self):
+        pairs = xyz_pairs()
+        cov = Covariance(pairs, channel_names=("Z", "X", "Y"))
+        reference = Covariance(pairs, channel_names=XYZ)
+        np.testing.assert_allclose(cov.A, reference.A)
+        np.testing.assert_allclose(cov.ET, reference.ET)
+
+    def test_derived_names_need_the_full_triple(self):
+        cov = Covariance(diagonal_pairs(), channel_names=AE)
+        with pytest.raises(AttributeError, match="channel attributes"):
+            _ = cov.X
+        with pytest.raises(ValueError, match="exactly X, Y, Z or A, E, T"):
+            cov.in_basis("XYZ")
+        with pytest.raises(ValueError, match="basis must be one of"):
+            Covariance(xyz_pairs(), channel_names=XYZ).in_basis("ABC")
