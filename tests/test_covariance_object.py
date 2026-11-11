@@ -578,13 +578,14 @@ class TestDerivedBasis:
                 )
 
     def test_derivation_below_float64_precision_explains_itself(self):
+        # Many points, so at least one is indefinite whatever LAPACK's rounding.
         cov = Covariance(
             {
-                ("A", "A"): np.array([1.0]),
-                ("E", "E"): np.array([2.0]),
-                ("T", "T"): np.array([1e-17]),
+                ("A", "A"): np.linspace(1, 3, 64),
+                ("E", "E"): np.linspace(2, 5, 64),
+                ("T", "T"): np.full(64, 1e-20),
             },
-            channel_names=AET,
+            channel_names=("A", "E", "T"),
         )
         with pytest.raises(ValueError, match="cannot derive the XYZ basis"):
             _ = cov.X
