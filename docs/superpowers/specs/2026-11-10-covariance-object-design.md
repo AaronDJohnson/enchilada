@@ -257,8 +257,12 @@ is white and equal in A, E, T.
 - `data.channel_names == channel_names` in order.
 - Array shape equals the data's channel shape (`form == "diagonal"`) or that
   shape doubled (`form == "full"`).
-- Time and WDM: every array real dtype. Frequency: off-diagonals may be
-  complex, but their values at DC and at Nyquist when `N` is even are real.
+- Time and WDM: every array real dtype. Frequency: off-diagonal pairs, and in
+  the full form each channel's own block, may be complex; entries that pair two
+  real coefficients are real (the DC entry, and the Nyquist entry when `N` is
+  even, of a diagonal-form pair; the DC/Nyquist corner entries of a full-form
+  block). Other entries in the DC or Nyquist row of a full-form block pair a
+  real coefficient with a complex one and may be complex.
 - Time and frequency: diagonals positive everywhere. WDM: diagonals zero exactly
   at `data.wdm_grid`'s structurally inactive pixels and positive elsewhere.
 

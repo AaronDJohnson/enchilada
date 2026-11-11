@@ -25,6 +25,7 @@
 - `Wheel.add` with a block domain and a noise-only initial state treats the covariance as being on the block's grid (a reference in that domain is built from the observations), so the seam applies uniformly.
 - Six tests, not four, exercise covariance translation through the Wheel and get the strict `xfail`; `examples/domain_translation.py` loses its covariance part instead of being xfailed, so its test keeps passing on the data and state parts.
 - `FixedLISANoise.psd` in the GB example floors its frequencies because `from_psd` now evaluates f = 0.
+- The Task 1 and Task 2 code blocks below predate their review fixes (masked-array finiteness, positivity grouping, complex Hermitian full-form blocks); HEAD is authoritative for what was built.
 - Full-form diagonal blocks may be complex Hermitian (frequency-domain `E[Z_k Z_l*]`); only the diagonal form requires real diagonal pairs. Found during Task 2; spec 4.1 and 1.4 amended to match.
 
 ---
@@ -915,7 +916,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - [ ] `from_psd` requires frequency data, stores `(Tobs/2)·S(f_k)` at every bin including DC, and raises on a non-finite or non-positive PSD anywhere (message mentions `f = 0`).
 - [ ] `from_variance` requires time data; accepts a scalar or a per-channel mapping.
 - [ ] `noise_psd("A", data)` inverts `from_psd` exactly at every bin; `noise_variance("A", data)` on a `from_variance` object returns the variance; on a `from_psd(white)` object returns exactly `sigma**2`.
-- [ ] `check_compatible` enforces channel order, shape per form, real arrays outside frequency, real DC/Nyquist in frequency, positive diagonals in time/frequency, and WDM zeros exactly at structurally inactive pixels.
+- [ ] `check_compatible` enforces channel order, shape per form, real arrays outside frequency, real entries where both coefficients are real in frequency (DC/Nyquist of a diagonal-form pair; the DC/Nyquist corners of a full-form block), positive diagonals in time/frequency, and WDM zeros exactly at structurally inactive pixels.
 
 **Verify:** `.venv/bin/python -m pytest tests/test_covariance_object.py -q` → all pass.
 
@@ -1043,7 +1044,7 @@ class TestCheckCompatible:
         k = spectrum.num_time_samples // 2 + 1
         cross = np.full(k, 0.1 + 0.1j)
         cov = Covariance({("A", "A"): np.ones(k), ("E", "E"): np.ones(k), ("A", "E"): cross}, channel_names=AE)
-        with pytest.raises(ValueError, match="DC and Nyquist"):
+        with pytest.raises(ValueError, match="both coefficients are real"):
             cov.check_compatible(spectrum)
         cross = cross.copy()
         cross[0] = 0.1
@@ -1235,16 +1236,19 @@ Expected: `AttributeError`s for the missing methods.
             for key, arr in self.pairs.items():
                 if not np.iscomplexobj(arr):
                     continue
+                # Only entries pairing two real coefficients must be real: the
+                # DC (and even-N Nyquist) entry of a diagonal-form pair, and the
+                # DC/Nyquist corner entries of a full-form block. A full-form
+                # DC row pairs a real coefficient with complex ones elsewhere.
+                real_bins = [0] + ([-1] if even else [])
                 if self.form == "diagonal":
-                    endpoints = [arr[0]] + ([arr[-1]] if even else [])
+                    endpoints = [arr[k] for k in real_bins]
                 else:
-                    endpoints = [arr[0, :], arr[:, 0]] + (
-                        [arr[-1, :], arr[:, -1]] if even else []
-                    )
+                    endpoints = [arr[k, l] for k in real_bins for l in real_bins]
                 if any(np.any(np.imag(values) != 0) for values in endpoints):
                     raise ValueError(
-                        f"pair {key!r} must be real at DC and Nyquist, where the "
-                        "coefficients are real"
+                        f"pair {key!r} must be real where both coefficients are "
+                        "real (DC and even-length Nyquist)"
                     )
         for ch in self.channel_names:
             variances = self._point_variances(ch)
@@ -1272,7 +1276,9 @@ Expected: `AttributeError`s for the missing methods.
             return values
         half = values.ndim // 2
         points = int(np.prod(values.shape[:half]))
-        return values.reshape(points, points).diagonal().reshape(values.shape[:half])
+        # Hermitian blocks have a real point-diagonal; drop the zero imaginary part.
+        diagonal = values.reshape(points, points).diagonal().real
+        return diagonal.reshape(values.shape[:half])
 
     def noise_psd(self, channel: str, reference_data: "L1Data") -> np.ndarray:
         """One-sided marginal PSD ``S = 2 C / Tobs`` at every bin.
