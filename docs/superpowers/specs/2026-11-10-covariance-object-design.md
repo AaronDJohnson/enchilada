@@ -334,7 +334,7 @@ arrives.
 Interim behaviour in this change:
 
 - `target_domain` equal to `reference_data.data_domain` (and, for WDM, the same
-  division counts) returns `value` unchanged.
+  division counts) returns an independent copy of `value` (the same contract as the `L1Data` branch).
 - Any other target raises
   `NotImplementedError("covariance translation between domains is not implemented; see docs/superpowers/specs/2026-11-10-covariance-object-design.md section 6")`.
 
