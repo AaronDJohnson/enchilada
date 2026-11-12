@@ -32,6 +32,15 @@ All notable changes to enchilada are documented here. The format follows
   variances, and stored exactly Hermitian. `like`, `from_psd`, `from_variance`,
   `noise_psd`, `noise_variance`, and `check_compatible` take the `L1Data` the
   covariance accompanies; the object carries no grid.
+- `L1Data` carries optional raw orbit tables as stored in Mojito files:
+  `spacecraft_positions_m`, `spacecraft_velocities_m_per_s`, and the six directed
+  `light_travel_times_s` (rows in `enchilada.data.LINKS` order), each with its own
+  start time and sample interval. Construction checks their structure and that
+  each spans the data, in constant time; values are not interpolated, rotated,
+  or resampled, and pass through `replace`, `transform`, and Wheel by reference.
+- `L1Data.from_cd1l(file_path, *, duration_s=None)` reads X, Y, Z TDI-2 from a
+  Mojito CD1-L brick in fractional frequency, with its orbit and light-travel-time
+  tables made read-only.
 - `Ledger` provides defensive snapshots of each block's complete `BlockState`:
   optional `template` and `covariance`, and physical `parameters`.
   `ledger.snapshot()` returns an independent dictionary for

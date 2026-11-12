@@ -47,7 +47,8 @@ any of its extras does not install them; running that example requires the
 separate `examples/requirements-gb.txt` installation described below.
 
 Loading tabulated spacecraft
-ephemerides (`enchilada.orbits.NumericOrbit`) needs the extra:
+ephemerides (`enchilada.orbits.NumericOrbit`) or Mojito CD1-L files
+(`L1Data.from_cd1l`) needs the extra:
 
 ```sh
 uv sync --extra numeric-orbits   # adds h5py, scipy, lisaorbits
@@ -483,7 +484,9 @@ makes every convention an explicit, validated part of `L1Data`.
 
 `channel_data` holds the observed or residual arrays. The observation settings are
 `channel_names`, `sample_rate_hz`, `num_time_samples`, `start_time_gps`,
-`data_domain`, `physical_observable`, `tdi_generation`, and `orbit_ephemeris`.
+`data_domain`, `physical_observable`, `tdi_generation`, and `orbit_ephemeris`,
+plus the optional raw orbit tables described under
+[Raw orbit tables and CD1-L files](#raw-orbit-tables-and-cd1-l-files).
 `wdm_grid` is automatically managed, read-only metadata, not a constructor argument.
 Only `channel_data` may be passed positionally; all settings are keyword-only.
 `sample_rate_hz`, `tdi_generation`, and `physical_observable` are required.
@@ -548,8 +551,8 @@ producing quietly wrong science:
 
 - `L1Data` validates itself on every construction: `channel_data` keys must equal
   `channel_names`, array lengths must match `data_domain`/`num_time_samples`,
-  and an attached orbit must span the observation (catching GPS-vs-zero-based epoch
-  mismatches at construction, not mid-run).
+  and an attached orbit or raw orbit table must span the observation (catching
+  GPS-vs-zero-based epoch mismatches at construction, not mid-run).
 - `Wheel` checks `name` and `sample` before registration, then validates
   every supplied initial or returned signal's channels, lengths, real/complex
   kind, and finiteness.
@@ -600,6 +603,50 @@ coordinate_frame="equatorial")` samples the external model through its
 `compute_position` method. See the module docstring in
 [`src/enchilada/orbits.py`](https://github.com/AaronDJohnson/enchilada/blob/main/src/enchilada/orbits.py) for frames and
 conventions.
+
+### Raw orbit tables and CD1-L files
+
+`L1Data` can also carry orbit tables as raw arrays, exactly as a Mojito file
+stores them, without interpolation, rotation, or resampling:
+
+| Field | Shape and units |
+| --- | --- |
+| `spacecraft_positions_m` | `(3, num_orbit_samples, 3)` (spacecraft, time, xyz), metres |
+| `spacecraft_velocities_m_per_s` | same shape, metres per second |
+| `orbit_start_time_gps`, `orbit_sample_interval_s` | the orbit table's sampling |
+| `light_travel_times_s` | `(6, num_light_travel_time_samples)`, seconds, rows in `enchilada.data.LINKS` order |
+| `light_travel_time_start_time_gps`, `light_travel_time_sample_interval_s` | the light-travel-time sampling |
+
+`LINKS` is `(12, 23, 31, 13, 32, 21)`; link `ij` is received at spacecraft i from
+spacecraft j, and light travel times are indexed by reception time, so
+`ltt_12` and `ltt_21` differ. Positions and velocities stay in the source's frame
+(BCRS/ICRS equatorial for Mojito). Each table needs its sampling, and each must
+span every data sample time. `orbit_sample_times_gps` and
+`light_travel_time_sample_times_gps` give the sample times. The tables pass
+through `replace`, `transform`, and Wheel by reference; blocks must treat them
+as immutable.
+
+`L1Data.from_cd1l(file_path, *, duration_s=None)` reads a Mojito CD1-L brick:
+`tdis/X2`, `Y2`, and `Z2` divided by the file's `laser_frequency` (fractional
+frequency, TDI 2.0), plus the `orbits` and `ltts` tables, made read-only. With
+`duration_s` it reads the first `ceil(duration_s * fs)` samples and the light
+travel times covering them. A whole 731-day brick takes about 1.8 GB, two thirds
+of it for the full-rate light travel times.
+
+```python
+import numpy as np
+
+from enchilada import L1Data
+from enchilada.data import LINKS
+
+data = L1Data.from_cd1l("brick.h5", duration_s=30 * 86400.0)
+reception_times_gps = data.t0 + np.arange(data.N) * data.dt
+ltt_12_s = np.interp(
+    reception_times_gps,
+    data.light_travel_time_sample_times_gps,
+    data.light_travel_times_s[LINKS.index(12)],
+)
+```
 
 ## Development
 

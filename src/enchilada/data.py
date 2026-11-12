@@ -8,6 +8,15 @@ from enchilada.covariance import Covariance
 from enchilada.domains import WDMGrid, check_wdm_coefficients
 from enchilada.orbits import Orbit
 
+LINKS: tuple[int, ...] = (12, 23, 31, 13, 32, 21)
+"""Row order of `L1Data.light_travel_times_s`; ``ij`` is received at i from j.
+
+This is the lisaorbits and LDC/Mojito ordering of directed links.
+"""
+
+CD1L_CHANNELS: tuple[str, ...] = ("X", "Y", "Z")
+"""TDI channels `L1Data.from_cd1l` reads, from the ``tdis/X2`` etc. datasets."""
+
 
 @dataclass(frozen=True, eq=False, init=False)
 class L1Data:
@@ -48,6 +57,28 @@ class L1Data:
         orbit_ephemeris: Optional `Orbit`, shared by reference with blocks and
             treated as immutable. Declared `time_range_gps` must cover all sample
             times. Blocks requiring an orbit must supply one or reject its absence.
+        spacecraft_positions_m: Optional raw orbit table, shaped
+            ``(3, num_orbit_samples, 3)`` (spacecraft, time, xyz), in metres and
+            in the frame of its source; Mojito files store BCRS/ICRS equatorial
+            coordinates. Requires `orbit_start_time_gps` and
+            `orbit_sample_interval_s`.
+        spacecraft_velocities_m_per_s: Optional raw velocities in metres per
+            second, shaped and timed like `spacecraft_positions_m`.
+        orbit_start_time_gps: GPS time of the first orbit sample.
+        orbit_sample_interval_s: Seconds between orbit samples. Orbit sample
+            times are `orbit_sample_times_gps`.
+        light_travel_times_s: Optional raw directed light travel times in
+            seconds, shaped ``(6, num_light_travel_time_samples)`` with rows in
+            `LINKS` order, indexed by reception time. Requires
+            `light_travel_time_start_time_gps` and
+            `light_travel_time_sample_interval_s`.
+        light_travel_time_start_time_gps: GPS time of the first light travel time.
+        light_travel_time_sample_interval_s: Seconds between light travel
+            times. Their sample times are `light_travel_time_sample_times_gps`.
+
+    Each raw orbit table must span every data sample time. Its values are taken
+    as given: no interpolation, rotation, or resampling. Blocks share the arrays
+    by reference and must treat them as immutable.
 
     Fields are frozen, but the supplied arrays and dictionary are retained without
     copying. Wheel makes its own snapshots. Covariance is supplied separately as
@@ -65,6 +96,13 @@ class L1Data:
     start_time_gps: float = 0.0
     data_domain: str = "time"
     orbit_ephemeris: Orbit | None = None
+    spacecraft_positions_m: np.ndarray | None = None
+    spacecraft_velocities_m_per_s: np.ndarray | None = None
+    orbit_start_time_gps: float | None = None
+    orbit_sample_interval_s: float | None = None
+    light_travel_times_s: np.ndarray | None = None
+    light_travel_time_start_time_gps: float | None = None
+    light_travel_time_sample_interval_s: float | None = None
     wdm_grid: WDMGrid | None = field(default=None, init=False)
 
     DOMAINS: ClassVar[tuple[str, ...]] = ("time", "frequency", "wdm")
@@ -89,6 +127,13 @@ class L1Data:
         start_time_gps: float = 0.0,
         data_domain: str = "time",
         orbit_ephemeris: Orbit | None = None,
+        spacecraft_positions_m: np.ndarray | None = None,
+        spacecraft_velocities_m_per_s: np.ndarray | None = None,
+        orbit_start_time_gps: float | None = None,
+        orbit_sample_interval_s: float | None = None,
+        light_travel_times_s: np.ndarray | None = None,
+        light_travel_time_start_time_gps: float | None = None,
+        light_travel_time_sample_interval_s: float | None = None,
     ) -> None:
         # Accept optional names at construction while exposing a resolved tuple.
         object.__setattr__(self, "channel_data", channel_data)
@@ -100,6 +145,21 @@ class L1Data:
         object.__setattr__(self, "start_time_gps", start_time_gps)
         object.__setattr__(self, "data_domain", data_domain)
         object.__setattr__(self, "orbit_ephemeris", orbit_ephemeris)
+        object.__setattr__(self, "spacecraft_positions_m", spacecraft_positions_m)
+        object.__setattr__(
+            self, "spacecraft_velocities_m_per_s", spacecraft_velocities_m_per_s
+        )
+        object.__setattr__(self, "orbit_start_time_gps", orbit_start_time_gps)
+        object.__setattr__(self, "orbit_sample_interval_s", orbit_sample_interval_s)
+        object.__setattr__(self, "light_travel_times_s", light_travel_times_s)
+        object.__setattr__(
+            self, "light_travel_time_start_time_gps", light_travel_time_start_time_gps
+        )
+        object.__setattr__(
+            self,
+            "light_travel_time_sample_interval_s",
+            light_travel_time_sample_interval_s,
+        )
         self.__post_init__()
 
     # ---- consistency validation ------------------------------------------
@@ -117,6 +177,7 @@ class L1Data:
         self._resolve_and_check_num_time_samples()
         self._validate_channel_data_lengths()
         self._validate_orbit_span()
+        self._validate_raw_orbit_tables()
 
     def _validate_conventions(self) -> None:
         """Scalar run settings: rates, epoch, and convention strings."""
@@ -337,6 +398,207 @@ class L1Data:
                 f"(mismatched epoch conventions? GPS vs zero-based times?)"
             )
 
+    def _validate_raw_orbit_tables(self) -> None:
+        """Check raw orbit tables' structure and that each spans every sample time.
+
+        Constant time: table values are not scanned, because every replace
+        revalidates and a full-rate light-travel-time table is large.
+        """
+        last_sample_time_gps = (
+            self.start_time_gps + (self.num_time_samples - 1) * self.sample_interval_s
+        )
+        positions = self.spacecraft_positions_m
+        velocities = self.spacecraft_velocities_m_per_s
+        num_orbit_samples = None
+        if positions is not None:
+            _check_raw_table(positions, "spacecraft_positions_m", ndim=3)
+            if positions.shape[0] != 3 or positions.shape[2] != 3:
+                raise ValueError(
+                    "spacecraft_positions_m must have shape (3, num_orbit_samples, 3) "
+                    f"(spacecraft, time, xyz), got {positions.shape}"
+                )
+            num_orbit_samples = positions.shape[1]
+        if velocities is not None:
+            if positions is None:
+                raise ValueError(
+                    "spacecraft_velocities_m_per_s requires spacecraft_positions_m"
+                )
+            _check_raw_table(velocities, "spacecraft_velocities_m_per_s", ndim=3)
+            if velocities.shape != positions.shape:
+                raise ValueError(
+                    f"spacecraft_velocities_m_per_s has shape {velocities.shape}; "
+                    f"it must match spacecraft_positions_m {positions.shape}"
+                )
+        _check_raw_sampling(
+            table_label="spacecraft_positions_m",
+            prefix="orbit",
+            num_samples=num_orbit_samples,
+            start_time_gps=self.orbit_start_time_gps,
+            sample_interval_s=self.orbit_sample_interval_s,
+            data_span_gps=(self.start_time_gps, last_sample_time_gps),
+        )
+        light_travel_times = self.light_travel_times_s
+        num_light_travel_time_samples = None
+        if light_travel_times is not None:
+            _check_raw_table(light_travel_times, "light_travel_times_s", ndim=2)
+            if light_travel_times.shape[0] != len(LINKS):
+                raise ValueError(
+                    "light_travel_times_s must have one row per link in "
+                    f"{LINKS}, got shape {light_travel_times.shape}"
+                )
+            num_light_travel_time_samples = light_travel_times.shape[1]
+        _check_raw_sampling(
+            table_label="light_travel_times_s",
+            prefix="light_travel_time",
+            num_samples=num_light_travel_time_samples,
+            start_time_gps=self.light_travel_time_start_time_gps,
+            sample_interval_s=self.light_travel_time_sample_interval_s,
+            data_span_gps=(self.start_time_gps, last_sample_time_gps),
+        )
+
+    # ---- raw orbit tables -------------------------------------------------
+
+    @property
+    def orbit_sample_times_gps(self) -> np.ndarray | None:
+        """GPS time of each orbit sample, or None without an orbit table."""
+        if self.spacecraft_positions_m is None:
+            return None
+        assert self.orbit_start_time_gps is not None
+        assert self.orbit_sample_interval_s is not None
+        return np.asarray(
+            self.orbit_start_time_gps
+            + np.arange(self.spacecraft_positions_m.shape[1])
+            * self.orbit_sample_interval_s,
+            dtype=np.float64,
+        )
+
+    @property
+    def light_travel_time_sample_times_gps(self) -> np.ndarray | None:
+        """GPS reception time of each light-travel-time sample, or None."""
+        if self.light_travel_times_s is None:
+            return None
+        assert self.light_travel_time_start_time_gps is not None
+        assert self.light_travel_time_sample_interval_s is not None
+        return np.asarray(
+            self.light_travel_time_start_time_gps
+            + np.arange(self.light_travel_times_s.shape[1])
+            * self.light_travel_time_sample_interval_s,
+            dtype=np.float64,
+        )
+
+    # ---- readers ----------------------------------------------------------
+
+    @classmethod
+    def from_cd1l(cls, file_path: str, *, duration_s: float | None = None) -> "L1Data":
+        """Read a Mojito CD1-L brick: X, Y, Z TDI-2 with its raw orbit tables.
+
+        Channels are ``tdis/X2``, ``Y2`` and ``Z2`` divided by the file's
+        ``laser_frequency`` attribute, giving fractional frequency, sampled per
+        ``tdis/sampling`` (``fs``, ``t0``, ``size``). The orbit tables are copied
+        as stored, without rotation or resampling, and made read-only:
+        ``orbits/sc_position_i`` and, when present, ``sc_velocity_i`` (BCRS/ICRS
+        equatorial metres and metres per second) with ``orbits/sampling``; and
+        ``ltts/ltt_ij`` in `LINKS` order with ``ltts/sampling``. Light travel
+        times are cut to the samples covering the data read, plus one. The
+        ``orbit_ephemeris`` field is left None. Requires h5py.
+
+        Args:
+            file_path: Path to the CD1-L HDF5 file.
+            duration_s: Read only the first ``ceil(duration_s * fs)`` samples;
+                None reads the whole brick.
+        """
+        import h5py  # optional: the numeric-orbits extra
+
+        with h5py.File(file_path, "r") as cd1l_file:
+            tdi_sampling = cd1l_file["tdis/sampling"].attrs
+            sample_rate_hz = float(tdi_sampling["fs"])
+            start_time_gps = float(tdi_sampling["t0"])
+            available_samples = int(tdi_sampling["size"])
+            num_time_samples = (
+                available_samples
+                if duration_s is None
+                else int(np.ceil(duration_s * sample_rate_hz))
+            )
+            if not 0 < num_time_samples <= available_samples:
+                raise ValueError(
+                    f"duration_s={duration_s!r} selects {num_time_samples} samples; "
+                    f"the file holds between 1 and {available_samples}"
+                )
+            laser_frequency_hz = float(cd1l_file.attrs["laser_frequency"])
+            channel_data = {
+                channel: np.asarray(
+                    cd1l_file[f"tdis/{channel}2"][:num_time_samples], dtype=float
+                )
+                / laser_frequency_hz
+                for channel in CD1L_CHANNELS
+            }
+
+            orbit_tables: dict[str, Any] = {}
+            if "orbits" in cd1l_file:
+                orbit_group = cd1l_file["orbits"]
+                orbit_sampling = orbit_group["sampling"].attrs
+                orbit_tables["orbit_start_time_gps"] = float(orbit_sampling["t0"])
+                orbit_tables["orbit_sample_interval_s"] = float(orbit_sampling["dt"])
+                orbit_tables["spacecraft_positions_m"] = _read_only(
+                    np.stack(
+                        [
+                            np.asarray(orbit_group[f"sc_position_{sc}"], dtype=float)
+                            for sc in (1, 2, 3)
+                        ]
+                    )
+                )
+                if all(f"sc_velocity_{sc}" in orbit_group for sc in (1, 2, 3)):
+                    orbit_tables["spacecraft_velocities_m_per_s"] = _read_only(
+                        np.stack(
+                            [
+                                np.asarray(
+                                    orbit_group[f"sc_velocity_{sc}"], dtype=float
+                                )
+                                for sc in (1, 2, 3)
+                            ]
+                        )
+                    )
+            if "ltts" in cd1l_file:
+                ltt_group = cd1l_file["ltts"]
+                ltt_sampling = ltt_group["sampling"].attrs
+                ltt_start_time_gps = float(ltt_sampling["t0"])
+                ltt_sample_interval_s = float(ltt_sampling["dt"])
+                last_sample_time_gps = start_time_gps + (num_time_samples - 1) * (
+                    1.0 / sample_rate_hz
+                )
+                # Samples up to the last data time, plus one against rounding.
+                needed = (
+                    int(
+                        np.ceil(
+                            (last_sample_time_gps - ltt_start_time_gps)
+                            / ltt_sample_interval_s
+                        )
+                    )
+                    + 2
+                )
+                stop = min(int(ltt_sampling["size"]), max(needed, 1))
+                orbit_tables["light_travel_time_start_time_gps"] = ltt_start_time_gps
+                orbit_tables["light_travel_time_sample_interval_s"] = (
+                    ltt_sample_interval_s
+                )
+                orbit_tables["light_travel_times_s"] = _read_only(
+                    np.stack(
+                        [
+                            np.asarray(ltt_group[f"ltt_{link}"][:stop], dtype=float)
+                            for link in LINKS
+                        ]
+                    )
+                )
+        return cls(
+            channel_data,
+            channel_names=CD1L_CHANNELS,
+            sample_rate_hz=sample_rate_hz,
+            start_time_gps=start_time_gps,
+            tdi_generation="2.0",
+            physical_observable="fractional_frequency",
+            **orbit_tables,
+        )
+
     # ---- descriptive (long) names ---------------------------------------
 
     @property
@@ -556,3 +818,56 @@ class L1Data:
                 f"see {type(self).__name__}.aliases() for the derived quantities "
                 f"(and their LISA short names)."
             )
+
+
+def _check_raw_table(values: object, label: str, *, ndim: int) -> None:
+    """Require a floating-point ndarray of rank ``ndim``, without scanning values."""
+    if not isinstance(values, np.ndarray) or not np.issubdtype(
+        values.dtype, np.floating
+    ):
+        raise TypeError(f"{label} must be a floating-point numpy array")
+    if values.ndim != ndim:
+        raise ValueError(f"{label} must be {ndim}-D, got shape {values.shape}")
+
+
+def _check_raw_sampling(
+    *,
+    table_label: str,
+    prefix: str,
+    num_samples: int | None,
+    start_time_gps: float | None,
+    sample_interval_s: float | None,
+    data_span_gps: tuple[float, float],
+) -> None:
+    """Pair a raw table with its sampling and require it to span the data."""
+    start_label = f"{prefix}_start_time_gps"
+    interval_label = f"{prefix}_sample_interval_s"
+    if num_samples is None:
+        if start_time_gps is not None or sample_interval_s is not None:
+            raise ValueError(
+                f"{start_label} and {interval_label} describe {table_label}, "
+                f"which was not given"
+            )
+        return
+    if start_time_gps is None or sample_interval_s is None:
+        raise ValueError(f"{table_label} requires {start_label} and {interval_label}")
+    if not np.isfinite(start_time_gps):
+        raise ValueError(f"{start_label} must be finite, got {start_time_gps!r}")
+    if not np.isfinite(sample_interval_s) or sample_interval_s <= 0:
+        raise ValueError(
+            f"{interval_label} must be positive and finite, got {sample_interval_s!r}"
+        )
+    end_time_gps = start_time_gps + (num_samples - 1) * sample_interval_s
+    data_start_gps, data_end_gps = data_span_gps
+    if start_time_gps > data_start_gps or end_time_gps < data_end_gps:
+        raise ValueError(
+            f"{table_label} spans [{start_time_gps}, {end_time_gps}] s but the "
+            f"data samples span [{data_start_gps}, {data_end_gps}] s "
+            f"(mismatched epoch conventions? GPS vs zero-based times?)"
+        )
+
+
+def _read_only(values: np.ndarray) -> np.ndarray:
+    """Mark a freshly read array read-only; blocks share it by reference."""
+    values.setflags(write=False)
+    return values
