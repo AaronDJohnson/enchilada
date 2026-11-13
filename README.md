@@ -611,6 +611,29 @@ ltt_12_s = np.interp(
 )
 ```
 
+### Raw XYZ noise estimates
+
+`L1Data.from_cd1l` also loads `noise_estimates/XYZ` into
+`noise_estimates_xyz`, shaped `(num_estimate_times, num_frequencies, 3, 3)`
+with matrix axes ordered X, Y, Z. It preserves complex values and source units,
+marks the array read-only, and shares it through `replace`, transforms, and Wheel.
+The AET and eta estimates are not loaded. These reference estimates do not set
+or replace the Wheel's active `Covariance`.
+
+`noise_estimate_start_time_gps` and `noise_estimate_sample_interval_s` describe
+the independent time grid; `noise_estimate_min_frequency_hz` and
+`noise_estimate_max_frequency_hz` describe the inclusive logarithmic frequency
+endpoints. `noise_estimate_sample_times_gps` and `noise_estimate_frequencies_hz`
+construct the coordinate arrays from those metadata and the matrix shape.
+The estimates need not have samples at both observation endpoints; models own
+any interpolation or extrapolation policy.
+
+`duration_s` limits the estimate time prefix, retaining a following sample when
+available. Without it, all estimate times are loaded. An absent group leaves
+the estimate fields `None`; malformed XYZ arrays or metadata raise an error.
+The source `laser_frequency_hz` is retained for model-side normalization:
+channel data is divided by it, but raw noise estimates are left unchanged.
+
 ## Development
 
 Use this README and the [block authoring tutorial](examples/create_block.ipynb)

@@ -447,3 +447,146 @@ def test_invalid_auxiliary_file_sampling_fails(tmp_path):
         f["ttl/ttl_coefficients/sampling"].attrs["dt"] = 0.0
     with pytest.raises(ValueError, match="positive dt"):
         L1Data.from_cd1l(str(path))
+
+
+def noise_tables():
+    rng = np.random.default_rng(42)
+    return {
+        "noise_estimates_xyz": rng.normal(size=(3, 4, 3, 3))
+        + 1j * rng.normal(size=(3, 4, 3, 3)),
+        "noise_estimate_start_time_gps": T0 - 5,
+        "noise_estimate_sample_interval_s": 60.0,
+        "noise_estimate_min_frequency_hz": 1e-5,
+        "noise_estimate_max_frequency_hz": 1.0,
+        "laser_frequency_hz": LASER_FREQUENCY_HZ,
+    }
+
+
+def test_raw_noise_estimates_keep_values_grids_and_references():
+    tables = noise_tables()
+    data = observed(**tables)
+    wheel = Wheel(data, random_seed=0)
+    assert wheel.covariance is None
+    for carried in (
+        replace(data),
+        transform(data, "frequency"),
+        wheel.observed_data,
+        wheel.working_residual,
+    ):
+        for name, value in tables.items():
+            assert getattr(carried, name) is value
+    np.testing.assert_array_equal(
+        data.noise_estimate_sample_times_gps, T0 - 5 + np.arange(3) * 60
+    )
+    np.testing.assert_allclose(
+        data.noise_estimate_frequencies_hz, np.geomspace(1e-5, 1, 4)
+    )
+    # Estimates need not have samples at the observation endpoints.
+    assert data.noise_estimate_sample_times_gps[-1] < data.t0 + (data.N - 1) * data.dt
+    empty = observed()
+    assert empty.noise_estimates_xyz is None
+    assert empty.noise_estimate_frequencies_hz is None
+    assert empty.noise_estimate_sample_times_gps is None
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "match"),
+    [
+        ("noise_estimates_xyz", None, "requires noise_estimates"),
+        ("noise_estimate_start_time_gps", None, "requires finite"),
+        ("noise_estimate_start_time_gps", np.nan, "requires finite"),
+        ("noise_estimate_sample_interval_s", 0, "dt > 0"),
+        ("noise_estimate_min_frequency_hz", 0, "fmin < fmax"),
+        ("noise_estimate_max_frequency_hz", 1e-6, "fmin < fmax"),
+        ("laser_frequency_hz", -1, "positive and finite"),
+        ("laser_frequency_hz", np.inf, "positive and finite"),
+    ],
+)
+def test_raw_noise_metadata_validation(field, value, match):
+    with pytest.raises(ValueError, match=match):
+        observed(**{**noise_tables(), field: value})
+
+
+@pytest.mark.parametrize(
+    ("value", "match"),
+    [
+        (np.zeros((3, 4, 3, 3), dtype=int), "floating-point or complex"),
+        ([], "floating-point or complex"),
+        (np.zeros((3, 4, 3)), "must have shape"),
+        (np.zeros((3, 4, 6, 6)), "must have shape"),
+        (np.zeros((0, 4, 3, 3)), "at least one time"),
+        (np.zeros((3, 1, 3, 3)), "two frequencies"),
+    ],
+)
+def test_raw_noise_matrix_validation(value, match):
+    tables = noise_tables()
+    tables["noise_estimates_xyz"] = value
+    with pytest.raises((TypeError, ValueError), match=match):
+        observed(**tables)
+
+
+def add_noise_estimates(path):
+    h5py = pytest.importorskip("h5py")
+    tables = noise_tables()
+    with h5py.File(path, "a") as f:
+        group = f.create_group("noise_estimates")
+        group.create_group("sampling").attrs.update(t0=T0 - 5, dt=60.0, size=3)
+        group.create_group("log_frequency_sampling").attrs.update(
+            fmin=1e-5, fmax=1.0, size=4
+        )
+        group.create_dataset("XYZ", data=tables["noise_estimates_xyz"])
+        # Invalid unused datasets prove the loader only inspects XYZ.
+        group.create_dataset("AET", data=np.zeros(1))
+        group.create_dataset("eta", data=np.zeros(1))
+    return tables
+
+
+@pytest.mark.parametrize(("duration_s", "expected_count"), [(None, 3), (1.0, 3)])
+def test_noise_estimates_loaded_without_normalization(
+    tmp_path, duration_s, expected_count
+):
+    path = tmp_path / "noise.h5"
+    write_cd1l(path)
+    tables = add_noise_estimates(path)
+    data = L1Data.from_cd1l(str(path), duration_s=duration_s)
+    assert data.laser_frequency_hz == LASER_FREQUENCY_HZ
+    np.testing.assert_array_equal(
+        data.noise_estimates_xyz, tables["noise_estimates_xyz"][:expected_count]
+    )
+    assert not data.noise_estimates_xyz.flags.writeable
+    for name, value in tables.items():
+        if name != "noise_estimates_xyz":
+            assert getattr(data, name) == value
+
+
+def test_noise_estimate_prefix_avoids_reading_whole_table(tmp_path):
+    h5py = pytest.importorskip("h5py")
+    path = tmp_path / "noise.h5"
+    write_cd1l(path)
+    add_noise_estimates(path)
+    with h5py.File(path, "a") as f:
+        f["noise_estimates/sampling"].attrs["t0"] = T0
+    data = L1Data.from_cd1l(str(path), duration_s=1)
+    assert data.noise_estimates_xyz.shape[0] == 2
+
+
+@pytest.mark.parametrize(
+    "defect", ["missing_matrix", "frequency_size", "time_size", "zero_dt"]
+)
+def test_malformed_noise_groups_fail(tmp_path, defect):
+    h5py = pytest.importorskip("h5py")
+    path = tmp_path / "noise.h5"
+    write_cd1l(path)
+    add_noise_estimates(path)
+    with h5py.File(path, "a") as f:
+        group = f["noise_estimates"]
+        if defect == "missing_matrix":
+            del group["XYZ"]
+        elif defect == "frequency_size":
+            group["log_frequency_sampling"].attrs["size"] = 5
+        elif defect == "time_size":
+            group["sampling"].attrs["size"] = 5
+        else:
+            group["sampling"].attrs["dt"] = 0
+    with pytest.raises((ValueError, KeyError)):
+        L1Data.from_cd1l(str(path))

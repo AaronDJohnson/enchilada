@@ -17,6 +17,12 @@ All notable changes to enchilada are documented here. The format follows
 
 ### Added
 
+- `L1Data.noise_estimates_xyz` carries raw complex CD1-L XYZ noise matrices,
+  with their independent time and logarithmic frequency sampling and derived
+  coordinate arrays. The reader preserves source units, retains
+  `laser_frequency_hz`, and limits estimate reads when `duration_s` is given.
+  AET and eta estimates are not loaded; active covariance remains separate.
+
 - Raw light-travel-time derivatives, spacecraft clock offsets (`scet_wrt_tcb_s`),
   and the 24 named Mojito TTL coefficient arrays on `L1Data`. Clock and TTL
   tables retain their own sampling metadata and must span the observations.

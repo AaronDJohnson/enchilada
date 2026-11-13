@@ -87,6 +87,16 @@ class L1Data:
             All coefficient arrays share the TTL sampling and sample count.
         ttl_start_time_gps: First TTL coefficient sample time.
         ttl_sample_interval_s: TTL coefficient sampling interval in seconds.
+        noise_estimates_xyz: Optional raw Mojito XYZ spectral matrices,
+            shaped (time, frequency, 3, 3), with matrix axes ordered X, Y, Z.
+            Complex values and source units are preserved;
+            these are reference data, not the Wheel's active Covariance.
+        noise_estimate_start_time_gps: First noise estimate sample time.
+        noise_estimate_sample_interval_s: Noise estimate time spacing in seconds.
+        noise_estimate_min_frequency_hz: First logarithmic frequency, positive.
+        noise_estimate_max_frequency_hz: Last logarithmic frequency.
+        laser_frequency_hz: Optional source laser frequency, retained by from_cd1l
+            for model-side normalization of raw reference data.
         light_travel_time_start_time_gps: GPS time of the first light travel time.
         light_travel_time_sample_interval_s: Seconds between light travel
             times. Their sample times are `light_travel_time_sample_times_gps`.
@@ -124,6 +134,12 @@ class L1Data:
     ttl_coefficients: dict[str, np.ndarray] | None = None
     ttl_start_time_gps: float | None = None
     ttl_sample_interval_s: float | None = None
+    noise_estimates_xyz: np.ndarray | None = None
+    noise_estimate_start_time_gps: float | None = None
+    noise_estimate_sample_interval_s: float | None = None
+    noise_estimate_min_frequency_hz: float | None = None
+    noise_estimate_max_frequency_hz: float | None = None
+    laser_frequency_hz: float | None = None
     wdm_grid: WDMGrid | None = field(default=None, init=False)
 
     DOMAINS: ClassVar[tuple[str, ...]] = ("time", "frequency", "wdm")
@@ -161,6 +177,12 @@ class L1Data:
         ttl_coefficients: dict[str, np.ndarray] | None = None,
         ttl_start_time_gps: float | None = None,
         ttl_sample_interval_s: float | None = None,
+        noise_estimates_xyz: np.ndarray | None = None,
+        noise_estimate_start_time_gps: float | None = None,
+        noise_estimate_sample_interval_s: float | None = None,
+        noise_estimate_min_frequency_hz: float | None = None,
+        noise_estimate_max_frequency_hz: float | None = None,
+        laser_frequency_hz: float | None = None,
     ) -> None:
         # Accept optional names at construction while exposing a resolved tuple.
         object.__setattr__(self, "channel_data", channel_data)
@@ -195,6 +217,20 @@ class L1Data:
         object.__setattr__(self, "ttl_coefficients", ttl_coefficients)
         object.__setattr__(self, "ttl_start_time_gps", ttl_start_time_gps)
         object.__setattr__(self, "ttl_sample_interval_s", ttl_sample_interval_s)
+        object.__setattr__(self, "noise_estimates_xyz", noise_estimates_xyz)
+        object.__setattr__(
+            self, "noise_estimate_start_time_gps", noise_estimate_start_time_gps
+        )
+        object.__setattr__(
+            self, "noise_estimate_sample_interval_s", noise_estimate_sample_interval_s
+        )
+        object.__setattr__(
+            self, "noise_estimate_min_frequency_hz", noise_estimate_min_frequency_hz
+        )
+        object.__setattr__(
+            self, "noise_estimate_max_frequency_hz", noise_estimate_max_frequency_hz
+        )
+        object.__setattr__(self, "laser_frequency_hz", laser_frequency_hz)
         self.__post_init__()
 
     # ---- consistency validation ------------------------------------------
@@ -212,6 +248,7 @@ class L1Data:
         self._resolve_and_check_num_time_samples()
         self._validate_channel_data_lengths()
         self._validate_raw_orbit_tables()
+        self._validate_noise_estimates()
 
     def _validate_conventions(self) -> None:
         """Scalar run settings: rates, epoch, and convention strings."""
@@ -495,6 +532,82 @@ class L1Data:
             data_span_gps=(self.start_time_gps, last_sample_time_gps),
         )
 
+    def _validate_noise_estimates(self) -> None:
+        """Validate raw spectral grids and shapes without scanning table values.
+
+        Noise estimates have their own time grid; unlike ephemerides, their
+        last sample need not reach the last observation sample. Interpretation,
+        normalization, and interpolation belong to model code.
+        """
+        if self.laser_frequency_hz is not None and (
+            not np.isfinite(self.laser_frequency_hz) or self.laser_frequency_hz <= 0
+        ):
+            raise ValueError("laser_frequency_hz must be positive and finite")
+        metadata = (
+            self.noise_estimate_start_time_gps,
+            self.noise_estimate_sample_interval_s,
+            self.noise_estimate_min_frequency_hz,
+            self.noise_estimate_max_frequency_hz,
+        )
+        if self.noise_estimates_xyz is None:
+            if any(value is not None for value in metadata):
+                raise ValueError("noise estimate sampling requires noise_estimates")
+            return
+        if any(value is None or not np.isfinite(value) for value in metadata):
+            raise ValueError(
+                "noise_estimates requires finite time and frequency sampling"
+            )
+        assert self.noise_estimate_sample_interval_s is not None
+        assert self.noise_estimate_min_frequency_hz is not None
+        assert self.noise_estimate_max_frequency_hz is not None
+        if self.noise_estimate_sample_interval_s <= 0 or not (
+            0
+            < self.noise_estimate_min_frequency_hz
+            < self.noise_estimate_max_frequency_hz
+        ):
+            raise ValueError(
+                "noise estimate sampling requires dt > 0 and 0 < fmin < fmax"
+            )
+        values = self.noise_estimates_xyz
+        if not isinstance(values, np.ndarray) or values.dtype.kind not in "fc":
+            raise TypeError(
+                "noise_estimates_xyz must be a floating-point or complex array"
+            )
+        if values.ndim != 4 or values.shape[2:] != (3, 3):
+            raise ValueError(
+                "noise_estimates_xyz must have shape (time, frequency, 3, 3)"
+            )
+        if values.shape[0] < 1 or values.shape[1] < 2:
+            raise ValueError(
+                "noise_estimates_xyz requires at least one time and two frequencies"
+            )
+
+    @property
+    def noise_estimate_sample_times_gps(self) -> np.ndarray | None:
+        """Times of the raw noise estimates on their independent grid."""
+        if self.noise_estimates_xyz is None:
+            return None
+        assert self.noise_estimate_start_time_gps is not None
+        assert self.noise_estimate_sample_interval_s is not None
+        return (
+            self.noise_estimate_start_time_gps
+            + np.arange(self.noise_estimates_xyz.shape[0])
+            * self.noise_estimate_sample_interval_s
+        )
+
+    @property
+    def noise_estimate_frequencies_hz(self) -> np.ndarray | None:
+        """Logarithmically spaced noise-estimate frequencies, including endpoints."""
+        if self.noise_estimates_xyz is None:
+            return None
+        assert self.noise_estimate_min_frequency_hz is not None
+        assert self.noise_estimate_max_frequency_hz is not None
+        return np.geomspace(
+            self.noise_estimate_min_frequency_hz,
+            self.noise_estimate_max_frequency_hz,
+            self.noise_estimates_xyz.shape[1],
+        )
+
     # ---- raw orbit tables -------------------------------------------------
 
     @property
@@ -570,6 +683,11 @@ class L1Data:
         these tables are cut to the data span plus one sample as for ltts.
         Missing optional groups leave fields None; incomplete groups raise.
         TTL tables can be very large; duration_s limits the loaded prefix.
+        Only noise_estimates/XYZ is loaded; AET and eta are skipped.
+        Noise estimates retain their complex values, source units, and independent
+        time/log-frequency sampling; duration_s limits their time prefix, keeping
+        a following sample when available. Full reads retain all noise estimates.
+        laser_frequency_hz is retained; noise estimates are not divided by it.
         Requires h5py.
 
         Args:
@@ -715,6 +833,45 @@ class L1Data:
                     if prefix == "ttl"
                     else _read_only(np.stack(list(tables.values())))
                 )
+            if "noise_estimates" in cd1l_file:
+                group = cd1l_file["noise_estimates"]
+                sampling = group["sampling"].attrs
+                frequencies = group["log_frequency_sampling"].attrs
+                table_t0 = float(sampling["t0"])
+                table_dt = float(sampling["dt"])
+                if (
+                    not np.isfinite(table_t0)
+                    or not np.isfinite(table_dt)
+                    or table_dt <= 0
+                ):
+                    raise ValueError(
+                        "noise_estimates sampling must be finite with positive dt"
+                    )
+                count = int(sampling["size"])
+                nfreq = int(frequencies["size"])
+                last_time = start_time_gps + (num_time_samples - 1) * (
+                    1.0 / sample_rate_hz
+                )
+                stop = (
+                    count
+                    if duration_s is None
+                    else min(
+                        count,
+                        max(1, int(np.ceil((last_time - table_t0) / table_dt)) + 2),
+                    )
+                )
+                dataset = group["XYZ"]
+                if dataset.shape != (count, nfreq, 3, 3):
+                    raise ValueError(
+                        "noise_estimates/XYZ shape disagrees with sampling metadata"
+                    )
+                orbit_tables.update(
+                    noise_estimates_xyz=_read_only(np.asarray(dataset[:stop])),
+                    noise_estimate_start_time_gps=table_t0,
+                    noise_estimate_sample_interval_s=table_dt,
+                    noise_estimate_min_frequency_hz=float(frequencies["fmin"]),
+                    noise_estimate_max_frequency_hz=float(frequencies["fmax"]),
+                )
         return cls(
             channel_data,
             channel_names=CD1L_CHANNELS,
@@ -722,6 +879,7 @@ class L1Data:
             start_time_gps=start_time_gps,
             tdi_generation="2.0",
             physical_observable="fractional_frequency",
+            laser_frequency_hz=laser_frequency_hz,
             **orbit_tables,
         )
 
