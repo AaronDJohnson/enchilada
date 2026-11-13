@@ -6,7 +6,22 @@ All notable changes to enchilada are documented here. The format follows
 
 ## [0.3.0] — Unreleased
 
+### Removed
+
+- Removed `enchilada.orbits`, the `Orbit` and `NumericOrbit` exports, and
+  `L1Data.orbit_ephemeris`. Orbit data travels only as raw tables on `L1Data`;
+  blocks own interpolation and coordinate conversion. Existing callers must
+  pass raw arrays and their sampling metadata, or use `L1Data.from_cd1l`.
+- Replaced the `numeric-orbits` extra with `cd1l` (h5py only); SciPy and
+  lisaorbits are no longer orbit dependencies.
+
 ### Added
+
+- Raw light-travel-time derivatives, spacecraft clock offsets (`scet_wrt_tcb_s`),
+  and the 24 named Mojito TTL coefficient arrays on `L1Data`. Clock and TTL
+  tables retain their own sampling metadata and must span the observations.
+  `from_cd1l` loads these optional groups unchanged, with read-only arrays;
+  `duration_s` limits their loaded prefixes as well as the TDI data.
 
 - `Wheel.add(initial_block_state=...)` starts a block from an explicit injection
   or other complete physical state without consuming campaign RNG draws. It uses the

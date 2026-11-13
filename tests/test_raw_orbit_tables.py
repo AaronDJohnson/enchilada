@@ -42,6 +42,26 @@ def observed(**tables):
 
 
 class TestL1DataTables:
+    def test_orbit_objects_are_not_accepted(self):
+        with pytest.raises(TypeError, match="orbit_ephemeris"):
+            observed(orbit_ephemeris=object())
+
+    @pytest.mark.parametrize("sample_rate_hz", [3.0, 6.0, 7.0, 0.5, 0.1])
+    def test_raw_tables_cover_exact_data_grid(self, sample_rate_hz):
+        positions = np.zeros((3, 32, 3))
+        data = L1Data(
+            {"X": np.zeros(32)},
+            sample_rate_hz=sample_rate_hz,
+            tdi_generation="2.0",
+            physical_observable="fractional_frequency",
+            spacecraft_positions_m=positions,
+            orbit_start_time_gps=0.0,
+            orbit_sample_interval_s=1 / sample_rate_hz,
+        )
+        assert data.spacecraft_positions_m is positions
+        with pytest.raises(ValueError, match="spans"):
+            replace(data, spacecraft_positions_m=positions[:, :-1, :])
+
     def test_tables_are_optional(self):
         data = observed()
         assert data.spacecraft_positions_m is None
@@ -197,7 +217,6 @@ class TestFromCD1L:
         assert data.tdi_generation == "2.0"
         assert data.physical_observable == "fractional_frequency"
         assert data.data_domain == "time"
-        assert data.orbit_ephemeris is None
         for ch in "XYZ":
             np.testing.assert_array_equal(
                 data.channel_data[ch], contents[f"{ch}2"] / LASER_FREQUENCY_HZ
@@ -268,3 +287,163 @@ class TestFromCD1L:
         data = L1Data.from_cd1l(str(path))
         for name in absent:
             assert getattr(data, name) is None
+
+
+def auxiliary_tables():
+    from enchilada.data import TTL_COEFFICIENT_NAMES
+
+    return {
+        "light_travel_time_derivatives": np.zeros((6, N + 1)),
+        "scet_wrt_tcb_s": np.zeros((3, N + 1)),
+        "clock_start_time_gps": T0,
+        "clock_sample_interval_s": 1 / FS,
+        "ttl_coefficients": {name: np.zeros(N + 1) for name in TTL_COEFFICIENT_NAMES},
+        "ttl_start_time_gps": T0,
+        "ttl_sample_interval_s": 1 / FS,
+    }
+
+
+def test_auxiliary_tables_shared_through_transforms_and_wheel():
+    tables = auxiliary_tables()
+    data = observed(**raw_tables(), **tables)
+    wheel = Wheel(data, random_seed=0)
+    for carried in (
+        replace(data),
+        transform(data, "frequency"),
+        wheel.working_residual,
+    ):
+        for name, value in tables.items():
+            assert getattr(carried, name) is value
+    for times in (data.clock_sample_times_gps, data.ttl_sample_times_gps):
+        np.testing.assert_array_equal(times, T0 + np.arange(N + 1) / FS)
+    empty = observed()
+    assert empty.clock_sample_times_gps is None
+    assert empty.ttl_sample_times_gps is None
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "match"),
+    [
+        ("light_travel_time_derivatives", np.zeros((6, N)), "must match"),
+        ("light_travel_time_derivatives", np.zeros((6, N + 1), dtype=int), "floating"),
+        ("scet_wrt_tcb_s", np.zeros((2, N + 1)), "three spacecraft"),
+        ("scet_wrt_tcb_s", np.zeros((3, N - 1)), "spans"),
+        ("clock_start_time_gps", None, "requires"),
+        ("clock_sample_interval_s", 0.0, "positive"),
+        ("ttl_coefficients", {}, "all 24"),
+        ("ttl_coefficients", [], "all 24"),
+        ("ttl_start_time_gps", T0 + 1, "spans"),
+        ("ttl_sample_interval_s", None, "requires"),
+    ],
+)
+def test_auxiliary_table_validation(field, value, match):
+    tables = {**raw_tables(), **auxiliary_tables(), field: value}
+    with pytest.raises((ValueError, TypeError), match=match):
+        observed(**tables)
+
+
+def test_derivatives_require_ltts_and_ttl_lengths_match():
+    with pytest.raises(ValueError, match="requires light_travel_times_s"):
+        observed(light_travel_time_derivatives=np.zeros((6, N)))
+    tables = auxiliary_tables()
+    tables["ttl_coefficients"]["c_12_eta_rx"] = np.zeros(N)
+    with pytest.raises(ValueError, match="matching sample counts"):
+        observed(**raw_tables(), **tables)
+
+
+def add_auxiliary_groups(path):
+    h5py = pytest.importorskip("h5py")
+
+    from enchilada.data import TTL_COEFFICIENT_NAMES
+
+    contents = {}
+    with h5py.File(path, "a") as f:
+        for link in LINKS:
+            name = f"ltts/ltt_derivative_{link}"
+            contents[name] = np.arange(N, dtype=float) * link * 1e-10
+            f.create_dataset(name, data=contents[name])
+        for path, names, dt, count in (
+            ("scet_wrt_tcb", [f"scet_wrt_tcb_{sc}" for sc in (1, 2, 3)], 10.0, 18),
+            ("ttl/ttl_coefficients", TTL_COEFFICIENT_NAMES, 0.25, 660),
+        ):
+            group = f.create_group(path)
+            group.create_group("sampling").attrs.update(t0=T0 - 5, dt=dt, size=count)
+            for i, name in enumerate(names):
+                values = np.arange(count, dtype=float) + i
+                contents[f"{path}/{name}"] = values
+                group.create_dataset(name, data=values)
+    return contents
+
+
+@pytest.mark.parametrize("duration_s", [None, 20.0])
+def test_reads_auxiliary_tables_with_independent_sampling(tmp_path, duration_s):
+    path = tmp_path / "brick.h5"
+    write_cd1l(path)
+    contents = add_auxiliary_groups(path)
+    data = L1Data.from_cd1l(str(path), duration_s=duration_s)
+    last = T0 + (data.N - 1) / FS
+    assert data.light_travel_time_derivatives.shape == data.light_travel_times_s.shape
+    for row, link in zip(data.light_travel_time_derivatives, LINKS, strict=True):
+        np.testing.assert_array_equal(
+            row, contents[f"ltts/ltt_derivative_{link}"][: row.size]
+        )
+    assert data.clock_start_time_gps == data.ttl_start_time_gps == T0 - 5
+    assert data.clock_sample_interval_s == 10.0
+    assert data.ttl_sample_interval_s == 0.25
+    assert data.clock_sample_times_gps[-1] >= last
+    assert data.ttl_sample_times_gps[-1] >= last
+    assert (
+        data.ttl_coefficients["c_12_eta_rx"].size
+        == int(np.ceil((last - (T0 - 5)) / 0.25)) + 2
+    )
+    for sc, row in enumerate(data.scet_wrt_tcb_s, 1):
+        np.testing.assert_array_equal(
+            row, contents[f"scet_wrt_tcb/scet_wrt_tcb_{sc}"][: row.size]
+        )
+    for name, values in data.ttl_coefficients.items():
+        np.testing.assert_array_equal(
+            values, contents[f"ttl/ttl_coefficients/{name}"][: values.size]
+        )
+        assert not values.flags.writeable
+    assert not data.scet_wrt_tcb_s.flags.writeable
+    assert not data.light_travel_time_derivatives.flags.writeable
+
+
+def test_missing_auxiliary_groups_are_optional(tmp_path):
+    path = tmp_path / "brick.h5"
+    write_cd1l(path)
+    data = L1Data.from_cd1l(str(path))
+    for field in auxiliary_tables():
+        assert getattr(data, field) is None
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [
+        "ltts/ltt_derivative_12",
+        "scet_wrt_tcb/scet_wrt_tcb_2",
+        "ttl/ttl_coefficients/c_12_eta_rx",
+    ],
+)
+def test_incomplete_auxiliary_groups_fail(tmp_path, missing):
+    h5py = pytest.importorskip("h5py")
+
+    path = tmp_path / "brick.h5"
+    write_cd1l(path)
+    add_auxiliary_groups(path)
+    with h5py.File(path, "a") as f:
+        del f[missing]
+    with pytest.raises(KeyError):
+        L1Data.from_cd1l(str(path))
+
+
+def test_invalid_auxiliary_file_sampling_fails(tmp_path):
+    h5py = pytest.importorskip("h5py")
+
+    path = tmp_path / "brick.h5"
+    write_cd1l(path)
+    add_auxiliary_groups(path)
+    with h5py.File(path, "a") as f:
+        f["ttl/ttl_coefficients/sampling"].attrs["dt"] = 0.0
+    with pytest.raises(ValueError, match="positive dt"):
+        L1Data.from_cd1l(str(path))

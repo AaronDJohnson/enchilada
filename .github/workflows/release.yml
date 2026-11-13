@@ -38,7 +38,7 @@ jobs:
         with:
           version: ${{ env.UV_VERSION }}
           python-version: ${{ matrix.python-version }}
-      - run: uv sync --locked --extra numeric-orbits
+      - run: uv sync --locked --extra cd1l
       - run: uv run --no-sync ruff check src tests examples benchmarks
       - run: uv run --no-sync ruff format --check src tests examples benchmarks
       - run: uv run --no-sync mypy
@@ -59,7 +59,7 @@ jobs:
         with:
           version: ${{ env.UV_VERSION }}
           python-version: ${{ matrix.python-version }}
-      - run: uv sync --no-extra numeric-orbits
+      - run: uv sync --no-extra cd1l
       - run: uv run --no-sync pytest -q
 
   core-minimum:
@@ -73,7 +73,7 @@ jobs:
         with:
           version: ${{ env.UV_VERSION }}
           python-version: "3.12"
-      # uv sync also resolves extras, allowing lisaorbits to raise the floor.
+      # uv sync also resolves extras, which can affect the NumPy resolution.
       - name: Install the core at its NumPy floor
         run: |
           uv venv --python 3.12
@@ -102,7 +102,7 @@ jobs:
         with:
           version: ${{ env.UV_VERSION }}
           python-version: "3.12"
-      - run: uv sync --resolution lowest-direct --extra numeric-orbits
+      - run: uv sync --resolution lowest-direct --extra cd1l
       # Keep the environment resolved above instead of re-locking with highest.
       - run: uv run --no-sync pytest -q
 
@@ -160,7 +160,7 @@ jobs:
       - name: Test the packaged source before publication
         working-directory: ${{ runner.temp }}/from-sdist
         run: |
-          uv sync --extra numeric-orbits
+          uv sync --extra cd1l
           uv run --no-sync pytest -q
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:

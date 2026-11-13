@@ -7,7 +7,6 @@ from enchilada.covariance import Covariance
 from enchilada.data import L1Data
 from enchilada.domains import WDMGrid
 from enchilada.ledger import Ledger
-from enchilada.orbits import NumericOrbit, Orbit
 from enchilada.translation import transform
 from enchilada.wheel import NoiseOverwrittenWarning, Wheel
 
@@ -21,8 +20,6 @@ __all__ = [
     "Covariance",
     "Ledger",
     "NoiseOverwrittenWarning",
-    "NumericOrbit",
-    "Orbit",
     "L1Data",
     "BlockState",
     "Wheel",

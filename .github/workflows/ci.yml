@@ -32,7 +32,7 @@ jobs:
       - name: Install (locked, with extras and dev group)
         # --locked fails fast if uv.lock has drifted from pyproject.toml, so CI
         # never passes against a resolution contributors do not get locally
-        run: uv sync --locked --extra numeric-orbits
+        run: uv sync --locked --extra cd1l
       - name: Lint
         run: uv run --no-sync ruff check src tests examples benchmarks
       - name: Format
@@ -58,7 +58,7 @@ jobs:
 
   # The core is numpy-only by design. Prove that on every supported interpreter,
   # including 3.14 (which the LISA dev stack runs) where the optional
-  # numeric-orbits deps may not have wheels yet -- those tests soft-skip.
+  # cd1l deps may not have wheels yet -- those tests soft-skip.
   core-only:
     runs-on: ubuntu-latest
     strategy:
@@ -74,12 +74,12 @@ jobs:
           version: ${{ env.UV_VERSION }}
           python-version: ${{ matrix.python-version }}
       - name: Install core only (no extras)
-        run: uv sync --no-extra numeric-orbits
-      - name: Test (no coverage gate -- orbit tests skip without scipy)
+        run: uv sync --no-extra cd1l
+      - name: Test (no coverage gate -- CD1-L reader tests skip without h5py)
         run: uv run --no-sync pytest -q
 
   # Resolve only the core dependencies: uv sync resolves all optional extras
-  # into its lockfile, where lisaorbits would raise the NumPy minimum.
+  # into its lockfile, which can affect the NumPy resolution.
   core-minimum:
     runs-on: ubuntu-latest
     steps:
@@ -108,7 +108,7 @@ jobs:
       - name: Test the core minimum
         run: uv run --no-sync pytest -q
 
-  # Keep the numeric-orbits minimum resolution separate from the core floor.
+  # Keep the cd1l minimum resolution separate from the core floor.
   floors:
     runs-on: ubuntu-latest
     steps:
@@ -120,7 +120,7 @@ jobs:
           version: ${{ env.UV_VERSION }}
           python-version: "3.12"
       - name: Resolve to the declared lower bounds
-        run: uv sync --resolution lowest-direct --extra numeric-orbits
+        run: uv sync --resolution lowest-direct --extra cd1l
       - name: Test the resolved minimum versions
         # A plain uv run would re-resolve using the default highest strategy.
         run: uv run --no-sync pytest -q
@@ -153,5 +153,5 @@ jobs:
       - name: Run the packaged suite against the packaged source
         working-directory: ${{ runner.temp }}/from-sdist
         run: |
-          uv sync --extra numeric-orbits
+          uv sync --extra cd1l
           uv run --no-sync pytest -q

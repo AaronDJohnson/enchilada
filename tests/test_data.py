@@ -264,96 +264,6 @@ class TestAliases:
             _ = observed.T_obs
 
 
-class TestOrbitSpanCheck:
-    class StubOrbit:
-        time_range_gps = (0.0, 100.0)
-
-    def test_orbit_ephemeris_covering_data_accepted(self, rng):
-        obs = make_observed(rng, orbit_ephemeris=self.StubOrbit(), sample_rate_hz=1.0)
-        assert obs.orbit_ephemeris is not None  # 64 s of data inside [0, 100]
-
-    @pytest.mark.parametrize("start_time_gps", [-1.0, 50.0])
-    def test_orbit_ephemeris_not_covering_data_rejected(self, rng, start_time_gps):
-        with pytest.raises(ValueError, match="outside the tabulated ephemeris"):
-            make_observed(
-                rng,
-                orbit_ephemeris=self.StubOrbit(),
-                sample_rate_hz=1.0,
-                start_time_gps=start_time_gps,
-            )
-
-    def test_orbit_ephemeris_tabulated_on_the_data_grid_accepted(self, rng):
-        # 64 samples at 1 Hz starting at GPS time 0 -> last sample at t = 63 s. An orbit
-        # tabulated on exactly that grid covers every time a block can ask
-        # for, so it must be accepted (it spans [0, 63], not [0, Tobs=64]).
-        class GridOrbit:
-            time_range_gps = (0.0, 63.0)
-
-        obs = make_observed(
-            rng, orbit_ephemeris=GridOrbit(), sample_rate_hz=1.0, start_time_gps=0.0
-        )
-        assert obs.orbit_ephemeris is not None
-
-    # (num_time_samples, sample_rate_hz) pairs where (n-1)*dt and (n-1)/fs are NOT
-    # bit-identical -- i.e. exactly where computing the bound by division
-    # spuriously rejects a grid-tabulated orbit -- plus an exactly-representable
-    # non-unit rate so the dt scaling itself is pinned.
-    @pytest.mark.parametrize(
-        ("num_time_samples", "sample_rate_hz"),
-        [(32, 3.0), (32, 6.0), (32, 7.0), (128, 3.0), (64, 0.5), (64, 0.1)],
-    )
-    def test_data_grid_orbit_ephemeris_accepted_at_any_rate(
-        self, rng, num_time_samples, sample_rate_hz
-    ):
-        """An orbit tabulated the documented way is accepted at every rate.
-
-        The grid idiom is `start_time_gps + arange(n) * dt` (NumericOrbit.from_hdf5), so
-        the check must compute its bound the same way; deriving it as
-        (n-1)/sample_rate_hz differs by an ulp at these rates and rejects.
-        """
-
-        class GridOrbit:
-            def __init__(self, t_end):
-                self.time_range_gps = (0.0, t_end)
-
-        dt = 1.0 / sample_rate_hz
-        last = 0.0 + (num_time_samples - 1) * dt
-        obs = make_observed(
-            rng,
-            num_time_samples=num_time_samples,
-            orbit_ephemeris=GridOrbit(last),
-            sample_rate_hz=sample_rate_hz,
-            start_time_gps=0.0,
-        )
-        assert obs.orbit_ephemeris is not None
-        # a full sample interval short is still rejected, at every rate
-        with pytest.raises(ValueError, match="outside the tabulated ephemeris"):
-            make_observed(
-                rng,
-                num_time_samples=num_time_samples,
-                orbit_ephemeris=GridOrbit(last - dt),
-                sample_rate_hz=sample_rate_hz,
-                start_time_gps=0.0,
-            )
-
-    def test_orbit_ephemeris_ending_before_the_last_sample_rejected(self, rng):
-        # one hair short of the last sample (63 s) must still be caught
-        class ShortOrbit:
-            time_range_gps = (0.0, 62.9)
-
-        with pytest.raises(ValueError, match="outside the tabulated ephemeris"):
-            make_observed(
-                rng,
-                orbit_ephemeris=ShortOrbit(),
-                sample_rate_hz=1.0,
-                start_time_gps=0.0,
-            )
-
-    def test_orbit_ephemeris_without_time_range_gps_skips_check(self, rng):
-        obs = make_observed(rng, orbit_ephemeris=object(), start_time_gps=1e9)
-        assert obs.orbit_ephemeris is not None
-
-
 class TestRemainingValidationBranches:
     """Negative cases for the scalar/channel_data guards not covered above."""
 
@@ -595,12 +505,6 @@ class TestDomainTransforms:
         source.channel_data["A"][index] = 1j
         with pytest.raises(ValueError, match="coefficient must be real"):
             getattr(source, f"to_{target_domain}")()
-
-    def test_orbit_ephemeris_is_preserved_by_domain_transforms(self):
-        orbit = object()
-        t = self._time_residual(64, orbit_ephemeris=orbit)
-        assert t.to_frequency().orbit_ephemeris is orbit
-        assert t.to_frequency().to_time().orbit_ephemeris is orbit
 
     def test_transform_convention_matches_coefficient_covariance(self):
         """E[|X(f)|^2] == (Tobs/2) * S(f) for X = dt*rfft(x).

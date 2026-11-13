@@ -50,7 +50,6 @@ def test_notebook_code_cells_execute():
     code = "\n\n".join(
         "".join(c["source"]) for c in nb["cells"] if c["cell_type"] == "code"
     )
-    pytest.importorskip("scipy", reason="notebook orbit cells need scipy")
     proc = subprocess.run(
         [sys.executable, "-c", code], capture_output=True, text=True, timeout=180
     )
