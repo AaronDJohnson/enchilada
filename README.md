@@ -25,7 +25,7 @@ spokes, and the translation ring; everything on the ring is model code.*
 
 ## Install
 
-Requires Python ≥ 3.12 (floor set by lisaorbits).
+Requires Python ≥ 3.12.
 
 ```sh
 pip install enchilada      # or: uv add enchilada
@@ -46,14 +46,13 @@ are confined to the optional galactic-binary example. Installing enchilada or
 any of its extras does not install them; running that example requires the
 separate `examples/requirements-gb.txt` installation described below.
 
-Loading tabulated spacecraft
-ephemerides (`enchilada.orbits.NumericOrbit`) needs the extra:
+Loading Mojito CD1-L files with `L1Data.from_cd1l` needs the extra:
 
 ```sh
-uv sync --extra numeric-orbits   # adds h5py, scipy, lisaorbits
+uv sync --extra cd1l   # adds h5py
 
 # For the notebooks, install both extras together:
-uv sync --extra numeric-orbits --extra examples
+uv sync --extra cd1l --extra examples
 uv run --no-sync jupyter lab examples/demo.ipynb
 ```
 
@@ -105,7 +104,7 @@ assert ucb.state.num_sample_calls == 3
 
 [`examples/demo.ipynb`](https://github.com/AaronDJohnson/enchilada/blob/main/examples/demo.ipynb) is the same walkthrough with
 commentary, plus the `L1Data` long/short name aliases (`Tobs`, `fs`, `dt`,
-...), the typo catcher, and attaching a constellation ephemeris. For a real
+...), the typo catcher, and attaching raw constellation tables. For a real
 (toy) sampler — two conjugate-Gibbs source blocks plus a sampled
 white-noise block, converging to known truth — run
 [`examples/toy_fit.py`](https://github.com/AaronDJohnson/enchilada/blob/main/examples/toy_fit.py).
@@ -125,7 +124,7 @@ enchilada touchpoints. That example needs an external LISA stack — none of it
 an enchilada dependency, so it is not exercised by CI:
 
 ```sh
-uv sync --extra numeric-orbits --extra examples
+uv sync --extra cd1l --extra examples
 uv pip install -r examples/requirements-gb.txt
 uv run --no-sync jupyter lab examples/gb_block_eryn.ipynb
 ```
@@ -483,7 +482,9 @@ makes every convention an explicit, validated part of `L1Data`.
 
 `channel_data` holds the observed or residual arrays. The observation settings are
 `channel_names`, `sample_rate_hz`, `num_time_samples`, `start_time_gps`,
-`data_domain`, `physical_observable`, `tdi_generation`, and `orbit_ephemeris`.
+`data_domain`, `physical_observable`, and `tdi_generation`,
+plus the optional raw orbit tables described under
+[Raw orbit tables and CD1-L files](#raw-orbit-tables-and-cd1-l-files).
 `wdm_grid` is automatically managed, read-only metadata, not a constructor argument.
 Only `channel_data` may be passed positionally; all settings are keyword-only.
 `sample_rate_hz`, `tdi_generation`, and `physical_observable` are required.
@@ -548,58 +549,90 @@ producing quietly wrong science:
 
 - `L1Data` validates itself on every construction: `channel_data` keys must equal
   `channel_names`, array lengths must match `data_domain`/`num_time_samples`,
-  and an attached orbit must span the observation (catching GPS-vs-zero-based epoch
-  mismatches at construction, not mid-run).
+  and each attached raw orbit table must span the observation (catching
+  GPS-vs-zero-based epoch mismatches at construction, not mid-run).
 - `Wheel` checks `name` and `sample` before registration, then validates
   every supplied initial or returned signal's channels, lengths, real/complex
   kind, and finiteness.
   Covariance publications are checked with `check_compatible` against the
   observation grid before any state is committed.
-- `NumericOrbit.positions` refuses to extrapolate outside its tabulated
-  ephemeris instead of returning cubic-polynomial garbage.
+## Raw orbit tables and CD1-L files
 
-## Orbits
+`L1Data` carries only raw orbit arrays, exactly as a Mojito file stores them.
+Blocks own interpolation, coordinate conversion, and response calculations;
+Enchilada does not construct orbit objects.
 
-The constellation ephemeris the data was produced with rides on
-`L1Data.orbit_ephemeris` so every block builds its response from the *same*
-spacecraft positions. `enchilada.orbits.NumericOrbit` tabulates and
-cubic-spline-interpolates an ephemeris, with loaders for LDC/Mojito-style
-HDF5 files (`from_hdf5`) and lisaorbits objects (`from_lisaorbits`); both
-need the `numeric-orbits` extra.
+| Field | Shape and units |
+| --- | --- |
+| `spacecraft_positions_m` | `(3, num_orbit_samples, 3)` (spacecraft, time, xyz), metres |
+| `spacecraft_velocities_m_per_s` | same shape, metres per second |
+| `orbit_start_time_gps`, `orbit_sample_interval_s` | the orbit table's sampling |
+| `light_travel_times_s` | `(6, num_light_travel_time_samples)`, seconds, rows in `enchilada.data.LINKS` order |
+| `light_travel_time_start_time_gps`, `light_travel_time_sample_interval_s` | the light-travel-time sampling |
+| `light_travel_time_derivatives` | `(6, num_light_travel_time_samples)`, dimensionless d(ltt)/dt, same link order and sampling |
+| `scet_wrt_tcb_s` | `(3, num_clock_samples)`, raw clock offsets in seconds, spacecraft 1, 2, 3 |
+| `clock_start_time_gps`, `clock_sample_interval_s` | clock table sampling |
+| `ttl_coefficients` | dictionary of 24 raw 1-D coefficient arrays, keyed by Mojito names `c_{link}_{eta\|phi}_{rx\|tx}`, in source units |
+| `ttl_start_time_gps`, `ttl_sample_interval_s` | TTL coefficient sampling |
 
-`Orbit` exposes `nominal_arm_length_m`, `transfer_frequency_hz`, and
-`positions(times_gps)`. `NumericOrbit.time_range_gps` gives the tabulated span,
-which `L1Data` checks against its sample times.
+`LINKS` is `(12, 23, 31, 13, 32, 21)`; link `ij` is received at spacecraft i from
+spacecraft j, and light travel times are indexed by reception time, so
+`ltt_12` and `ltt_21` differ. Positions and velocities stay in the source's frame
+(BCRS/ICRS equatorial for Mojito). Each table needs its sampling, and each must
+span every data sample time. `orbit_sample_times_gps` and
+`light_travel_time_sample_times_gps` give the sample times; `clock_sample_times_gps` and `ttl_sample_times_gps`
+do the same for the clock and TTL grids. The tables pass
+through `replace`, `transform`, and Wheel by reference; blocks must treat them
+as immutable.
 
-To load arrays, supply GPS sample times with shape `(num_samples,)` and spacecraft
-positions in metres with shape `(3, num_samples, 3)` (spacecraft, time, coordinate):
+`L1Data.from_cd1l(file_path, *, duration_s=None)` reads a Mojito CD1-L brick:
+`tdis/X2`, `Y2`, and `Z2` divided by the file's `laser_frequency` (fractional
+frequency, TDI 2.0), plus the `orbits` and `ltts` tables (including derivatives), clock offsets
+from `scet_wrt_tcb`, and `ttl/ttl_coefficients`, made read-only. With
+`duration_s` it reads the first `ceil(duration_s * fs)` samples and the light-travel-time, clock, and TTL prefixes covering them,
+including a following sample when available. Missing optional groups leave their
+fields `None`; incomplete derivative, clock, or TTL groups raise an error.
+TTL coefficients can dominate memory: 24 float64 arrays of 252,465,200 samples
+occupy about 48.5 GB alone in the local 731-day noise brick. Use `duration_s`
+to load a short prefix when working with these files.
 
 ```python
-from enchilada import NumericOrbit
+import numpy as np
 
-orbit_ephemeris = NumericOrbit.from_arrays(
-    sample_times_gps=sample_times_gps,
-    spacecraft_positions_m=spacecraft_positions_m,
-    coordinate_frame="ecliptic",
+from enchilada import L1Data
+from enchilada.data import LINKS
+
+data = L1Data.from_cd1l("brick.h5", duration_s=30 * 86400.0)
+reception_times_gps = data.t0 + np.arange(data.N) * data.dt
+ltt_12_s = np.interp(
+    reception_times_gps,
+    data.light_travel_time_sample_times_gps,
+    data.light_travel_times_s[LINKS.index(12)],
 )
-x_m, y_m, z_m = orbit_ephemeris.positions(times_gps=requested_times_gps)
 ```
 
-The direct constructor uses `NumericOrbit(sample_times_gps,
-spacecraft_positions_m, *, nominal_arm_length_m=None, transfer_frequency_hz=None)`
-and expects ecliptic coordinates. `from_arrays` accepts the same optional arm
-length and transfer frequency, plus `coordinate_frame="ecliptic"` by default.
-Use `coordinate_frame="equatorial"` to rotate equatorial input on loading.
+### Raw XYZ noise estimates
 
-`from_hdf5(file_path, *, group_path="orbits", position_dataset_names=...,
-coordinate_frame="equatorial", nominal_arm_length_m=None)` reads the HDF5
-sampling attributes `t0`, `dt`, and `size`. The position dataset names
-default to `("sc_position_1", "sc_position_2", "sc_position_3")`.
-`from_lisaorbits(lisaorbits_model, sample_times_gps, *,
-coordinate_frame="equatorial")` samples the external model through its
-`compute_position` method. See the module docstring in
-[`src/enchilada/orbits.py`](https://github.com/AaronDJohnson/enchilada/blob/main/src/enchilada/orbits.py) for frames and
-conventions.
+`L1Data.from_cd1l` also loads `noise_estimates/XYZ` into
+`noise_estimates_xyz`, shaped `(num_estimate_times, num_frequencies, 3, 3)`
+with matrix axes ordered X, Y, Z. It preserves complex values and source units,
+marks the array read-only, and shares it through `replace`, transforms, and Wheel.
+The AET and eta estimates are not loaded. These reference estimates do not set
+or replace the Wheel's active `Covariance`.
+
+`noise_estimate_start_time_gps` and `noise_estimate_sample_interval_s` describe
+the independent time grid; `noise_estimate_min_frequency_hz` and
+`noise_estimate_max_frequency_hz` describe the inclusive logarithmic frequency
+endpoints. `noise_estimate_sample_times_gps` and `noise_estimate_frequencies_hz`
+construct the coordinate arrays from those metadata and the matrix shape.
+The estimates need not have samples at both observation endpoints; models own
+any interpolation or extrapolation policy.
+
+`duration_s` limits the estimate time prefix, retaining a following sample when
+available. Without it, all estimate times are loaded. An absent group leaves
+the estimate fields `None`; malformed XYZ arrays or metadata raise an error.
+The source `laser_frequency_hz` is retained for model-side normalization:
+channel data is divided by it, but raw noise estimates are left unchanged.
 
 ## Development
 
@@ -608,7 +641,7 @@ for the current API, and the [translation notebook](examples/domain_translation.
 for converting data and block states between representations.
 
 ```sh
-uv sync --extra numeric-orbits   # dev group (pytest, pytest-cov, ruff, mypy)
+uv sync --extra cd1l   # dev group (pytest, pytest-cov, ruff, mypy)
 uv run --no-sync pytest                    # full suite, incl. examples and orbit loaders
 uv run --no-sync pytest --cov --cov-report=term-missing   # coverage (gate: 95%)
 uv run --no-sync mypy                      # enchilada ships py.typed; keep it honest
@@ -620,7 +653,7 @@ CI runs lint, formatting, mypy, the suite behind a 95% coverage gate, artifact
 builds, and an installed-wheel smoke test across Python 3.12/3.13 on Linux and
 macOS, with core-only checks through Python 3.14. A separate Python 3.12 job tests
 the core at NumPy 1.26.4 without orbit dependencies; another job resolves the
-numeric-orbit dependency floors. The optional WDM integration job installs a
+CD1-L dependency floors. The optional WDM integration job installs a
 pinned backend revision and runs the numerical and notebook checks. Tag pushes
 matching `v*` run these gates before PyPI Trusted Publishing. Manual release
 dispatches build and validate artifacts without publishing, including on tags. See

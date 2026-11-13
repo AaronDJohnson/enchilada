@@ -6,7 +6,23 @@ import numpy as np
 from enchilada.block_state import BlockState, check_on_grid, check_rfft_endpoints
 from enchilada.covariance import Covariance
 from enchilada.domains import WDMGrid, check_wdm_coefficients
-from enchilada.orbits import Orbit
+
+LINKS: tuple[int, ...] = (12, 23, 31, 13, 32, 21)
+"""Row order of `L1Data.light_travel_times_s`; ``ij`` is received at i from j.
+
+This is the lisaorbits and LDC/Mojito ordering of directed links.
+"""
+
+TTL_COEFFICIENT_NAMES: tuple[str, ...] = tuple(
+    f"c_{link}_{angle}_{end}"
+    for link in LINKS
+    for angle in ("eta", "phi")
+    for end in ("rx", "tx")
+)
+"""Mojito TTL coefficient dataset names, preserved as dictionary keys."""
+
+CD1L_CHANNELS: tuple[str, ...] = ("X", "Y", "Z")
+"""TDI channels `L1Data.from_cd1l` reads, from the ``tdis/X2`` etc. datasets."""
 
 
 @dataclass(frozen=True, eq=False, init=False)
@@ -14,7 +30,7 @@ class L1Data:
     """Observations or residuals with their sampling grid and physical conventions.
 
     Construction validates channel names, array shapes and dtypes, conventions,
-    and any orbit's declared time bounds. Wheel supplies each block with a
+    and raw orbit table sampling and time coverage. Wheel supplies each block with a
     conditional residual and accepts a `BlockState` in return.
     Only `channel_data` may be positional; all settings are keyword-only.
 
@@ -45,9 +61,49 @@ class L1Data:
             Sample rate and epoch still refer to the time series.
         start_time_gps: GPS seconds at sample index zero; defaults to 0.0.
             Defines sample times ``start_time_gps + n*dt``. Alias: `t0`.
-        orbit_ephemeris: Optional `Orbit`, shared by reference with blocks and
-            treated as immutable. Declared `time_range_gps` must cover all sample
-            times. Blocks requiring an orbit must supply one or reject its absence.
+        spacecraft_positions_m: Optional raw orbit table, shaped
+            ``(3, num_orbit_samples, 3)`` (spacecraft, time, xyz), in metres and
+            in the frame of its source; Mojito files store BCRS/ICRS equatorial
+            coordinates. Requires `orbit_start_time_gps` and
+            `orbit_sample_interval_s`.
+        spacecraft_velocities_m_per_s: Optional raw velocities in metres per
+            second, shaped and timed like `spacecraft_positions_m`.
+        orbit_start_time_gps: GPS time of the first orbit sample.
+        orbit_sample_interval_s: Seconds between orbit samples. Orbit sample
+            times are `orbit_sample_times_gps`.
+        light_travel_times_s: Optional raw directed light travel times in
+            seconds, shaped ``(6, num_light_travel_time_samples)`` with rows in
+            `LINKS` order, indexed by reception time. Requires
+            `light_travel_time_start_time_gps` and
+            `light_travel_time_sample_interval_s`.
+        light_travel_time_derivatives: Optional dimensionless d(ltt)/dt,
+            with the same shape, link order, and sampling as light_travel_times_s.
+        scet_wrt_tcb_s: Optional raw spacecraft clock offsets in seconds,
+            shaped (3, num_clock_samples), ordered spacecraft 1, 2, 3.
+        clock_start_time_gps: First clock table sample time.
+        clock_sample_interval_s: Clock table sampling interval in seconds.
+        ttl_coefficients: Optional mapping of the 24 Mojito coefficient names
+            (c_{link}_{eta|phi}_{rx|tx}) to 1-D raw arrays in source units.
+            All coefficient arrays share the TTL sampling and sample count.
+        ttl_start_time_gps: First TTL coefficient sample time.
+        ttl_sample_interval_s: TTL coefficient sampling interval in seconds.
+        noise_estimates_xyz: Optional raw Mojito XYZ spectral matrices,
+            shaped (time, frequency, 3, 3), with matrix axes ordered X, Y, Z.
+            Complex values and source units are preserved;
+            these are reference data, not the Wheel's active Covariance.
+        noise_estimate_start_time_gps: First noise estimate sample time.
+        noise_estimate_sample_interval_s: Noise estimate time spacing in seconds.
+        noise_estimate_min_frequency_hz: First logarithmic frequency, positive.
+        noise_estimate_max_frequency_hz: Last logarithmic frequency.
+        laser_frequency_hz: Optional source laser frequency, retained by from_cd1l
+            for model-side normalization of raw reference data.
+        light_travel_time_start_time_gps: GPS time of the first light travel time.
+        light_travel_time_sample_interval_s: Seconds between light travel
+            times. Their sample times are `light_travel_time_sample_times_gps`.
+
+    Each raw orbit table must span every data sample time. Its values are taken
+    as given: no interpolation, rotation, or resampling. Blocks share the arrays
+    by reference and must treat them as immutable.
 
     Fields are frozen, but the supplied arrays and dictionary are retained without
     copying. Wheel makes its own snapshots. Covariance is supplied separately as
@@ -64,7 +120,26 @@ class L1Data:
     num_time_samples: int = 0
     start_time_gps: float = 0.0
     data_domain: str = "time"
-    orbit_ephemeris: Orbit | None = None
+    spacecraft_positions_m: np.ndarray | None = None
+    spacecraft_velocities_m_per_s: np.ndarray | None = None
+    orbit_start_time_gps: float | None = None
+    orbit_sample_interval_s: float | None = None
+    light_travel_times_s: np.ndarray | None = None
+    light_travel_time_start_time_gps: float | None = None
+    light_travel_time_sample_interval_s: float | None = None
+    light_travel_time_derivatives: np.ndarray | None = None
+    scet_wrt_tcb_s: np.ndarray | None = None
+    clock_start_time_gps: float | None = None
+    clock_sample_interval_s: float | None = None
+    ttl_coefficients: dict[str, np.ndarray] | None = None
+    ttl_start_time_gps: float | None = None
+    ttl_sample_interval_s: float | None = None
+    noise_estimates_xyz: np.ndarray | None = None
+    noise_estimate_start_time_gps: float | None = None
+    noise_estimate_sample_interval_s: float | None = None
+    noise_estimate_min_frequency_hz: float | None = None
+    noise_estimate_max_frequency_hz: float | None = None
+    laser_frequency_hz: float | None = None
     wdm_grid: WDMGrid | None = field(default=None, init=False)
 
     DOMAINS: ClassVar[tuple[str, ...]] = ("time", "frequency", "wdm")
@@ -88,7 +163,26 @@ class L1Data:
         num_time_samples: int = 0,
         start_time_gps: float = 0.0,
         data_domain: str = "time",
-        orbit_ephemeris: Orbit | None = None,
+        spacecraft_positions_m: np.ndarray | None = None,
+        spacecraft_velocities_m_per_s: np.ndarray | None = None,
+        orbit_start_time_gps: float | None = None,
+        orbit_sample_interval_s: float | None = None,
+        light_travel_times_s: np.ndarray | None = None,
+        light_travel_time_start_time_gps: float | None = None,
+        light_travel_time_sample_interval_s: float | None = None,
+        light_travel_time_derivatives: np.ndarray | None = None,
+        scet_wrt_tcb_s: np.ndarray | None = None,
+        clock_start_time_gps: float | None = None,
+        clock_sample_interval_s: float | None = None,
+        ttl_coefficients: dict[str, np.ndarray] | None = None,
+        ttl_start_time_gps: float | None = None,
+        ttl_sample_interval_s: float | None = None,
+        noise_estimates_xyz: np.ndarray | None = None,
+        noise_estimate_start_time_gps: float | None = None,
+        noise_estimate_sample_interval_s: float | None = None,
+        noise_estimate_min_frequency_hz: float | None = None,
+        noise_estimate_max_frequency_hz: float | None = None,
+        laser_frequency_hz: float | None = None,
     ) -> None:
         # Accept optional names at construction while exposing a resolved tuple.
         object.__setattr__(self, "channel_data", channel_data)
@@ -99,7 +193,44 @@ class L1Data:
         object.__setattr__(self, "num_time_samples", num_time_samples)
         object.__setattr__(self, "start_time_gps", start_time_gps)
         object.__setattr__(self, "data_domain", data_domain)
-        object.__setattr__(self, "orbit_ephemeris", orbit_ephemeris)
+        object.__setattr__(self, "spacecraft_positions_m", spacecraft_positions_m)
+        object.__setattr__(
+            self, "spacecraft_velocities_m_per_s", spacecraft_velocities_m_per_s
+        )
+        object.__setattr__(self, "orbit_start_time_gps", orbit_start_time_gps)
+        object.__setattr__(self, "orbit_sample_interval_s", orbit_sample_interval_s)
+        object.__setattr__(self, "light_travel_times_s", light_travel_times_s)
+        object.__setattr__(
+            self, "light_travel_time_start_time_gps", light_travel_time_start_time_gps
+        )
+        object.__setattr__(
+            self,
+            "light_travel_time_sample_interval_s",
+            light_travel_time_sample_interval_s,
+        )
+        object.__setattr__(
+            self, "light_travel_time_derivatives", light_travel_time_derivatives
+        )
+        object.__setattr__(self, "scet_wrt_tcb_s", scet_wrt_tcb_s)
+        object.__setattr__(self, "clock_start_time_gps", clock_start_time_gps)
+        object.__setattr__(self, "clock_sample_interval_s", clock_sample_interval_s)
+        object.__setattr__(self, "ttl_coefficients", ttl_coefficients)
+        object.__setattr__(self, "ttl_start_time_gps", ttl_start_time_gps)
+        object.__setattr__(self, "ttl_sample_interval_s", ttl_sample_interval_s)
+        object.__setattr__(self, "noise_estimates_xyz", noise_estimates_xyz)
+        object.__setattr__(
+            self, "noise_estimate_start_time_gps", noise_estimate_start_time_gps
+        )
+        object.__setattr__(
+            self, "noise_estimate_sample_interval_s", noise_estimate_sample_interval_s
+        )
+        object.__setattr__(
+            self, "noise_estimate_min_frequency_hz", noise_estimate_min_frequency_hz
+        )
+        object.__setattr__(
+            self, "noise_estimate_max_frequency_hz", noise_estimate_max_frequency_hz
+        )
+        object.__setattr__(self, "laser_frequency_hz", laser_frequency_hz)
         self.__post_init__()
 
     # ---- consistency validation ------------------------------------------
@@ -116,7 +247,8 @@ class L1Data:
         self._validate_channel_data_structure()
         self._resolve_and_check_num_time_samples()
         self._validate_channel_data_lengths()
-        self._validate_orbit_span()
+        self._validate_raw_orbit_tables()
+        self._validate_noise_estimates()
 
     def _validate_conventions(self) -> None:
         """Scalar run settings: rates, epoch, and convention strings."""
@@ -293,49 +425,463 @@ class L1Data:
                 context_label="channel_data",
             )
 
-    def _validate_orbit_span(self) -> None:
-        """Check that a tabulated orbit (one exposing time_range_gps) covers the data
-        span."""
-        if self.orbit_ephemeris is None:
-            return
-        time_range_gps = getattr(self.orbit_ephemeris, "time_range_gps", None)
-        if time_range_gps is None:
-            return
-        orbit_start_time_gps, orbit_end_time_gps = (
-            float(time_range_gps[0]),
-            float(time_range_gps[1]),
-        )
-        # The samples sit at start_time_gps + n*dt for n in [0, N-1], so the last
-        # one is at start_time_gps + (N-1)*dt, one sample before start_time_gps + Tobs.
-        # Requiring that extra sample would reject an orbit tabulated on the
-        # data's own sample grid.
-        #
-        # Multiply `sample_interval_s` exactly as every grid builder here does
-        # (`start_time_gps + arange(n) * dt`, see NumericOrbit.from_hdf5) rather than
-        # dividing by sample_rate_hz: the two differ by an ulp for rates whose dt
-        # is not exactly representable, and this is an exact float comparison,
-        # so the mismatch would spuriously reject a data-grid orbit.
-        #
-        # This is a coarse check for gross epoch mismatches, not a guarantee: a
-        # block applying TDI light-travel delays evaluates retarded times
-        # slightly outside [start_time_gps, last_sample_time_gps] and needs margin (and
-        # NumericOrbit.positions raises if asked beyond its table).
+    def _validate_raw_orbit_tables(self) -> None:
+        """Check raw orbit tables' structure and that each spans every sample time.
+
+        Constant time: table values are not scanned, because every replace
+        revalidates and a full-rate light-travel-time table is large.
+        """
         last_sample_time_gps = (
             self.start_time_gps + (self.num_time_samples - 1) * self.sample_interval_s
         )
-        if (
-            orbit_start_time_gps > self.start_time_gps
-            or orbit_end_time_gps < last_sample_time_gps
+        positions = self.spacecraft_positions_m
+        velocities = self.spacecraft_velocities_m_per_s
+        num_orbit_samples = None
+        if positions is not None:
+            _check_raw_table(positions, "spacecraft_positions_m", ndim=3)
+            if positions.shape[0] != 3 or positions.shape[2] != 3:
+                raise ValueError(
+                    "spacecraft_positions_m must have shape (3, num_orbit_samples, 3) "
+                    f"(spacecraft, time, xyz), got {positions.shape}"
+                )
+            num_orbit_samples = positions.shape[1]
+        if velocities is not None:
+            if positions is None:
+                raise ValueError(
+                    "spacecraft_velocities_m_per_s requires spacecraft_positions_m"
+                )
+            _check_raw_table(velocities, "spacecraft_velocities_m_per_s", ndim=3)
+            if velocities.shape != positions.shape:
+                raise ValueError(
+                    f"spacecraft_velocities_m_per_s has shape {velocities.shape}; "
+                    f"it must match spacecraft_positions_m {positions.shape}"
+                )
+        _check_raw_sampling(
+            table_label="spacecraft_positions_m",
+            prefix="orbit",
+            num_samples=num_orbit_samples,
+            start_time_gps=self.orbit_start_time_gps,
+            sample_interval_s=self.orbit_sample_interval_s,
+            data_span_gps=(self.start_time_gps, last_sample_time_gps),
+        )
+        light_travel_times = self.light_travel_times_s
+        num_light_travel_time_samples = None
+        if light_travel_times is not None:
+            _check_raw_table(light_travel_times, "light_travel_times_s", ndim=2)
+            if light_travel_times.shape[0] != len(LINKS):
+                raise ValueError(
+                    "light_travel_times_s must have one row per link in "
+                    f"{LINKS}, got shape {light_travel_times.shape}"
+                )
+            num_light_travel_time_samples = light_travel_times.shape[1]
+        _check_raw_sampling(
+            table_label="light_travel_times_s",
+            prefix="light_travel_time",
+            num_samples=num_light_travel_time_samples,
+            start_time_gps=self.light_travel_time_start_time_gps,
+            sample_interval_s=self.light_travel_time_sample_interval_s,
+            data_span_gps=(self.start_time_gps, last_sample_time_gps),
+        )
+
+        derivatives = self.light_travel_time_derivatives
+        if derivatives is not None:
+            if light_travel_times is None:
+                raise ValueError(
+                    "light_travel_time_derivatives requires light_travel_times_s"
+                )
+            _check_raw_table(derivatives, "light_travel_time_derivatives", ndim=2)
+            if derivatives.shape != light_travel_times.shape:
+                raise ValueError(
+                    "light_travel_time_derivatives must match light_travel_times_s"
+                )
+        clocks = self.scet_wrt_tcb_s
+        if clocks is not None:
+            _check_raw_table(clocks, "scet_wrt_tcb_s", ndim=2)
+            if clocks.shape[0] != 3:
+                raise ValueError("scet_wrt_tcb_s must have three spacecraft rows")
+        _check_raw_sampling(
+            table_label="scet_wrt_tcb_s",
+            prefix="clock",
+            num_samples=None if clocks is None else clocks.shape[1],
+            start_time_gps=self.clock_start_time_gps,
+            sample_interval_s=self.clock_sample_interval_s,
+            data_span_gps=(self.start_time_gps, last_sample_time_gps),
+        )
+        coefficients = self.ttl_coefficients
+        num_ttl_samples = None
+        if coefficients is not None:
+            if not isinstance(coefficients, dict) or set(coefficients) != set(
+                TTL_COEFFICIENT_NAMES
+            ):
+                raise ValueError(
+                    "ttl_coefficients must contain all 24 Mojito coefficient names"
+                )
+            for name, values in coefficients.items():
+                _check_raw_table(values, f"ttl_coefficients[{name!r}]", ndim=1)
+                if num_ttl_samples is not None and values.size != num_ttl_samples:
+                    raise ValueError(
+                        "ttl_coefficients must have matching sample counts"
+                    )
+                num_ttl_samples = values.size
+        _check_raw_sampling(
+            table_label="ttl_coefficients",
+            prefix="ttl",
+            num_samples=num_ttl_samples,
+            start_time_gps=self.ttl_start_time_gps,
+            sample_interval_s=self.ttl_sample_interval_s,
+            data_span_gps=(self.start_time_gps, last_sample_time_gps),
+        )
+
+    def _validate_noise_estimates(self) -> None:
+        """Validate raw spectral grids and shapes without scanning table values.
+
+        Noise estimates have their own time grid; unlike ephemerides, their
+        last sample need not reach the last observation sample. Interpretation,
+        normalization, and interpolation belong to model code.
+        """
+        if self.laser_frequency_hz is not None and (
+            not np.isfinite(self.laser_frequency_hz) or self.laser_frequency_hz <= 0
+        ):
+            raise ValueError("laser_frequency_hz must be positive and finite")
+        metadata = (
+            self.noise_estimate_start_time_gps,
+            self.noise_estimate_sample_interval_s,
+            self.noise_estimate_min_frequency_hz,
+            self.noise_estimate_max_frequency_hz,
+        )
+        if self.noise_estimates_xyz is None:
+            if any(value is not None for value in metadata):
+                raise ValueError("noise estimate sampling requires noise_estimates")
+            return
+        if any(value is None or not np.isfinite(value) for value in metadata):
+            raise ValueError(
+                "noise_estimates requires finite time and frequency sampling"
+            )
+        assert self.noise_estimate_sample_interval_s is not None
+        assert self.noise_estimate_min_frequency_hz is not None
+        assert self.noise_estimate_max_frequency_hz is not None
+        if self.noise_estimate_sample_interval_s <= 0 or not (
+            0
+            < self.noise_estimate_min_frequency_hz
+            < self.noise_estimate_max_frequency_hz
         ):
             raise ValueError(
-                f"orbit_ephemeris spans "
-                f"[{orbit_start_time_gps}, {orbit_end_time_gps}] s "
-                f"but the data samples span "
-                f"[{self.start_time_gps}, {last_sample_time_gps}] s; "
-                f"every block would "
-                f"need spacecraft positions outside the tabulated ephemeris "
-                f"(mismatched epoch conventions? GPS vs zero-based times?)"
+                "noise estimate sampling requires dt > 0 and 0 < fmin < fmax"
             )
+        values = self.noise_estimates_xyz
+        if not isinstance(values, np.ndarray) or values.dtype.kind not in "fc":
+            raise TypeError(
+                "noise_estimates_xyz must be a floating-point or complex array"
+            )
+        if values.ndim != 4 or values.shape[2:] != (3, 3):
+            raise ValueError(
+                "noise_estimates_xyz must have shape (time, frequency, 3, 3)"
+            )
+        if values.shape[0] < 1 or values.shape[1] < 2:
+            raise ValueError(
+                "noise_estimates_xyz requires at least one time and two frequencies"
+            )
+
+    @property
+    def noise_estimate_sample_times_gps(self) -> np.ndarray | None:
+        """Times of the raw noise estimates on their independent grid."""
+        if self.noise_estimates_xyz is None:
+            return None
+        assert self.noise_estimate_start_time_gps is not None
+        assert self.noise_estimate_sample_interval_s is not None
+        return (
+            self.noise_estimate_start_time_gps
+            + np.arange(self.noise_estimates_xyz.shape[0])
+            * self.noise_estimate_sample_interval_s
+        )
+
+    @property
+    def noise_estimate_frequencies_hz(self) -> np.ndarray | None:
+        """Logarithmically spaced noise-estimate frequencies, including endpoints."""
+        if self.noise_estimates_xyz is None:
+            return None
+        assert self.noise_estimate_min_frequency_hz is not None
+        assert self.noise_estimate_max_frequency_hz is not None
+        return np.geomspace(
+            self.noise_estimate_min_frequency_hz,
+            self.noise_estimate_max_frequency_hz,
+            self.noise_estimates_xyz.shape[1],
+        )
+
+    # ---- raw orbit tables -------------------------------------------------
+
+    @property
+    def orbit_sample_times_gps(self) -> np.ndarray | None:
+        """GPS time of each orbit sample, or None without an orbit table."""
+        if self.spacecraft_positions_m is None:
+            return None
+        assert self.orbit_start_time_gps is not None
+        assert self.orbit_sample_interval_s is not None
+        return np.asarray(
+            self.orbit_start_time_gps
+            + np.arange(self.spacecraft_positions_m.shape[1])
+            * self.orbit_sample_interval_s,
+            dtype=np.float64,
+        )
+
+    @property
+    def light_travel_time_sample_times_gps(self) -> np.ndarray | None:
+        """GPS reception time of each light-travel-time sample, or None."""
+        if self.light_travel_times_s is None:
+            return None
+        assert self.light_travel_time_start_time_gps is not None
+        assert self.light_travel_time_sample_interval_s is not None
+        return np.asarray(
+            self.light_travel_time_start_time_gps
+            + np.arange(self.light_travel_times_s.shape[1])
+            * self.light_travel_time_sample_interval_s,
+            dtype=np.float64,
+        )
+
+    @property
+    def clock_sample_times_gps(self) -> np.ndarray | None:
+        """Sample times of the raw clock tables, or None."""
+        if self.scet_wrt_tcb_s is None:
+            return None
+        assert self.clock_start_time_gps is not None
+        assert self.clock_sample_interval_s is not None
+        return (
+            self.clock_start_time_gps
+            + np.arange(self.scet_wrt_tcb_s.shape[1]) * self.clock_sample_interval_s
+        )
+
+    @property
+    def ttl_sample_times_gps(self) -> np.ndarray | None:
+        """Sample times of the raw ttl tables, or None."""
+        if self.ttl_coefficients is None:
+            return None
+        assert self.ttl_start_time_gps is not None
+        assert self.ttl_sample_interval_s is not None
+        return (
+            self.ttl_start_time_gps
+            + np.arange(next(iter(self.ttl_coefficients.values())).size)
+            * self.ttl_sample_interval_s
+        )
+
+    # ---- readers ----------------------------------------------------------
+
+    @classmethod
+    def from_cd1l(cls, file_path: str, *, duration_s: float | None = None) -> "L1Data":
+        """Read a Mojito CD1-L brick: X, Y, Z TDI-2 with its raw orbit tables.
+
+        Channels are ``tdis/X2``, ``Y2`` and ``Z2`` divided by the file's
+        ``laser_frequency`` attribute, giving fractional frequency, sampled per
+        ``tdis/sampling`` (``fs``, ``t0``, ``size``). The orbit tables are copied
+        as stored, without rotation or resampling, and made read-only:
+        ``orbits/sc_position_i`` and, when present, ``sc_velocity_i`` (BCRS/ICRS
+        equatorial metres and metres per second) with ``orbits/sampling``; and
+        ``ltts/ltt_ij`` in `LINKS` order with ``ltts/sampling``. Light travel
+        times are cut to the samples covering the data read, plus one. The
+        tables are the only orbit representation. Optional ltt_derivative_ij,
+        scet_wrt_tcb/scet_wrt_tcb_i, and ttl/ttl_coefficients/c_* tables are
+        also loaded unchanged and read-only. Clock and TTL sampling are separate;
+        these tables are cut to the data span plus one sample as for ltts.
+        Missing optional groups leave fields None; incomplete groups raise.
+        TTL tables can be very large; duration_s limits the loaded prefix.
+        Only noise_estimates/XYZ is loaded; AET and eta are skipped.
+        Noise estimates retain their complex values, source units, and independent
+        time/log-frequency sampling; duration_s limits their time prefix, keeping
+        a following sample when available. Full reads retain all noise estimates.
+        laser_frequency_hz is retained; noise estimates are not divided by it.
+        Requires h5py.
+
+        Args:
+            file_path: Path to the CD1-L HDF5 file.
+            duration_s: Read only the first ``ceil(duration_s * fs)`` samples;
+                None reads the whole brick.
+        """
+        import h5py  # optional: the cd1l extra
+
+        with h5py.File(file_path, "r") as cd1l_file:
+            tdi_sampling = cd1l_file["tdis/sampling"].attrs
+            sample_rate_hz = float(tdi_sampling["fs"])
+            start_time_gps = float(tdi_sampling["t0"])
+            available_samples = int(tdi_sampling["size"])
+            num_time_samples = (
+                available_samples
+                if duration_s is None
+                else int(np.ceil(duration_s * sample_rate_hz))
+            )
+            if not 0 < num_time_samples <= available_samples:
+                raise ValueError(
+                    f"duration_s={duration_s!r} selects {num_time_samples} samples; "
+                    f"the file holds between 1 and {available_samples}"
+                )
+            laser_frequency_hz = float(cd1l_file.attrs["laser_frequency"])
+            channel_data = {
+                channel: np.asarray(
+                    cd1l_file[f"tdis/{channel}2"][:num_time_samples], dtype=float
+                )
+                / laser_frequency_hz
+                for channel in CD1L_CHANNELS
+            }
+
+            orbit_tables: dict[str, Any] = {}
+            if "orbits" in cd1l_file:
+                orbit_group = cd1l_file["orbits"]
+                orbit_sampling = orbit_group["sampling"].attrs
+                orbit_tables["orbit_start_time_gps"] = float(orbit_sampling["t0"])
+                orbit_tables["orbit_sample_interval_s"] = float(orbit_sampling["dt"])
+                orbit_tables["spacecraft_positions_m"] = _read_only(
+                    np.stack(
+                        [
+                            np.asarray(orbit_group[f"sc_position_{sc}"], dtype=float)
+                            for sc in (1, 2, 3)
+                        ]
+                    )
+                )
+                if all(f"sc_velocity_{sc}" in orbit_group for sc in (1, 2, 3)):
+                    orbit_tables["spacecraft_velocities_m_per_s"] = _read_only(
+                        np.stack(
+                            [
+                                np.asarray(
+                                    orbit_group[f"sc_velocity_{sc}"], dtype=float
+                                )
+                                for sc in (1, 2, 3)
+                            ]
+                        )
+                    )
+            if "ltts" in cd1l_file:
+                ltt_group = cd1l_file["ltts"]
+                ltt_sampling = ltt_group["sampling"].attrs
+                ltt_start_time_gps = float(ltt_sampling["t0"])
+                ltt_sample_interval_s = float(ltt_sampling["dt"])
+                last_sample_time_gps = start_time_gps + (num_time_samples - 1) * (
+                    1.0 / sample_rate_hz
+                )
+                # Samples up to the last data time, plus one against rounding.
+                needed = (
+                    int(
+                        np.ceil(
+                            (last_sample_time_gps - ltt_start_time_gps)
+                            / ltt_sample_interval_s
+                        )
+                    )
+                    + 2
+                )
+                stop = min(int(ltt_sampling["size"]), max(needed, 1))
+                orbit_tables["light_travel_time_start_time_gps"] = ltt_start_time_gps
+                orbit_tables["light_travel_time_sample_interval_s"] = (
+                    ltt_sample_interval_s
+                )
+                orbit_tables["light_travel_times_s"] = _read_only(
+                    np.stack(
+                        [
+                            np.asarray(ltt_group[f"ltt_{link}"][:stop], dtype=float)
+                            for link in LINKS
+                        ]
+                    )
+                )
+                derivative_names = [f"ltt_derivative_{link}" for link in LINKS]
+                if any(name in ltt_group for name in derivative_names):
+                    orbit_tables["light_travel_time_derivatives"] = _read_only(
+                        np.stack(
+                            [
+                                np.asarray(ltt_group[name][:stop], dtype=float)
+                                for name in derivative_names
+                            ]
+                        )
+                    )
+            for group_path, prefix, field_name, names in (
+                (
+                    "scet_wrt_tcb",
+                    "clock",
+                    "scet_wrt_tcb_s",
+                    tuple(f"scet_wrt_tcb_{sc}" for sc in (1, 2, 3)),
+                ),
+                (
+                    "ttl/ttl_coefficients",
+                    "ttl",
+                    "ttl_coefficients",
+                    TTL_COEFFICIENT_NAMES,
+                ),
+            ):
+                if group_path not in cd1l_file:
+                    continue
+                group = cd1l_file[group_path]
+                sampling = group["sampling"].attrs
+                table_t0 = float(sampling["t0"])
+                table_dt = float(sampling["dt"])
+                if (
+                    not np.isfinite(table_t0)
+                    or not np.isfinite(table_dt)
+                    or table_dt <= 0
+                ):
+                    raise ValueError(
+                        f"{group_path} sampling must be finite with positive dt"
+                    )
+                last_time = start_time_gps + (num_time_samples - 1) * (
+                    1.0 / sample_rate_hz
+                )
+                stop = min(
+                    int(sampling["size"]),
+                    max(1, int(np.ceil((last_time - table_t0) / table_dt)) + 2),
+                )
+                orbit_tables[f"{prefix}_start_time_gps"] = table_t0
+                orbit_tables[f"{prefix}_sample_interval_s"] = table_dt
+                tables = {
+                    name: _read_only(np.asarray(group[name][:stop], dtype=float))
+                    for name in names
+                }
+                orbit_tables[field_name] = (
+                    tables
+                    if prefix == "ttl"
+                    else _read_only(np.stack(list(tables.values())))
+                )
+            if "noise_estimates" in cd1l_file:
+                group = cd1l_file["noise_estimates"]
+                sampling = group["sampling"].attrs
+                frequencies = group["log_frequency_sampling"].attrs
+                table_t0 = float(sampling["t0"])
+                table_dt = float(sampling["dt"])
+                if (
+                    not np.isfinite(table_t0)
+                    or not np.isfinite(table_dt)
+                    or table_dt <= 0
+                ):
+                    raise ValueError(
+                        "noise_estimates sampling must be finite with positive dt"
+                    )
+                count = int(sampling["size"])
+                nfreq = int(frequencies["size"])
+                last_time = start_time_gps + (num_time_samples - 1) * (
+                    1.0 / sample_rate_hz
+                )
+                stop = (
+                    count
+                    if duration_s is None
+                    else min(
+                        count,
+                        max(1, int(np.ceil((last_time - table_t0) / table_dt)) + 2),
+                    )
+                )
+                dataset = group["XYZ"]
+                if dataset.shape != (count, nfreq, 3, 3):
+                    raise ValueError(
+                        "noise_estimates/XYZ shape disagrees with sampling metadata"
+                    )
+                orbit_tables.update(
+                    noise_estimates_xyz=_read_only(np.asarray(dataset[:stop])),
+                    noise_estimate_start_time_gps=table_t0,
+                    noise_estimate_sample_interval_s=table_dt,
+                    noise_estimate_min_frequency_hz=float(frequencies["fmin"]),
+                    noise_estimate_max_frequency_hz=float(frequencies["fmax"]),
+                )
+        return cls(
+            channel_data,
+            channel_names=CD1L_CHANNELS,
+            sample_rate_hz=sample_rate_hz,
+            start_time_gps=start_time_gps,
+            tdi_generation="2.0",
+            physical_observable="fractional_frequency",
+            laser_frequency_hz=laser_frequency_hz,
+            **orbit_tables,
+        )
 
     # ---- descriptive (long) names ---------------------------------------
 
@@ -556,3 +1102,56 @@ class L1Data:
                 f"see {type(self).__name__}.aliases() for the derived quantities "
                 f"(and their LISA short names)."
             )
+
+
+def _check_raw_table(values: object, label: str, *, ndim: int) -> None:
+    """Require a floating-point ndarray of rank ``ndim``, without scanning values."""
+    if not isinstance(values, np.ndarray) or not np.issubdtype(
+        values.dtype, np.floating
+    ):
+        raise TypeError(f"{label} must be a floating-point numpy array")
+    if values.ndim != ndim:
+        raise ValueError(f"{label} must be {ndim}-D, got shape {values.shape}")
+
+
+def _check_raw_sampling(
+    *,
+    table_label: str,
+    prefix: str,
+    num_samples: int | None,
+    start_time_gps: float | None,
+    sample_interval_s: float | None,
+    data_span_gps: tuple[float, float],
+) -> None:
+    """Pair a raw table with its sampling and require it to span the data."""
+    start_label = f"{prefix}_start_time_gps"
+    interval_label = f"{prefix}_sample_interval_s"
+    if num_samples is None:
+        if start_time_gps is not None or sample_interval_s is not None:
+            raise ValueError(
+                f"{start_label} and {interval_label} describe {table_label}, "
+                f"which was not given"
+            )
+        return
+    if start_time_gps is None or sample_interval_s is None:
+        raise ValueError(f"{table_label} requires {start_label} and {interval_label}")
+    if not np.isfinite(start_time_gps):
+        raise ValueError(f"{start_label} must be finite, got {start_time_gps!r}")
+    if not np.isfinite(sample_interval_s) or sample_interval_s <= 0:
+        raise ValueError(
+            f"{interval_label} must be positive and finite, got {sample_interval_s!r}"
+        )
+    end_time_gps = start_time_gps + (num_samples - 1) * sample_interval_s
+    data_start_gps, data_end_gps = data_span_gps
+    if start_time_gps > data_start_gps or end_time_gps < data_end_gps:
+        raise ValueError(
+            f"{table_label} spans [{start_time_gps}, {end_time_gps}] s but the "
+            f"data samples span [{data_start_gps}, {data_end_gps}] s "
+            f"(mismatched epoch conventions? GPS vs zero-based times?)"
+        )
+
+
+def _read_only(values: np.ndarray) -> np.ndarray:
+    """Mark a freshly read array read-only; blocks share it by reference."""
+    values.setflags(write=False)
+    return values

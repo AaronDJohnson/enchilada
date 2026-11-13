@@ -8,7 +8,6 @@ license-files = ["LICENSE"]
 authors = [
     { name = "Aaron Johnson", email = "aaron9035@gmail.com" },
 ]
-# Floor set by lisaorbits>=3.0.3 (needs >=3.12); core itself only needs numpy.
 requires-python = ">=3.12"
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -32,7 +31,7 @@ keywords = [
 ]
 dependencies = [
     # NumPy 1.26.4 supports the Python 3.12 floor. A separate core-minimum CI
-    # lane pins this version without numeric-orbits raising the NumPy minimum.
+    # lane pins this version independently of optional dependencies.
     "numpy>=1.26.4",
 ]
 
@@ -43,16 +42,13 @@ Changelog = "https://github.com/AaronDJohnson/enchilada/blob/main/CHANGELOG.md"
 Issues = "https://github.com/AaronDJohnson/enchilada/issues"
 
 [project.optional-dependencies]
-numeric-orbits = [
-    "h5py>=3.0",          # h5py.File + dataset reads only
-    "lisaorbits>=3.0.3",  # sets the >=3.12 python floor
-    "scipy>=1.8",         # scipy.interpolate.CubicSpline only
-]
+cd1l = ["h5py>=3.0"]  # HDF5 reads for L1Data.from_cd1l
 examples = [
     "jupyterlab>=4",
 ]
 
 [dependency-groups]
+wdm-test = ["scipy>=1.8", "matplotlib>=3.6"]
 dev = [
     "mypy>=1.11",
     "pytest>=8",
@@ -96,9 +92,8 @@ warn_unused_ignores = true
 warn_redundant_casts = true
 
 [[tool.mypy.overrides]]
-# scipy and h5py ship no type information; they are lazily imported behind the
-# numeric-orbits extra and their use here is narrow.
-module = ["scipy.*", "h5py.*"]
+# h5py is lazily imported by the optional CD1-L reader.
+module = ["h5py.*"]
 ignore_missing_imports = true
 
 [tool.coverage.run]

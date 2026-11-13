@@ -37,11 +37,11 @@ jobs:
           version: ${{ env.UV_VERSION }}
           python-version: "3.13"
       - name: Install locked test dependencies and pinned WDM
-        # numeric-orbits also supplies locked matplotlib for the notebook test.
+        # The wdm-test group supplies SciPy and notebook plotting dependencies.
         # Keep those versions when adding WDM, then check its dependency bounds.
         run: |
           test "$(git -C .wdm-backend rev-parse HEAD)" = "$WDM_REVISION"
-          uv sync --locked --extra numeric-orbits
+          uv sync --locked --extra cd1l --group wdm-test
           uv pip install --python .venv/bin/python --no-deps ./.wdm-backend
           uv pip check --python .venv/bin/python
       - name: Require the installed backend and notebook dependencies

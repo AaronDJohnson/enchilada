@@ -1,7 +1,7 @@
 # External stack for examples/gb_block_eryn.ipynb (the galactic-binary example).
 #
 # From the checkout root, prepare the project extras before this external stack:
-#     uv sync --extra numeric-orbits --extra examples
+#     uv sync --extra cd1l --extra examples
 #     uv pip install -r examples/requirements-gb.txt
 #     uv run --no-sync jupyter lab examples/gb_block_eryn.ipynb
 #

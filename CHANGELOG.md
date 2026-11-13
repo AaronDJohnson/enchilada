@@ -6,7 +6,28 @@ All notable changes to enchilada are documented here. The format follows
 
 ## [0.3.0] — Unreleased
 
+### Removed
+
+- Removed `enchilada.orbits`, the `Orbit` and `NumericOrbit` exports, and
+  `L1Data.orbit_ephemeris`. Orbit data travels only as raw tables on `L1Data`;
+  blocks own interpolation and coordinate conversion. Existing callers must
+  pass raw arrays and their sampling metadata, or use `L1Data.from_cd1l`.
+- Replaced the `numeric-orbits` extra with `cd1l` (h5py only); SciPy and
+  lisaorbits are no longer orbit dependencies.
+
 ### Added
+
+- `L1Data.noise_estimates_xyz` carries raw complex CD1-L XYZ noise matrices,
+  with their independent time and logarithmic frequency sampling and derived
+  coordinate arrays. The reader preserves source units, retains
+  `laser_frequency_hz`, and limits estimate reads when `duration_s` is given.
+  AET and eta estimates are not loaded; active covariance remains separate.
+
+- Raw light-travel-time derivatives, spacecraft clock offsets (`scet_wrt_tcb_s`),
+  and the 24 named Mojito TTL coefficient arrays on `L1Data`. Clock and TTL
+  tables retain their own sampling metadata and must span the observations.
+  `from_cd1l` loads these optional groups unchanged, with read-only arrays;
+  `duration_s` limits their loaded prefixes as well as the TDI data.
 
 - `Wheel.add(initial_block_state=...)` starts a block from an explicit injection
   or other complete physical state without consuming campaign RNG draws. It uses the
@@ -32,6 +53,15 @@ All notable changes to enchilada are documented here. The format follows
   variances, and stored exactly Hermitian. `like`, `from_psd`, `from_variance`,
   `noise_psd`, `noise_variance`, and `check_compatible` take the `L1Data` the
   covariance accompanies; the object carries no grid.
+- `L1Data` carries optional raw orbit tables as stored in Mojito files:
+  `spacecraft_positions_m`, `spacecraft_velocities_m_per_s`, and the six directed
+  `light_travel_times_s` (rows in `enchilada.data.LINKS` order), each with its own
+  start time and sample interval. Construction checks their structure and that
+  each spans the data, in constant time; values are not interpolated, rotated,
+  or resampled, and pass through `replace`, `transform`, and Wheel by reference.
+- `L1Data.from_cd1l(file_path, *, duration_s=None)` reads X, Y, Z TDI-2 from a
+  Mojito CD1-L brick in fractional frequency, with its orbit and light-travel-time
+  tables made read-only.
 - `Ledger` provides defensive snapshots of each block's complete `BlockState`:
   optional `template` and `covariance`, and physical `parameters`.
   `ledger.snapshot()` returns an independent dictionary for

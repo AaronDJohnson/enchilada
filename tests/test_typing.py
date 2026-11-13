@@ -238,8 +238,6 @@ def test_public_surface_is_pinned():
         "Covariance",
         "Ledger",
         "NoiseOverwrittenWarning",
-        "NumericOrbit",
-        "Orbit",
         "L1Data",
         "BlockState",
         "Wheel",
